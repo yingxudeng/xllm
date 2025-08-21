@@ -21,6 +21,7 @@
 #include "core/util/utils.h"
 #include "core/util/uuid.h"
 #include "function_call/function_call.h"
+#include "streaming_function_call_handler.h"
 
 namespace xllm {
 namespace {
@@ -308,6 +309,18 @@ void ChatServiceImpl::process_async_impl(std::shared_ptr<ChatCall> call) {
     request_params.decode_address = rpc_request.routing().decode_name();
   }
 
+  // Create streaming function call handler outside lambda to maintain state
+  const std::string parser_format =
+      master_->options().tool_call_parser().value_or("");
+  const bool has_tool_support =
+      !request_params.tools.empty() && !parser_format.empty();
+
+  std::shared_ptr<StreamingFunctionCallHandler> streaming_handler;
+  if (request_params.streaming && has_tool_support) {
+    streaming_handler = std::make_shared<StreamingFunctionCallHandler>(
+        request_params.tools, parser_format);
+  }
+
   master_->handle_request(
       std::move(messages),
       std::move(prompt_tokens),
@@ -320,7 +333,8 @@ void ChatServiceImpl::process_async_impl(std::shared_ptr<ChatCall> call) {
        first_message_sent = std::unordered_set<size_t>(),
        request_id = request_params.request_id,
        created_time = absl::ToUnixSeconds(absl::Now()),
-       json_tools = request_params.tools](
+       json_tools = request_params.tools,
+       streaming_handler = std::move(streaming_handler)](
           const RequestOutput& req_output) mutable -> bool {
         if (req_output.status.has_value()) {
           const auto& status = req_output.status.value();
@@ -345,16 +359,17 @@ void ChatServiceImpl::process_async_impl(std::shared_ptr<ChatCall> call) {
             !json_tools.empty() && !parser_format.empty();
 
         if (stream) {
-          if (has_tool_support) {
-            // TODO: Support tool call streaming output
-            LOG(ERROR) << "Tool call does not support streaming output";
-            return send_delta_to_client_brpc(call,
-                                             include_usage,
-                                             &first_message_sent,
-                                             request_id,
-                                             created_time,
-                                             model,
-                                             req_output);
+          if (streaming_handler) {
+            // Use persistent streaming function call handler - maintains state
+            // across calls
+            return streaming_handler->process_streaming_output(
+                call,
+                include_usage,
+                &first_message_sent,
+                request_id,
+                created_time,
+                model,
+                req_output);
           } else {
             // Stream response without tool support
             return send_delta_to_client_brpc(call,

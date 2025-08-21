@@ -16,7 +16,7 @@ class FunctionCallParser {
  public:
   static const std::unordered_map<std::string, std::string> ToolCallParserEnum;
 
- private:
+  //  private:
   std::unique_ptr<BaseFormatDetector> detector_;
   std::vector<JsonTool> tools_;
 
@@ -33,6 +33,9 @@ class FunctionCallParser {
 
   std::tuple<std::string, std::vector<ToolCallItem>> parse_non_stream(
       const std::string& full_text);
+
+  // Streaming incremental parsing method - matches sglang's functionality
+  StreamingParseResult parse_streaming_increment(const std::string& new_text);
 
   // StructuralTagResponseFormat get_structure_tag();
 
@@ -55,6 +58,12 @@ std::vector<ToolCallItem> parse_function_calls(
 
 bool has_function_calls(const std::string& text,
                         const std::string& parser_type = "qwen25");
+
+// Streaming parsing utility function
+StreamingParseResult parse_streaming_increment(
+    const std::string& new_text,
+    const std::vector<JsonTool>& tools,
+    const std::string& parser_type = "qwen25");
 
 std::string generate_tool_call_id();
 }  // namespace utils
