@@ -10,6 +10,7 @@
 
 #include "chat.pb.h"
 #include "core_types.h"
+#include "utils.h"
 
 namespace xllm {
 namespace function_call {
@@ -22,7 +23,7 @@ class BaseFormatDetector {
   BaseFormatDetector(const BaseFormatDetector&) = delete;
   BaseFormatDetector& operator=(const BaseFormatDetector&) = delete;
 
- protected:
+  //  protected:
   // Streaming state management
   // Buffer for accumulating incomplete patterns that arrive across multiple
   // streaming chunks
@@ -69,6 +70,21 @@ class BaseFormatDetector {
       const std::vector<JsonTool>& tools) = 0;
 
   virtual bool has_tool_call(const std::string& text) = 0;
+
+  // Streaming incremental parsing method - matches sglang's
+  // parse_streaming_increment
+  virtual StreamingParseResult parse_streaming_increment(
+      const std::string& new_text,
+      const std::vector<JsonTool>& tools);
+
+ protected:
+  // Helper method to check if buffer ends with partial token - matches sglang's
+  // _ends_with_partial_token
+  int _ends_with_partial_token(const std::string& buffer,
+                               const std::string& bot_token) const;
+
+  // Tool indices cache for streaming
+  std::unordered_map<std::string, int> _tool_indices;
 };
 
 }  // namespace function_call
