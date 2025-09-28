@@ -10,10 +10,12 @@ cc_library(
     npu_split_impl.h
     npu_linear_impl.h
     npu_rms_norm_impl.h
+    npu_rope_impl.h
   SRCS
     npu_split_impl.cpp
     npu_linear_impl.cpp
     npu_rms_norm_impl.cpp
+    npu_rope_impl.cpp
   DEPS
     :npu_layers
     :model_context
@@ -56,6 +58,20 @@ cc_test(
     npu_split_test
   SRCS
     npu_split_test.cpp
+  DEPS
+    :npu_kernels
+    GTest::gtest
+    GTest::gtest_main
+    xllm_kernels
+    c_sec
+    atb
+)
+
+cc_test(
+  NAME
+    npu_rope_impl_test
+  SRCS
+    npu_rope_impl_test.cpp
   DEPS
     :npu_kernels
     GTest::gtest

@@ -20,9 +20,13 @@ limitations under the License.
 namespace xllm::kernel {
 
 void NpuSplitImpl::param_from_args(atb::infer::SplitParam& param,
-                                   const ModelArgs& args) {
-  param.splitDim = -1;
-  param.splitNum = 3;
+                                   const ModelArgs& args,
+                                   int32_t splitDim,
+                                   int32_t splitNum,
+                                   atb::SVector<int32_t> splitSizes) {
+  param.splitDim = splitDim;
+  param.splitNum = splitNum;
+  param.splitSizes = splitSizes;
 }
 
 int64_t NpuSplitImpl::init_node(atb_speed::Model::Node& node,
@@ -53,9 +57,13 @@ int64_t NpuSplitImpl::init_node(atb_speed::Model::Node& node,
   return atb::NO_ERROR;
 }
 
-NpuSplitImpl::NpuSplitImpl(const ModelContext& context)
+NpuSplitImpl::NpuSplitImpl(const ModelContext& context,
+                           int32_t splitDim,
+                           int32_t splitNum,
+                           atb::SVector<int32_t> splitSizes)
     : NpuBaseLayer(context) {
-  param_from_args(norm_param_, context.get_model_args());
+  param_from_args(
+      split_param_, context.get_model_args(), splitDim, splitNum, splitSizes);
 
   at_weight_tensors_.resize(1);
   atb_weight_tensors_.resize(1);
@@ -65,7 +73,7 @@ NpuSplitImpl::NpuSplitImpl(const ModelContext& context)
   dtype_ = c10::typeMetaToScalarType(options.dtype());
   at_weight_tensors_[0] = torch::zeros({1}).to(options);
 
-  atb::Status status = init_node(split_node_, norm_param_);
+  atb::Status status = init_node(split_node_, split_param_);
   if (status != atb::NO_ERROR) {
     LOG(ERROR) << "Failed to initialize node, status: " << status;
     throw std::runtime_error(

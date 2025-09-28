@@ -40,14 +40,11 @@ limitations under the License.
 
 namespace xllm::kernel {
 
-class NpuSplitImpl : public xllm::layer::NpuBaseLayer {
+class NpuRopeImpl : public xllm::layer::NpuBaseLayer {
  public:
-  explicit NpuSplitImpl(const ModelContext& context,
-                        int32_t splitDim = 2,
-                        int32_t splitNum = 3,
-                        atb::SVector<int32_t> splitSizes = {});
+  explicit NpuRopeImpl(const ModelContext& context);
 
-  ~NpuSplitImpl() {};
+  ~NpuRopeImpl() {};
 
   void load_state_dict(const StateDict& state_dict);
 
@@ -55,25 +52,33 @@ class NpuSplitImpl : public xllm::layer::NpuBaseLayer {
 
   void merge_loaded_weights();
 
-  std::vector<at::Tensor> forward(const torch::Tensor& input, int nodeId);
+  std::vector<at::Tensor> forward(const torch::Tensor& q,
+                                  const torch::Tensor& k,
+                                  const torch::Tensor& cos_embedding,
+                                  const torch::Tensor& sin_embedding,
+                                  const torch::Tensor& seq_len,
+                                  int nodeId);
 
  private:
-  int64_t init_node(atb_speed::Model::Node& node,
-                    atb::infer::SplitParam& param);
+  int64_t init_node(atb_speed::Model::Node& node, atb::infer::RopeParam& param);
   void build_node_variant_pack(atb_speed::Model::Node& node,
-                               const torch::Tensor& input);
-  void param_from_args(atb::infer::SplitParam& param,
-                       const ModelArgs& args,
-                       int32_t splitDim,
-                       int32_t splitNum,
-                       atb::SVector<int32_t> splitSizes);
+                               const torch::Tensor& q,
+                               const torch::Tensor& k,
+                               const torch::Tensor& cos_embedding,
+                               const torch::Tensor& sin_embedding,
+                               const torch::Tensor& seq_len);
+  void param_from_args(atb::infer::RopeParam& param, const ModelArgs& args);
 
   std::vector<at::Tensor> at_out_tensors_;
-  atb::Tensor internal_input;
+  atb::Tensor internal_q;
+  atb::Tensor internal_k;
+  atb::Tensor internal_cos_embedding;
+  atb::Tensor internal_sin_embedding;
+  atb::Tensor internal_seq_len;
 
-  atb_speed::Model::Node split_node_;
+  atb_speed::Model::Node rope_node_;
   std::string model_name_;
-  atb::infer::SplitParam split_param_;
+  atb::infer::RopeParam rope_param_;
   atb::Tensor internal_tensors_;
 };
 
