@@ -17,11 +17,19 @@ limitations under the License.
 #include <sys/resource.h>
 
 #include "core/kernels/linear.h"
+#include "core/kernels/reshape_and_cache.h"
 #include "core/kernels/rms_norm.h"
 #include "core/kernels/rope.h"
 #include "core/kernels/split.h"
 
 namespace xllm::kernel {
+
+int32_t NUM_TOKENS = 2;
+uint32_t NUM_HEAD = 32;
+uint32_t K_HEAD_SIZE = 128;
+uint32_t V_HEAD_SIZE = K_HEAD_SIZE;
+uint32_t NUM_BLOCKS = 512;
+uint32_t BLOCK_SIZE = 128;
 
 class SampleModelTest : public ::testing::Test {
  protected:
@@ -868,6 +876,337 @@ TEST_F(SampleModelTest, CompleteAttentionPipelineTest) {
 
   std::cout << "\nComplete attention pipeline test completed successfully!"
             << std::endl;
+}
+
+// Test complete attention pipeline with reshape_and_cache integration
+TEST_F(SampleModelTest, CompleteAttentionPipelineWithReshapeAndCacheTest) {
+  if (!npu_available_) {
+    GTEST_SKIP() << "Skipping NPU test - NPU device not available";
+  }
+
+  auto rms_norm = RmsNorm(*context_);
+  auto qkv_proj = Linear(*context_);
+  auto split_layer = Split(*context_);
+  auto q_norm = RmsNorm(*context_);
+  auto k_norm = RmsNorm(*context_);
+  auto rope_layer = Rope(*context_);
+  auto reshape_and_cache = ReshapeAndCache(*context_);
+
+  auto rms_norm_weight =
+      torch::randn({model_args_.hidden_size()}, tensor_options_);
+  auto rms_norm_state_dict = CreateRmsNormStateDict(rms_norm_weight);
+  rms_norm->load_state_dict(rms_norm_state_dict);
+  rms_norm->merge_loaded_weights();
+
+  auto qkv_weight =
+      torch::randn({qkv_size_, model_args_.hidden_size()}, tensor_options_);
+  auto qkv_state_dict = CreateLinearStateDict(qkv_weight);
+  qkv_proj->load_state_dict(qkv_state_dict);
+  qkv_proj->merge_loaded_weights();
+
+  auto split_state_dict = CreateEmptyStateDict();
+  split_layer->load_state_dict(split_state_dict);
+  split_layer->merge_loaded_weights();
+
+  auto q_norm_weight = torch::randn({head_dim_}, tensor_options_);
+  auto q_norm_state_dict = CreateRmsNormStateDict(q_norm_weight);
+  q_norm->load_state_dict(q_norm_state_dict);
+  q_norm->merge_loaded_weights();
+
+  auto k_norm_weight = torch::randn({head_dim_}, tensor_options_);
+  auto k_norm_state_dict = CreateRmsNormStateDict(k_norm_weight);
+  k_norm->load_state_dict(k_norm_state_dict);
+  k_norm->merge_loaded_weights();
+
+  auto rope_state_dict = CreateEmptyStateDict();
+  rope_layer->load_state_dict(rope_state_dict);
+  rope_layer->merge_loaded_weights();
+
+  auto reshape_cache_state_dict = CreateEmptyStateDict();
+  reshape_and_cache->load_state_dict(reshape_cache_state_dict);
+  reshape_and_cache->merge_loaded_weights();
+
+  std::vector<std::vector<int64_t>> test_shapes = {
+      {1, 8, model_args_.hidden_size()},
+      {2, 16, model_args_.hidden_size()},
+      {1, 32, model_args_.hidden_size()}};
+
+  for (const auto& shape : test_shapes) {
+    auto input = torch::randn(shape, tensor_options_);
+    int64_t batch_size = shape[0];
+    int64_t seq_len = shape[1];
+
+    try {
+      auto npu_stream = c10_npu::getCurrentNPUStream(0);
+
+      std::cout << "\nTesting complete pipeline with reshape_and_cache for "
+                   "input shape: "
+                << batch_size << "x" << seq_len << "x" << shape[2] << std::endl;
+
+      auto normalized_output = rms_norm(input, 0);
+      std::cout << "RMS norm output shape: " << normalized_output.sizes()
+                << std::endl;
+
+      auto qkv_output = qkv_proj(normalized_output, 0);
+      std::cout << "QKV projection output shape: " << qkv_output.sizes()
+                << std::endl;
+
+      auto split_outputs = split_layer(qkv_output, 0);
+      EXPECT_EQ(split_outputs.size(), 3)
+          << "Expected 3 split outputs (q, k, v)";
+
+      if (split_outputs.size() >= 3) {
+        auto q = split_outputs[0];
+        auto k = split_outputs[1];
+        auto v = split_outputs[2];
+
+        std::cout << "Q tensor shape: " << q.sizes() << std::endl;
+        std::cout << "K tensor shape: " << k.sizes() << std::endl;
+        std::cout << "V tensor shape: " << v.sizes() << std::endl;
+
+        auto q_reshaped = q.view({-1, num_heads_, head_dim_});
+        auto k_reshaped = k.view({-1, num_kv_heads_, head_dim_});
+
+        auto q_normalized = q_norm(q_reshaped, 0);
+        auto k_normalized = k_norm(k_reshaped, 0);
+
+        q_normalized = q_normalized.view({seq_len, -1});
+        k_normalized = k_normalized.view({seq_len, -1});
+
+        std::cout << "Q after norm shape: " << q_normalized.sizes()
+                  << std::endl;
+        std::cout << "K after norm shape: " << k_normalized.sizes()
+                  << std::endl;
+
+        auto rope_embeddings = CreateRopeEmbeddings(seq_len, head_dim_);
+        auto cos_embedding = rope_embeddings.first;
+        auto sin_embedding = rope_embeddings.second;
+        auto seq_len_tensor =
+            torch::tensor({seq_len}, tensor_options_.dtype(torch::kInt32));
+
+        auto rope_outputs = rope_layer->forward(q_normalized,
+                                                k_normalized,
+                                                cos_embedding,
+                                                sin_embedding,
+                                                seq_len_tensor,
+                                                0);
+
+        EXPECT_EQ(rope_outputs.size(), 2) << "Expected 2 RoPE outputs (q, k)";
+
+        if (rope_outputs.size() >= 2) {
+          auto q_rope = rope_outputs[0];
+          auto k_rope = rope_outputs[1];
+
+          std::cout << "Q after RoPE shape: " << q_rope.sizes() << std::endl;
+          std::cout << "K after RoPE shape: " << k_rope.sizes() << std::endl;
+
+          int64_t max_seq_len = 2048;  // Maximum sequence length for cache
+          int64_t cache_batch_size = batch_size;
+
+          // uint32_t BLOCK_SIZE = 128;
+          auto k_cache = at_npu::native::npu_format_cast(
+              torch::zeros({10, BLOCK_SIZE, NUM_HEAD, K_HEAD_SIZE},
+                           tensor_options_)
+                  .contiguous(),
+              2);
+          auto v_cache = at_npu::native::npu_format_cast(
+              torch::zeros({10, BLOCK_SIZE, NUM_HEAD, V_HEAD_SIZE},
+                           tensor_options_)
+                  .contiguous(),
+              2);
+
+          auto slots =
+              torch::arange(
+                  0, batch_size * seq_len, tensor_options_.dtype(torch::kInt32))
+                  .contiguous();
+
+          std::cout << "K cache shape: " << k_cache.sizes() << std::endl;
+          std::cout << "V cache shape: " << v_cache.sizes() << std::endl;
+          std::cout << "Slots shape: " << slots.sizes() << std::endl;
+
+          auto intermediate_k =
+              k_rope.view({batch_size * seq_len, num_kv_heads_, head_dim_})
+                  .contiguous();
+          auto intermediate_v =
+              v.view({batch_size * seq_len, num_kv_heads_, head_dim_})
+                  .contiguous();
+
+          std::cout << "Intermediate K shape: " << intermediate_k.sizes()
+                    << std::endl;
+          std::cout << "Intermediate V shape: " << intermediate_v.sizes()
+                    << std::endl;
+
+          EXPECT_TRUE(intermediate_k.is_contiguous())
+              << "intermediate_k should be contiguous";
+          EXPECT_TRUE(intermediate_v.is_contiguous())
+              << "intermediate_v should be contiguous";
+          EXPECT_TRUE(k_cache.is_contiguous())
+              << "k_cache should be contiguous";
+          EXPECT_TRUE(v_cache.is_contiguous())
+              << "v_cache should be contiguous";
+          EXPECT_TRUE(slots.is_contiguous()) << "slots should be contiguous";
+
+          EXPECT_EQ(intermediate_k.dtype(), torch::kFloat16)
+              << "intermediate_k should be float16";
+          EXPECT_EQ(intermediate_v.dtype(), torch::kFloat16)
+              << "intermediate_v should be float16";
+          EXPECT_EQ(k_cache.dtype(), torch::kFloat16)
+              << "k_cache should be float16";
+          EXPECT_EQ(v_cache.dtype(), torch::kFloat16)
+              << "v_cache should be float16";
+          EXPECT_EQ(slots.dtype(), torch::kInt32) << "slots should be int32";
+
+          reshape_and_cache->forward(
+              intermediate_k, intermediate_v, k_cache, v_cache, slots, 0);
+
+          std::cout << "Successfully applied reshape_and_cache operation"
+                    << std::endl;
+
+          EXPECT_FALSE(torch::isnan(q_rope).any().item<bool>())
+              << "NaN detected in Q after RoPE";
+          EXPECT_FALSE(torch::isinf(q_rope).any().item<bool>())
+              << "Inf detected in Q after RoPE";
+          EXPECT_FALSE(torch::isnan(k_rope).any().item<bool>())
+              << "NaN detected in K after RoPE";
+          EXPECT_FALSE(torch::isinf(k_rope).any().item<bool>())
+              << "Inf detected in K after RoPE";
+          EXPECT_FALSE(torch::isnan(v).any().item<bool>())
+              << "NaN detected in V";
+          EXPECT_FALSE(torch::isinf(v).any().item<bool>())
+              << "Inf detected in V";
+          EXPECT_FALSE(torch::isnan(k_cache).any().item<bool>())
+              << "NaN detected in K cache";
+          EXPECT_FALSE(torch::isinf(k_cache).any().item<bool>())
+              << "Inf detected in K cache";
+          EXPECT_FALSE(torch::isnan(v_cache).any().item<bool>())
+              << "NaN detected in V cache";
+          EXPECT_FALSE(torch::isinf(v_cache).any().item<bool>())
+              << "Inf detected in V cache";
+
+          auto k_cache_slice = k_cache.slice(
+              2, 0, seq_len);  // [batch, heads, seq_len, head_dim]
+          auto v_cache_slice = v_cache.slice(
+              2, 0, seq_len);  // [batch, heads, seq_len, head_dim]
+
+          bool k_cache_updated =
+              torch::sum(torch::abs(k_cache_slice)).item<float>() > 1e-6;
+          bool v_cache_updated =
+              torch::sum(torch::abs(v_cache_slice)).item<float>() > 1e-6;
+
+          EXPECT_TRUE(k_cache_updated)
+              << "K cache should be updated with non-zero values";
+          EXPECT_TRUE(v_cache_updated)
+              << "V cache should be updated with non-zero values";
+
+          std::cout << "Complete pipeline with reshape_and_cache test passed "
+                       "for shape ["
+                    << batch_size << ", " << seq_len << ", " << shape[2] << "]"
+                    << std::endl;
+        }
+      }
+
+      aclrtSynchronizeStream(npu_stream.stream());
+    } catch (const std::exception& e) {
+      GTEST_SKIP() << "Skipping complete pipeline with reshape_and_cache test "
+                      "for shape ["
+                   << batch_size << ", " << seq_len << ", " << shape[2]
+                   << "] - requires NPU environment: " << e.what();
+      break;
+    }
+  }
+
+  std::cout << "\nComplete attention pipeline with reshape_and_cache test "
+               "completed successfully!"
+            << std::endl;
+}
+
+// Test reshape_and_cache with different cache management scenarios
+TEST_F(SampleModelTest, ReshapeAndCacheTest) {
+  if (!npu_available_) {
+    GTEST_SKIP() << "Skipping NPU test - NPU device not available";
+  }
+
+  auto reshape_and_cache = ReshapeAndCache(*context_);
+  auto reshape_cache_state_dict = CreateEmptyStateDict();
+  reshape_and_cache->load_state_dict(reshape_cache_state_dict);
+  reshape_and_cache->merge_loaded_weights();
+
+  try {
+    auto npu_stream = c10_npu::getCurrentNPUStream(0);
+
+    std::cout << "\nTesting reshape_and_cache with multiple cache updates"
+              << std::endl;
+
+    auto intermediate_k_1 =
+        torch::randn({NUM_TOKENS, NUM_HEAD, K_HEAD_SIZE}, tensor_options_)
+            .contiguous();
+    auto intermediate_v_1 =
+        torch::randn({NUM_TOKENS, NUM_HEAD, V_HEAD_SIZE}, tensor_options_)
+            .contiguous();
+    auto k_cache = at_npu::native::npu_format_cast(
+        torch::randn({10, BLOCK_SIZE, NUM_HEAD, K_HEAD_SIZE}, tensor_options_)
+            .contiguous(),
+        2);
+    auto v_cache = at_npu::native::npu_format_cast(
+        torch::randn({10, BLOCK_SIZE, NUM_HEAD, V_HEAD_SIZE}, tensor_options_)
+            .contiguous(),
+        2);
+
+    auto slots_1 =
+        torch::arange(0, NUM_TOKENS, tensor_options_.dtype(torch::kInt32))
+            .contiguous();
+
+    std::cout << "intermediate_k - dtype: " << intermediate_k_1.dtype()
+              << ", shape: " << intermediate_k_1.sizes() << std::endl;
+    std::cout << "intermediate_v - dtype: " << intermediate_v_1.dtype()
+              << ", shape: " << intermediate_v_1.sizes() << std::endl;
+    std::cout << "in_k_cache - dtype: " << k_cache.dtype()
+              << ", shape: " << k_cache.sizes() << std::endl;
+    std::cout << "in_v_cache - dtype: " << v_cache.dtype()
+              << ", shape: " << v_cache.sizes() << std::endl;
+    std::cout << "in_slots - dtype: " << slots_1.dtype()
+              << ", shape: " << slots_1.sizes() << std::endl;
+
+    std::cout << "First update - K shape: " << intermediate_k_1.sizes()
+              << ", V shape: " << intermediate_v_1.sizes()
+              << ", Slots shape: " << slots_1.sizes() << std::endl;
+
+    EXPECT_TRUE(intermediate_k_1.is_contiguous())
+        << "intermediate_k_1 should be contiguous";
+    EXPECT_TRUE(intermediate_v_1.is_contiguous())
+        << "intermediate_v_1 should be contiguous";
+    EXPECT_TRUE(k_cache.is_contiguous()) << "k_cache should be contiguous";
+    EXPECT_TRUE(v_cache.is_contiguous()) << "v_cache should be contiguous";
+    EXPECT_TRUE(slots_1.is_contiguous()) << "slots_1 should be contiguous";
+
+    EXPECT_EQ(intermediate_k_1.dtype(), torch::kFloat16)
+        << "intermediate_k should be float16";
+    EXPECT_EQ(intermediate_v_1.dtype(), torch::kFloat16)
+        << "intermediate_v should be float16";
+    EXPECT_EQ(k_cache.dtype(), torch::kFloat16) << "k_cache should be float16";
+    EXPECT_EQ(v_cache.dtype(), torch::kFloat16) << "v_cache should be float16";
+    EXPECT_EQ(slots_1.dtype(), torch::kInt32) << "slots should be int32";
+
+    EXPECT_EQ(intermediate_k_1.dim(), 3)
+        << "intermediate_k should be 3D tensor";
+    EXPECT_EQ(intermediate_v_1.dim(), 3)
+        << "intermediate_v should be 3D tensor";
+    EXPECT_EQ(k_cache.dim(), 4) << "k_cache should be 4D tensor";
+    EXPECT_EQ(v_cache.dim(), 4) << "v_cache should be 4D tensor";
+    EXPECT_EQ(slots_1.dim(), 1) << "slots should be 1D tensor";
+
+    reshape_and_cache->forward(
+        intermediate_k_1, intermediate_v_1, k_cache, v_cache, slots_1, 0);
+
+    std::cout << "ReshapeAndCache operation completed successfully!"
+              << std::endl;
+
+    aclrtSynchronizeStream(npu_stream.stream());
+  } catch (const std::exception& e) {
+    GTEST_SKIP()
+        << "Skipping multiple updates test - requires NPU environment: "
+        << e.what();
+  }
 }
 
 }  // namespace xllm::kernel

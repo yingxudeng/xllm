@@ -11,11 +11,13 @@ cc_library(
     npu_linear_impl.h
     npu_rms_norm_impl.h
     npu_rope_impl.h
+    npu_reshape_and_cache_impl.h
   SRCS
     npu_split_impl.cpp
     npu_linear_impl.cpp
     npu_rms_norm_impl.cpp
     npu_rope_impl.cpp
+    npu_reshape_and_cache_impl.cpp
   DEPS
     :npu_layers
     :model_context
