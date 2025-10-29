@@ -12,7 +12,12 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-
+#ifdef SUCCESS
+#undef SUCCESS
+#endif
+#ifdef FAILED
+#undef FAILED
+#endif
 #include "acl_graph_executor_impl.h"
 
 #include <c10/core/Device.h>

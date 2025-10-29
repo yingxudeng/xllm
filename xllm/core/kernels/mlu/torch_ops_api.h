@@ -20,7 +20,6 @@ limitations under the License.
 #include <string>
 
 #include "ATen/Tensor.h"
-#include "torch_mlu_ops.h"
 namespace xllm::mlu {
 
 static const std::string kActModeSilu = "silu";

@@ -33,7 +33,7 @@ target_link_libraries(xllm PRIVATE glog::glog brpc leveldb::leveldb ZLIB::ZLIB p
 add_dependencies(xllm brpc-static)
 
 if(USE_NPU)
-  set(COMMON_LIBS Python::Python ascendcl hccl c_sec nnopbase ms_tools_ext)
+  set(COMMON_LIBS Python::Python ascendcl hccl c_sec nnopbase ms_tools_ext torch_npu)
 elseif(USE_MLU)
   set(COMMON_LIBS Python::Python)
 endif()
@@ -41,7 +41,7 @@ endif()
 if(USE_MSPTI)
   list(APPEND COMMON_LIBS mspti)
 endif()
-target_link_libraries(xllm PUBLIC ${COMMON_LIBS})
+target_link_libraries(xllm PUBLIC ${COMMON_LIBS} torch_python)
 
 # install xllm binary
 install(TARGETS xllm RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

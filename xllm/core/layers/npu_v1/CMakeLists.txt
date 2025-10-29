@@ -1,0 +1,42 @@
+include(cc_library)
+include(cc_test)
+
+cc_library(
+  NAME
+    npu_v1_layers 
+  HDRS
+    attention.h
+    linear_impl.h
+    qwen3_attention.h
+    dense_mlp.h
+    qwen3_decoder_layer.h
+    fuse_norm.h
+    rotary_embedding.h
+  SRCS
+    attention.cpp
+    qwen3_attention.cpp
+    linear_impl.cpp
+    dense_mlp.cpp
+    qwen3_decoder_layer.cpp
+    fuse_norm.cpp
+    rotary_embedding.cpp
+  DEPS
+    "-Wl,--whole-archive"
+    "-Wl,--no-whole-archive"
+    :npu_kernels
+    :base_layer
+    :kv_cache
+    :prefix_cache
+    :block
+    :eplb
+    :parallel_state
+    :state_dict
+    glog::glog
+    gflags::gflags
+    spdlog::spdlog
+    :xllm_npu_ops
+    torch
+    torch_npu
+    xllm_kernels
+)
+

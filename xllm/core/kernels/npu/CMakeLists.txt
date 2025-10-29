@@ -2,6 +2,7 @@ include(cc_library)
 include(cc_test)
 
 add_subdirectory(xllm_ops)
+# add_subdirectory(custom_functions_atb)
 
 cc_library(
   NAME
@@ -18,6 +19,7 @@ cc_library(
     npu_rope_impl.cpp
   DEPS
     :npu_layers
+    :npu_v1_layers
     :model_context
     :state_dict
     glog::glog
@@ -88,6 +90,7 @@ cc_test(
     npu_sample_model_test.cpp
   DEPS
     :npu_kernels
+    :xllm_npu_ops
     GTest::gtest
     GTest::gtest_main
     xllm_kernels

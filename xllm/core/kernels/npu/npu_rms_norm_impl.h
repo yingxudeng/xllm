@@ -43,6 +43,7 @@ namespace xllm::kernel {
 class NpuRmsNormImpl : public xllm::layer::NpuBaseLayer {
  public:
   explicit NpuRmsNormImpl(const ModelContext& context);
+  // explicit NpuRmsNormImpl(const ModelContext& context);
 
   ~NpuRmsNormImpl() {};
 
@@ -52,7 +53,7 @@ class NpuRmsNormImpl : public xllm::layer::NpuBaseLayer {
 
   void merge_loaded_weights();
 
-  torch::Tensor forward(torch::Tensor& x, int nodeId);
+  torch::Tensor forward(torch::Tensor& x, int nodeId = 0);
 
  private:
   int64_t init_node(atb_speed::Model::Node& node,

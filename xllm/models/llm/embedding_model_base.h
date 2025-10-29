@@ -63,8 +63,8 @@ class LlmForEmbeddingImplBase : public torch::nn::Module {
     }
 #if defined(USE_NPU)
     // verify
-    model_->verify_loaded_weights(prefix + "model.");
-    model_->merge_loaded_weights();
+    // model_->verify_loaded_weights(prefix + "model.");
+    // model_->merge_loaded_weights();
 #endif
   }
 

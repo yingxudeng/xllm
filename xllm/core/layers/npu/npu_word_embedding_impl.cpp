@@ -88,12 +88,18 @@ int64_t NpuWordEmbeddingImpl::init_layer() {
 int64_t NpuWordEmbeddingImpl::init_node(
     atb_speed::Model::Node& node,
     atb_speed::common::WordEmbeddingParam& param) {
+  std::cerr << "dyx-debug Init Word Embedding Node" << std::endl;
   atb::Operation* operation = nullptr;
   atb_speed::common::WordEmbedding(param, &operation);
   node.operation.reset(operation);
   if (node.operation == nullptr) {
+    std::cerr << "dyx-debug Init Word Embedding node.operation is null"
+              << std::endl;
     LOG(ERROR) << "node.operation is null";
     return -1;
+  } else {
+    std::cerr << "dyx-debug Init Word Embedding node.operation is not null"
+              << std::endl;
   }
   if (node.operation->GetInputNum() < 1) {
     LOG(ERROR) << "Can not resize number which is smaller than 1";
@@ -125,6 +131,11 @@ torch::Tensor NpuWordEmbeddingImpl::forward(const torch::Tensor& x,
 
 void NpuWordEmbeddingImpl::build_node_variant_pack(atb_speed::Model::Node& node,
                                                    const torch::Tensor& x) {
+  if (!node.operation) {
+    throw std::runtime_error(
+        "node.operation is null in build_node_variant_pack");
+  }
+
   internalTensors = atb_speed::Utils::AtTensor2Tensor(x);
   // node.outTensors[0] = &internalTensors;
 
@@ -133,6 +144,13 @@ void NpuWordEmbeddingImpl::build_node_variant_pack(atb_speed::Model::Node& node,
   inTensorDescs.resize(node.variantPack.inTensors.size());
 
   atb::SVector<atb::TensorDesc> outTensorDescs;
+
+  auto output_num = node.operation->GetOutputNum();
+  if (output_num <= 0) {
+    throw std::runtime_error("Invalid output number: " +
+                             std::to_string(output_num));
+  }
+
   outTensorDescs.reserve(node.operation->GetOutputNum());
   outTensorDescs.resize(node.operation->GetOutputNum());
 

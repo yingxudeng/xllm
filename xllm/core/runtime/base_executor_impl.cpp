@@ -13,6 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#ifdef SUCCESS
+#undef SUCCESS
+#endif
 #include "base_executor_impl.h"
 
 #include <glog/logging.h>

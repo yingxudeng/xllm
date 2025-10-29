@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 #pragma once
+#include <torch_npu/csrc/distributed/ProcessGroupHCCL.hpp>
 
 #include "hccl/hccl.h"
 #include "process_group.h"
@@ -28,6 +29,14 @@ class ProcessGroupHCCL : public ProcessGroup {
                    const torch::Device& device,
                    HcclComm comm);
 
+  ProcessGroupHCCL(int rank,
+                   int world_size,
+                   int rank_size,
+                   int port,
+                   const std::string& host,
+                   const std::string& group_name,
+                   const torch::Device& device);
+
   // Destructor.
   ~ProcessGroupHCCL() override;
 
@@ -38,6 +47,12 @@ class ProcessGroupHCCL : public ProcessGroup {
 
  private:
   HcclComm comm_ = nullptr;
+  std::shared_ptr<c10d_npu::ProcessGroupHCCL> hccl_pg_ = nullptr;
+
+  int rank_ = 0;
+
+  // number of processes.
+  int world_size_ = 0;
 };
 
 }  // namespace xllm

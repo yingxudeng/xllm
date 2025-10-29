@@ -16,9 +16,9 @@ limitations under the License.
 #include "dense_mlp.h"
 
 #include <glog/logging.h>
+#include <torch_npu/csrc/aten/CustomFunctions.h>
 
 #include "kernels/mlu/torch_ops_api.h"
-
 namespace xllm {
 namespace layer {
 

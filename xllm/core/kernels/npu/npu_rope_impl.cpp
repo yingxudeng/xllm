@@ -55,13 +55,6 @@ int64_t NpuRopeImpl::init_node(atb_speed::Model::Node& node,
 NpuRopeImpl::NpuRopeImpl(const ModelContext& context) : NpuBaseLayer(context) {
   param_from_args(rope_param_, context.get_model_args());
 
-  at_weight_tensors_.resize(1);
-  atb_weight_tensors_.resize(1);
-
-  auto options = context.get_tensor_options();
-  dtype_ = c10::typeMetaToScalarType(options.dtype());
-  at_weight_tensors_[0] = torch::zeros({1}).to(options);
-
   atb::Status status = init_node(rope_node_, rope_param_);
   if (status != atb::NO_ERROR) {
     LOG(ERROR) << "Failed to initialize node, status: " << status;

@@ -79,6 +79,7 @@ cc_library(
 
 if(USE_NPU)
   add_subdirectory(npu)
+  add_subdirectory(npu_v1)
 endif()
 if(USE_MLU)
   add_subdirectory(mlu)

@@ -297,6 +297,8 @@ else()
   message(STATUS "Downloading and using libtorch 2.1.0 for CPU at ${LIBTORCH_SOURCE_DIR}")
 endif()
 
+# add_compile_options(-U SUCCESS)
+
 if(USE_NPU)
   add_definitions(-DUSE_NPU)
   add_definitions(-DBUILD_LIBTORCH)
@@ -309,12 +311,14 @@ if(USE_NPU)
       $ENV{PYTORCH_INSTALL_PATH}/include
       $ENV{PYTORCH_INSTALL_PATH}/include/torch/csrc/api/include
       $ENV{PYTORCH_NPU_INSTALL_PATH}/include
+      $ENV{PYTORCH_INSTALL_PATH}/include/torch/csrc/distributed
       $ENV{NPU_HOME_PATH}/include
       $ENV{ATB_HOME_PATH}/include
       $ENV{NPU_HOME_PATH}/opp/vendors/xllm/op_api/include/
       $ENV{XLLM_KERNELS_PATH}/include/xllm_kernels/core/include
       $ENV{XLLM_KERNELS_PATH}/include/xllm_kernels
       $ENV{XLLM_KERNELS_PATH}/include/
+      /usr/local/lib64/python3.11/site-packages/torch_npu/include
   )
 
   link_directories(

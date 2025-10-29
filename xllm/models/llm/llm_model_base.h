@@ -17,6 +17,15 @@ limitations under the License.
 
 #if defined(USE_NPU)
 #include <atb/atb_infer.h>
+#include <torch_npu/csrc/aten/CustomFunctions.h>
+
+// #ifdef TORCH_HIGHER_THAN_PTA6
+// #include <torch_npu/csrc/framework/OpCommand.h>
+// #else
+// #include <torch_npu/csrc/aten/NPUNativeFunctions.h>
+// #include <torch_npu/csrc/framework/utils/OpPreparation.h>
+// #endif
+
 #endif
 #include <gflags/gflags.h>
 #include <torch/torch.h>
@@ -38,12 +47,70 @@ limitations under the License.
 #include "core/layers/rms_norm.h"
 #include "models/model_registry.h"
 #if defined(USE_NPU)
+#include "core/layers/npu_v1/attention.h"
 #include "xllm_kernels/core/include/atb_speed/log.h"
 #elif defined(USE_MLU)
 #include "core/layers/mlu/attention.h"
 #endif
 
 namespace xllm {
+
+void print_first_5(const torch::Tensor& tensor, const std::string& name) {
+  try {
+    std::stringstream ss;
+    auto float_tensor = tensor.to(torch::kCPU, torch::kFloat);
+    auto flattened = float_tensor.flatten();
+    int64_t size = flattened.size(0);
+
+    ss << std::setprecision(4) << std::fixed;
+    ss << name << ":\n";
+
+    ss << "  Shape: " << tensor.sizes() << "\n";
+    ss << "  Data Type: " << tensor.dtype() << "\n";
+    ss << "  Device: " << tensor.device() << "\n";
+
+    // 打印前4个元素
+    ss << "  First 4 elements: ";
+    for (int i = 0; i < std::min(static_cast<int64_t>(4), size); ++i) {
+      ss << flattened[i].item<float>() << " ";
+    }
+    ss << "\n";
+
+    // 打印后4个元素
+    ss << "  Last 4 elements:  ";
+    for (int i = std::max(static_cast<int64_t>(0), size - 4); i < size; ++i) {
+      ss << flattened[i].item<float>() << " ";
+    }
+    ss << "\n";
+
+    // 计算统计值
+    if (size > 0) {
+      float max_val = flattened.max().item<float>();
+      float min_val = flattened.min().item<float>();
+      float mean_val = flattened.mean().item<float>();
+
+      ss << std::fixed << std::setprecision(8);
+      ss << "  Max: " << max_val << "\n";
+      ss << "  Min: " << min_val << "\n";
+      ss << "  Mean: " << mean_val << "\n";
+    } else {
+      ss << "  Tensor is empty\n";
+    }
+    ss << std::endl;
+
+    std::cout << ss.str();
+    std::cout.flush();
+  } catch (const c10::Error& e) {
+    std::cerr << "PyTorch Error in print_first_5: " << e.what() << std::endl;
+  } catch (const std::runtime_error& e) {
+    std::cerr << "Runtime Error in print_first_5: " << e.what() << std::endl;
+  } catch (const std::exception& e) {
+    std::cerr << "Standard Exception in print_first_5: " << e.what()
+              << std::endl;
+  } catch (...) {
+    std::cerr << "Unknown Error in print_first_5" << std::endl;
+  }
+}
 
 torch::Tensor get_concat_rotary_embedding(int64_t dim,
                                           int64_t seq_len,
@@ -88,47 +155,56 @@ class LlmDecoderLayerImplBase : public torch::nn::Module {
   }
 
 #if defined(USE_NPU)
-  virtual torch::Tensor forward(std::vector<torch::Tensor>& x,
-                                std::vector<torch::Tensor>& cos_pos,
-                                std::vector<torch::Tensor>& sin_pos,
-                                std::vector<torch::Tensor>& attn_mask,
-                                KVCache& kv_cache,
-                                std::vector<ModelInputParams>& input_params,
-                                int node_id,
-                                std::vector<aclrtEvent*> event,
-                                std::vector<std::atomic<bool>*> event_flag) {
-#if defined(USE_NPU)
-    auto micro_batch_num = x.size();
-    for (auto i = 0; i < micro_batch_num; ++i) {
-      if (input_params[i].src_block_indices.numel() > 0) {
-        block_copy_(kv_cache.get_k_cache(),
-                    kv_cache.get_v_cache(),
-                    input_params[i].src_block_indices,
-                    input_params[i].dst_block_indices,
-                    input_params[i].cum_sum,
-                    0);
-      }
-    }
-#endif
-    return decoder_layer_(x,
-                          cos_pos,
-                          sin_pos,
-                          attn_mask,
-                          kv_cache,
-                          input_params,
-                          event,
-                          event_flag,
-                          node_id);
-  }
+  //   virtual torch::Tensor forward(std::vector<torch::Tensor>& x,
+  //                                 std::vector<torch::Tensor>& cos_pos,
+  //                                 std::vector<torch::Tensor>& sin_pos,
+  //                                 std::vector<torch::Tensor>& attn_mask,
+  //                                 KVCache& kv_cache,
+  //                                 std::vector<ModelInputParams>&
+  //                                 input_params, int node_id,
+  //                                 std::vector<aclrtEvent*> event,
+  //                                 std::vector<std::atomic<bool>*> event_flag)
+  //                                 {
+  // #if defined(USE_NPU)
+  //     auto micro_batch_num = x.size();
+  //     for (auto i = 0; i < micro_batch_num; ++i) {
+  //       if (input_params[i].src_block_indices.numel() > 0) {
+  //         block_copy_(kv_cache.get_k_cache(),
+  //                     kv_cache.get_v_cache(),
+  //                     input_params[i].src_block_indices,
+  //                     input_params[i].dst_block_indices,
+  //                     input_params[i].cum_sum,
+  //                     0);
+  //       }
+  //     }
+  // #endif
+  //     return decoder_layer_(x,
+  //                           cos_pos,
+  //                           sin_pos,
+  //                           attn_mask,
+  //                           kv_cache,
+  //                           input_params,
+  //                           event,
+  //                           event_flag,
+  //                           node_id);
+  //   }
 
-  virtual void verify_loaded_weights(const std::string& prefix) const {
-    decoder_layer_->verify_loaded_weights();
-  }
-  virtual void merge_loaded_weights() {
-    decoder_layer_->merge_loaded_weights();
-#if defined(USE_NPU)
-    block_copy_->merge_loaded_weights();
-#endif
+  //   virtual void verify_loaded_weights(const std::string& prefix) const {
+  //     decoder_layer_->verify_loaded_weights();
+  //   }
+  //   virtual void merge_loaded_weights() {
+  //     decoder_layer_->merge_loaded_weights();
+  // #if defined(USE_NPU)
+  //     block_copy_->merge_loaded_weights();
+  // #endif
+  //   }
+  virtual torch::Tensor forward(torch::Tensor& x,
+                                torch::Tensor& positions,
+                                const layer::AttentionMetadata& attn_metadata,
+                                KVCache& kv_cache,
+                                const ModelInputParams& input_params) {
+    return decoder_layer_->forward(
+        x, positions, attn_metadata, kv_cache, input_params);
   }
 #elif defined(USE_MLU)
   virtual torch::Tensor forward(torch::Tensor& x,
@@ -143,6 +219,7 @@ class LlmDecoderLayerImplBase : public torch::nn::Module {
   // load the weight from the checkpoint
   virtual void load_state_dict(const StateDict& state_dict) {
     // call each submodule's load_state_dict function
+    std::cerr << "dyx-debug Loading Decoder Layer Weights" << std::endl;
     decoder_layer_->load_state_dict(state_dict);
   }
 
@@ -204,7 +281,13 @@ class LlmModelImplBase : public torch::nn::Module {
         h = inputs_embeds;
       } else {
 #if defined(USE_NPU)
+        std::cerr << "dyx-debug before embed_tokens_ tokens[" << i
+                  << "] shape: " << tokens[i].sizes() << std::endl;
         h = embed_tokens_[i](tokens[i], 0);
+        print_first_5(tokens[i], "input_ids after embedding");
+        print_first_5(h, "hidden_states after embedding");
+        std::cerr << "dyx-debug after embed_tokens_h.size(): " << h.sizes()
+                  << std::endl;
 #elif defined(USE_MLU)
         h = embed_tokens_[i](tokens[i]);
 #endif
@@ -279,35 +362,58 @@ class LlmModelImplBase : public torch::nn::Module {
 #endif
     }
 #if defined(USE_NPU)
+    // for (size_t i = 0; i < layers_.size(); i++) {
+    //   std::vector<aclrtEvent*> events(micro_batch_num, nullptr);
+    //   std::vector<std::atomic<bool>*> event_flags(micro_batch_num, nullptr);
+    //   for (auto j = 0; j < micro_batch_num; ++j) {
+    //     if (input_params[j].layer_synchronizer != nullptr) {
+    //       events[j] = input_params[j].layer_synchronizer->get_event(i);
+    //       event_flags[j] =
+    //           input_params[j].layer_synchronizer->get_event_flag(i);
+    //     }
+    //   }
+    //   auto& layer = layers_[i];
+
+    //   if (layer_forward_interrupted_) {
+    //     VLOG(1) << "Forward interrupted at layer: " << i;
+    //     return torch::Tensor();
+    //   }
+
+    //   layer(hs,
+    //         cos_poss,
+    //         sin_poss,
+    //         attn_masks,
+    //         kv_caches[i],
+    //         input_params_news,
+    //         i,
+    //         events,
+    //         event_flags);
+    // }
+    // auto cancated_h = torch::cat(hs, 0);
+    // return norm_(cancated_h, 0);
+    bool is_prefill = input_params[0].q_max_seq_len > 1;
+    auto attn_metadata = layer::AttentionMetadata::build(
+        input_params[0], is_prefill, attn_masks[0]);
+
+    torch::Tensor h = torch::cat(hs, 0);
+    torch::Tensor pos = torch::cat(positions, 0);
     for (size_t i = 0; i < layers_.size(); i++) {
-      std::vector<aclrtEvent*> events(micro_batch_num, nullptr);
-      std::vector<std::atomic<bool>*> event_flags(micro_batch_num, nullptr);
-      for (auto j = 0; j < micro_batch_num; ++j) {
-        if (input_params[j].layer_synchronizer != nullptr) {
-          events[j] = input_params[j].layer_synchronizer->get_event(i);
-          event_flags[j] =
-              input_params[j].layer_synchronizer->get_event_flag(i);
-        }
-      }
+      std::cerr << "dyx-debug LlmModelImplBase before layer " << i
+                << " forward h.sizes(): " << h.sizes() << std::endl;
       auto& layer = layers_[i];
-
-      if (layer_forward_interrupted_) {
-        VLOG(1) << "Forward interrupted at layer: " << i;
-        return torch::Tensor();
-      }
-
-      layer(hs,
-            cos_poss,
-            sin_poss,
-            attn_masks,
-            kv_caches[i],
-            input_params_news,
-            i,
-            events,
-            event_flags);
+      h = layer->forward(h, pos, attn_metadata, kv_caches[i], input_params[0]);
+      print_first_5(h, "hidden_states after layer + x" + std::to_string(i));
+      std::cerr << "dyx-debug LlmModelImplBase after layer " << i
+                << " forward h.sizes(): " << h.sizes() << std::endl;
+      // layer(h, pos, attn_metadata, kv_caches[i], input_params[0]);
     }
-    auto cancated_h = torch::cat(hs, 0);
-    return norm_(cancated_h, 0);
+    std::cerr << "dyx-debug LlmModelImplBase before norm_v1_ h.sizes(): "
+              << h.sizes() << std::endl;
+    h = norm_v1_(h);
+    std::cerr << "dyx-debug LlmModelImplBase after norm_v1_ h.sizes(): "
+              << h.sizes() << std::endl;
+    print_first_5(h, "hidden_states after norm_v1_");
+    return h;
 #elif defined(USE_MLU)
     bool is_prefill = input_params[0].q_max_seq_len > 1;
     auto attn_metadata =
@@ -325,38 +431,64 @@ class LlmModelImplBase : public torch::nn::Module {
 
   // load the weight from the checkpoint
   virtual void load_state_dict(const StateDict& state_dict) {
+    std::cerr << "dyx-debug Loading LLM Model Weights" << std::endl;
     for (auto i = 0; i < FLAGS_default_micro_batch_num; i++) {
+      std::cerr << "dyx-debug Loading embed_tokens_[" << i << "] Weights"
+                << std::endl;
       embed_tokens_[i]->load_state_dict(
           state_dict.get_dict_with_prefix("embed_tokens."));
     }
     // call each layer's load_state_dict function
     for (int i = 0; i < layers_.size(); i++) {
+      std::cerr << "dyx-debug Loading layers_[" << i << "] Weights"
+                << std::endl;
       layers_[i]->load_state_dict(
           state_dict.get_dict_with_prefix("layers." + std::to_string(i) + "."));
     }
-    norm_->load_state_dict(state_dict.get_dict_with_prefix("norm."));
+
+    std::cerr << "dyx-debug Loading LlmModelImplBase::load_state_dict"
+              << std::endl;
+    std::cerr << "dyx-debug StateDict Info:" << std::endl;
+    std::cerr << "  - prefix: '" << state_dict.prefix() << "'" << std::endl;
+    std::cerr << "  - size: " << state_dict.size() << " tensors" << std::endl;
+
+    std::cerr << "  - keys: ";
+    for (const auto& [key, tensor] : state_dict) {
+      std::cerr << "  Key: '" << key << "'"
+                << " | Shape: " << tensor.sizes()
+                << " | Dtype: " << tensor.dtype()
+                << " | Device: " << tensor.device() << std::endl;
+    }
+
+    std::cerr << "dyx-debug Loading Norm Weights" << std::endl;
+    // todo
+    //  norm_->load_state_dict(state_dict.get_dict_with_prefix("norm."));
+    norm_v1_->load_state_dict(state_dict.get_dict_with_prefix("norm."));
   }
 
 #if defined(USE_NPU)
   virtual void verify_loaded_weights(const std::string& prefix) const {
+    std::cerr << "dyx-debug Verifying Word Embedding Weights" << std::endl;
     for (auto i = 0; i < FLAGS_default_micro_batch_num; i++) {
       embed_tokens_[i]->verify_loaded_weights(prefix + "embed_tokens.");
     }
-    for (int i = 0; i < layers_.size(); i++) {
-      layers_[i]->verify_loaded_weights(prefix + "layers." + std::to_string(i) +
-                                        ".");
-    }
-    norm_->verify_loaded_weights(prefix + "norm.");
+    // for (int i = 0; i < layers_.size(); i++) {
+    //   layers_[i]->verify_loaded_weights(prefix + "layers." +
+    //   std::to_string(i) +
+    //                                     ".");
+    // }
+    // norm_->verify_loaded_weights(prefix + "norm.");
   }
 
   virtual void merge_loaded_weights() {
+    std::cerr << "dyx-debug Merging Word Embedding Weights" << std::endl;
     for (auto i = 0; i < FLAGS_default_micro_batch_num; i++) {
       embed_tokens_[i]->merge_loaded_weights();
     }
-    for (int i = 0; i < layers_.size(); i++) {
-      layers_[i]->merge_loaded_weights();
-    }
-    norm_->merge_loaded_weights();
+    // for (int i = 0; i < layers_.size(); i++) {
+    //   layers_[i]->merge_loaded_weights();
+    // }
+    // norm_->merge_loaded_weights();
   }
 #endif
 
@@ -387,6 +519,7 @@ class LlmModelImplBase : public torch::nn::Module {
   //  ParallelEmbedding embed_tokens_{nullptr};
   std::vector<layer::WordEmbedding> embed_tokens_;
   layer::RmsNorm norm_{nullptr};
+  xllm::layer::RmsNormV1 norm_v1_{nullptr};
 
   torch::nn::ModuleList blocks_{nullptr};
   // hold same data but different type as blocks_ to avoid type cast
@@ -407,7 +540,16 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
     model_ = register_module("model", LlmModelType(context));
 
 #if defined(USE_NPU)
-    lm_head_ = register_module("lm_head", layer::LmHead(context));
+    // lm_head_ = register_module("lm_head", layer::LmHead(context));
+    lm_head_v1_ =
+        register_module("lm_head",
+                        layer::LmHeadV1(context.get_model_args().hidden_size(),
+                                        context.get_model_args().vocab_size(),
+                                        /*bias=*/false,
+                                        /*gather_output=*/true,
+                                        context.get_parallel_args(),
+                                        context.get_tensor_options()));
+
 #elif defined(USE_MLU)
     lm_head_ =
         register_module("lm_head",
@@ -432,7 +574,15 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
       const std::vector<torch::Tensor>& positions,
       std::vector<KVCache>& kv_caches,
       const std::vector<ModelInputParams>& input_params) {
-    return model_(tokens, positions, kv_caches, input_params);
+    std::cerr << "tokens size: " << tokens[0].sizes() << std::endl;
+    std::cerr << "tokens: " << tokens[0] << std::endl;
+    std::cerr << "dyx-debug LlmForCausalLMImplBase::forward called"
+              << std::endl;
+    auto output = model_(tokens, positions, kv_caches, input_params);
+    print_first_5(output, "LlmForCausalLMImplBase forward output");
+    std::cerr << "dyx-debug LlmForCausalLMImplBase::forward output.sizes(): "
+              << output.sizes() << std::endl;
+    return output;
   }
 
   // hidden_states: [num_tokens, hidden_size]
@@ -444,7 +594,21 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
     auto h = hidden_states;
     // test
 #if defined(USE_NPU)
-    return lm_head_(hidden_states, seleted_idxes, 0);
+    std::cerr << "dyx-debug LlmForCausalLMImplBase::logits before lm_head_ "
+                 "h.sizes(): "
+              << h.sizes() << std::endl;
+    if (seleted_idxes.defined()) {
+      std::cerr << "seleted_idxes.defined()" << seleted_idxes.defined()
+                << std::endl;
+      h = h.index_select(/*dim=*/0, seleted_idxes);
+    }
+    print_first_5(h, "hidden_states before lm_head_");
+    auto output = lm_head_v1_(h);
+    std::cerr << "dyx-debug LlmForCausalLMImplBase::logits after lm_head_ "
+                 "output.sizes(): "
+              << output.sizes() << std::endl;
+    print_first_5(output, "logits after lm_head_");
+    return output;
 #elif defined(USE_MLU)
     if (seleted_idxes.defined()) {
       h = h.index_select(/*dim=*/0, seleted_idxes);
@@ -456,24 +620,28 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
   void load_model(std::unique_ptr<ModelLoader> loader,
                   std::string prefix = "" /*llm model weight prefix*/) {
     for (const auto& state_dict : loader->get_state_dicts()) {
+      std::cerr << "dyx-debug Loading LlmForCausalLM Model Weights"
+                << std::endl;
       model_->load_state_dict(
           state_dict->get_dict_with_prefix(prefix + "model."));
       if (tie_word_embeddings) {
-        lm_head_->load_state_dict(
+        std::cerr << "dyx-debug Loading Tied Lm Head Weights" << std::endl;
+        lm_head_v1_->load_state_dict(
             state_dict->get_dict_with_prefix(prefix + "model.embed_tokens."));
       } else {
-        lm_head_->load_state_dict(
+        std::cerr << "dyx-debug Loading Lm Head Weights" << std::endl;
+        lm_head_v1_->load_state_dict(
             state_dict->get_dict_with_prefix(prefix + "lm_head."));
       }
     }
 #if defined(USE_NPU)
     // verify
     model_->verify_loaded_weights(prefix + "model.");
-    lm_head_->verify_loaded_weights(prefix + "lm_head.");
+    // lm_head_->verify_loaded_weights(prefix + "lm_head.");
 
     model_->merge_loaded_weights();
-    // test
-    lm_head_->merge_loaded_weights();
+    // // test
+    // lm_head_->merge_loaded_weights();
 #endif
   }
 
@@ -503,6 +671,7 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
   bool tie_word_embeddings{false};
   // test
   layer::LmHead lm_head_{nullptr};
+  layer::LmHeadV1 lm_head_v1_{nullptr};
 };
 
 }  // namespace xllm

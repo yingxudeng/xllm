@@ -73,6 +73,26 @@ NpuRmsNormImpl::NpuRmsNormImpl(const ModelContext& context)
   }
 }
 
+// NpuRmsNormImpl::NpuRmsNormImpl(const float& rms_norm_eps)
+//     : NpuBaseLayer(context) {
+//   param_from_args(norm_param_, context.get_model_args());
+
+//   at_weight_tensors_.resize(1);
+//   atb_weight_tensors_.resize(1);
+
+//   auto options = context.get_tensor_options();
+//   dtype_ = c10::typeMetaToScalarType(options.dtype());
+//   at_weight_tensors_[0] = torch::zeros({1}).to(options);
+
+//   atb::Status status = init_node(norm_node_, norm_param_);
+//   if (status != atb::NO_ERROR) {
+//     LOG(ERROR) << "Failed to initialize node, status: " << status;
+//     throw std::runtime_error(
+//         "NpuRmsNormImpl initialization failed with status: " +
+//         std::to_string(status));
+//   }
+// }
+
 void NpuRmsNormImpl::verify_loaded_weights(const std::string weight_str) const {
   CHECK(at_weight_tensors_[0].sizes() != std::vector<int64_t>({1}))
       << "final norm weight is not loaded for " << weight_str;
@@ -84,8 +104,24 @@ void NpuRmsNormImpl::merge_loaded_weights() {
 }
 
 void NpuRmsNormImpl::load_state_dict(const StateDict& state_dict) {
+  std::cerr << "dyx-debug Loading RmsNorm Weights" << std::endl;
+  std::cerr << "dyx-debug StateDict Info:" << std::endl;
+  std::cerr << "  - prefix: '" << state_dict.prefix() << "'" << std::endl;
+  std::cerr << "  - size: " << state_dict.size() << " tensors" << std::endl;
+
+  std::cerr << "  - keys: ";
+  for (const auto& [key, tensor] : state_dict) {
+    std::cerr << "  Key: '" << key << "'"
+              << " | Shape: " << tensor.sizes()
+              << " | Dtype: " << tensor.dtype()
+              << " | Device: " << tensor.device() << std::endl;
+  }
+  std::cerr << std::endl;
+
   set_weight(state_dict, "weight", 0);
   at_weight_tensors_[0] = at_weight_tensors_[0].to(dtype_);
+  std::cerr << "dyx-debug Loaded RmsNorm weight shape: "
+            << at_weight_tensors_[0].sizes() << std::endl;
 }
 
 torch::Tensor NpuRmsNormImpl::forward(torch::Tensor& x, int nodeId) {
