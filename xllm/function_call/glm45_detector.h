@@ -68,7 +68,7 @@ class Glm45Detector : public BaseFormatDetector {
   std::regex func_detail_regex_;
   std::regex func_arg_regex_;
 
-  std::string_view trim_whitespace(std::string_view str) const;
+  std::string trim_whitespace(std::string_view str) const;
 };
 
 }  // namespace function_call

@@ -37,17 +37,17 @@ Glm45Detector::Glm45Detector() : BaseFormatDetector() {
       std::regex_constants::ECMAScript);
 }
 
-std::string_view Glm45Detector::trim_whitespace(std::string_view str) const {
+std::string Glm45Detector::trim_whitespace(std::string_view str) const {
   const char* whitespace = " \t\n\r";
 
   size_t start = str.find_first_not_of(whitespace);
   if (start == std::string_view::npos) {
-    return std::string_view{};
+    return std::string{};
   }
 
   size_t end = str.find_last_not_of(whitespace);
 
-  return str.substr(start, end - start + 1);
+  return std::string(str.substr(start, end - start + 1));
 }
 
 bool Glm45Detector::has_tool_call(const std::string& text) {
@@ -63,8 +63,7 @@ StreamingParseResult Glm45Detector::detect_and_parse(
 
   // Trim normal text
   if (!normal_text.empty()) {
-    std::string_view trimmed = trim_whitespace(normal_text);
-    normal_text = std::string(trimmed);
+    normal_text = trim_whitespace(normal_text);
   }
 
   if (idx == std::string::npos) {
@@ -99,11 +98,9 @@ StreamingParseResult Glm45Detector::detect_and_parse(
             std::string arg_key = arg_match[1].str();
             std::string arg_value = arg_match[2].str();
 
-            std::string_view trimmed_key = trim_whitespace(arg_key);
-            arg_key = std::string(trimmed_key);
+            arg_key = trim_whitespace(arg_key);
 
-            std::string_view trimmed_value = trim_whitespace(arg_value);
-            arg_value = std::string(trimmed_value);
+            arg_value = trim_whitespace(arg_value);
 
             try {
               nlohmann::json parsed_value = nlohmann::json::parse(arg_value);
@@ -159,11 +156,10 @@ StreamingParseResult Glm45Detector::parse_streaming_increment(
     }
 
     // Ensure we have enough entries in tracking arrays
-    while (static_cast<int>(prev_tool_call_arr_.size()) <= current_tool_id_) {
+    while (prev_tool_call_arr_.size() <= current_tool_id_) {
       prev_tool_call_arr_.push_back({});
     }
-    while (static_cast<int>(streamed_args_for_tool_.size()) <=
-           current_tool_id_) {
+    while (streamed_args_for_tool_.size() <= current_tool_id_) {
       streamed_args_for_tool_.push_back("");
     }
 

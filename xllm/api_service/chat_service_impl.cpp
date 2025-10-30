@@ -128,14 +128,15 @@ struct StreamingState {
   std::vector<function_call::JsonTool> tools;
   std::string parser_format;
 
-  std::unordered_map<size_t, std::unique_ptr<function_call::FunctionCallParser>>
-      parsers;
-  std::unordered_map<size_t, bool> has_tool_calls;
+  std::vector<std::unique_ptr<function_call::FunctionCallParser>> parsers;
+  std::vector<bool> has_tool_calls;
 
   StreamingState(const std::vector<function_call::JsonTool>& tools,
                  const std::string& parser_format)
       : tools(tools), parser_format(parser_format) {
     if (!tools.empty() && !parser_format.empty()) {
+      parsers.resize(1);
+      has_tool_calls.resize(1, false);
       parsers[0] = std::make_unique<function_call::FunctionCallParser>(
           tools, parser_format);
     }
@@ -146,13 +147,17 @@ struct StreamingState {
       return nullptr;
     }
 
-    auto it = parsers.find(index);
-    if (it == parsers.end()) {
+    if (index >= parsers.size()) {
+      parsers.resize(index + 1);
+      has_tool_calls.resize(index + 1, false);
+    }
+
+    if (!parsers[index]) {
       parsers[index] = std::make_unique<function_call::FunctionCallParser>(
           tools, parser_format);
-      return parsers[index].get();
     }
-    return it->second.get();
+
+    return parsers[index].get();
   }
 };
 
@@ -244,6 +249,9 @@ bool process_tool_call_stream(std::shared_ptr<ChatCall> call,
   }
 
   for (const auto& call_item : parse_result.calls) {
+    if (index >= streaming_state->has_tool_calls.size()) {
+      streaming_state->has_tool_calls.resize(index + 1, false);
+    }
     streaming_state->has_tool_calls[index] = true;
 
     std::string tool_call_id;
@@ -386,7 +394,8 @@ bool send_delta_to_client_brpc(
     // Handle finish reason
     if (seq_output.finish_reason.has_value()) {
       // Check for unstreamed tool args before sending finish reason
-      if (streaming_state && streaming_state->has_tool_calls[index]) {
+      if (streaming_state && index < streaming_state->has_tool_calls.size() &&
+          streaming_state->has_tool_calls[index]) {
         if (!check_for_unstreamed_tool_args(call,
                                             streaming_state,
                                             index,
@@ -406,7 +415,8 @@ bool send_delta_to_client_brpc(
       choice->set_index(index);
       choice->mutable_delta();
 
-      if (streaming_state && streaming_state->has_tool_calls[index] &&
+      if (streaming_state && index < streaming_state->has_tool_calls.size() &&
+          streaming_state->has_tool_calls[index] &&
           seq_output.finish_reason.value() == "stop") {
         choice->set_finish_reason("tool_calls");
       } else {
