@@ -125,15 +125,34 @@ void set_logprobs(proto::ChatChoice* choice,
 }
 
 struct StreamingState {
-  std::unique_ptr<function_call::FunctionCallParser> parser;
+  std::vector<function_call::JsonTool> tools;
+  std::string parser_format;
+
+  std::unordered_map<size_t, std::unique_ptr<function_call::FunctionCallParser>>
+      parsers;
   std::unordered_map<size_t, bool> has_tool_calls;
 
   StreamingState(const std::vector<function_call::JsonTool>& tools,
-                 const std::string& parser_format) {
+                 const std::string& parser_format)
+      : tools(tools), parser_format(parser_format) {
     if (!tools.empty() && !parser_format.empty()) {
-      parser = std::make_unique<function_call::FunctionCallParser>(
+      parsers[0] = std::make_unique<function_call::FunctionCallParser>(
           tools, parser_format);
     }
+  }
+
+  function_call::FunctionCallParser* get_parser_for_sequence(size_t index) {
+    if (tools.empty() || parser_format.empty()) {
+      return nullptr;
+    }
+
+    auto it = parsers.find(index);
+    if (it == parsers.end()) {
+      parsers[index] = std::make_unique<function_call::FunctionCallParser>(
+          tools, parser_format);
+      return parsers[index].get();
+    }
+    return it->second.get();
   }
 };
 
@@ -206,11 +225,12 @@ bool process_tool_call_stream(std::shared_ptr<ChatCall> call,
                               const std::string& request_id,
                               int64_t created_time,
                               const std::string& model) {
-  if (!streaming_state->parser) {
+  auto* parser = streaming_state->get_parser_for_sequence(index);
+  if (!parser) {
     return true;
   }
 
-  auto parse_result = streaming_state->parser->parse_streaming_increment(delta);
+  auto parse_result = parser->parse_streaming_increment(delta);
 
   if (!parse_result.normal_text.empty()) {
     if (!send_normal_text_chunk(call,
@@ -258,11 +278,12 @@ bool check_for_unstreamed_tool_args(
     const std::string& request_id,
     int64_t created_time,
     const std::string& model) {
-  if (!streaming_state->parser) {
+  auto* parser = streaming_state->get_parser_for_sequence(index);
+  if (!parser) {
     return true;
   }
 
-  auto* detector = streaming_state->parser->get_detector();
+  auto* detector = parser->get_detector();
   if (!detector) {
     return true;
   }
@@ -335,7 +356,7 @@ bool send_delta_to_client_brpc(
     }
 
     if (!seq_output.text.empty()) {
-      if (streaming_state && streaming_state->parser) {
+      if (streaming_state && streaming_state->get_parser_for_sequence(index)) {
         if (!process_tool_call_stream(call,
                                       streaming_state,
                                       index,
