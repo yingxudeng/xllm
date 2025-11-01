@@ -23,6 +23,7 @@ cc_library(
     torch
     $<$<BOOL:${USE_MLU}>:torch_mlu>
     $<$<BOOL:${USE_NPU}>:hccl>
+    $<$<BOOL:${USE_NPU}>:torch_npu>
     glog::glog
 )
 

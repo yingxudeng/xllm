@@ -73,6 +73,26 @@ NpuRmsNormImpl::NpuRmsNormImpl(const ModelContext& context)
   }
 }
 
+// NpuRmsNormImpl::NpuRmsNormImpl(const float& rms_norm_eps)
+//     : NpuBaseLayer(context) {
+//   param_from_args(norm_param_, context.get_model_args());
+
+//   at_weight_tensors_.resize(1);
+//   atb_weight_tensors_.resize(1);
+
+//   auto options = context.get_tensor_options();
+//   dtype_ = c10::typeMetaToScalarType(options.dtype());
+//   at_weight_tensors_[0] = torch::zeros({1}).to(options);
+
+//   atb::Status status = init_node(norm_node_, norm_param_);
+//   if (status != atb::NO_ERROR) {
+//     LOG(ERROR) << "Failed to initialize node, status: " << status;
+//     throw std::runtime_error(
+//         "NpuRmsNormImpl initialization failed with status: " +
+//         std::to_string(status));
+//   }
+// }
+
 void NpuRmsNormImpl::verify_loaded_weights(const std::string weight_str) const {
   CHECK(at_weight_tensors_[0].sizes() != std::vector<int64_t>({1}))
       << "final norm weight is not loaded for " << weight_str;

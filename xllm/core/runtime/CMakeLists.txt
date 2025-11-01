@@ -59,6 +59,7 @@ cc_library(
     :state_dict
     :dit_cache
     $<$<BOOL:${USE_NPU}>:npu_layers>
+    $<$<BOOL:${USE_NPU}>:npu_v1_layers>
     :model
     :models
     :sampler
@@ -100,9 +101,11 @@ cc_library(
     :model
     :models
     $<$<BOOL:${USE_NPU}>:npu_layers>
+    $<$<BOOL:${USE_NPU}>:npu_v1_layers>
     :chat_template
     glog::glog
     $<$<BOOL:${USE_MLU}>:torch_mlu>
+    $<$<BOOL:${USE_NPU}>:torch_npu>
 )
 
 if(USE_NPU)

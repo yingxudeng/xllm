@@ -17,6 +17,8 @@ limitations under the License.
 
 #if defined(USE_NPU)
 #include <atb/atb_infer.h>
+#include <torch_npu/csrc/aten/CustomFunctions.h>
+
 #endif
 #include <gflags/gflags.h>
 #include <torch/torch.h>
@@ -38,6 +40,7 @@ limitations under the License.
 #include "core/layers/rms_norm.h"
 #include "models/model_registry.h"
 #if defined(USE_NPU)
+#include "core/layers/npu_v1/attention.h"
 #include "xllm_kernels/core/include/atb_speed/log.h"
 #elif defined(USE_MLU)
 #include "core/layers/mlu/attention.h"
@@ -88,47 +91,56 @@ class LlmDecoderLayerImplBase : public torch::nn::Module {
   }
 
 #if defined(USE_NPU)
-  virtual torch::Tensor forward(std::vector<torch::Tensor>& x,
-                                std::vector<torch::Tensor>& cos_pos,
-                                std::vector<torch::Tensor>& sin_pos,
-                                std::vector<torch::Tensor>& attn_mask,
-                                KVCache& kv_cache,
-                                std::vector<ModelInputParams>& input_params,
-                                int node_id,
-                                std::vector<aclrtEvent*> event,
-                                std::vector<std::atomic<bool>*> event_flag) {
-#if defined(USE_NPU)
-    auto micro_batch_num = x.size();
-    for (auto i = 0; i < micro_batch_num; ++i) {
-      if (input_params[i].src_block_indices.numel() > 0) {
-        block_copy_(kv_cache.get_k_cache(),
-                    kv_cache.get_v_cache(),
-                    input_params[i].src_block_indices,
-                    input_params[i].dst_block_indices,
-                    input_params[i].cum_sum,
-                    0);
-      }
-    }
-#endif
-    return decoder_layer_(x,
-                          cos_pos,
-                          sin_pos,
-                          attn_mask,
-                          kv_cache,
-                          input_params,
-                          event,
-                          event_flag,
-                          node_id);
-  }
+  //   virtual torch::Tensor forward(std::vector<torch::Tensor>& x,
+  //                                 std::vector<torch::Tensor>& cos_pos,
+  //                                 std::vector<torch::Tensor>& sin_pos,
+  //                                 std::vector<torch::Tensor>& attn_mask,
+  //                                 KVCache& kv_cache,
+  //                                 std::vector<ModelInputParams>&
+  //                                 input_params, int node_id,
+  //                                 std::vector<aclrtEvent*> event,
+  //                                 std::vector<std::atomic<bool>*> event_flag)
+  //                                 {
+  // #if defined(USE_NPU)
+  //     auto micro_batch_num = x.size();
+  //     for (auto i = 0; i < micro_batch_num; ++i) {
+  //       if (input_params[i].src_block_indices.numel() > 0) {
+  //         block_copy_(kv_cache.get_k_cache(),
+  //                     kv_cache.get_v_cache(),
+  //                     input_params[i].src_block_indices,
+  //                     input_params[i].dst_block_indices,
+  //                     input_params[i].cum_sum,
+  //                     0);
+  //       }
+  //     }
+  // #endif
+  //     return decoder_layer_(x,
+  //                           cos_pos,
+  //                           sin_pos,
+  //                           attn_mask,
+  //                           kv_cache,
+  //                           input_params,
+  //                           event,
+  //                           event_flag,
+  //                           node_id);
+  //   }
 
-  virtual void verify_loaded_weights(const std::string& prefix) const {
-    decoder_layer_->verify_loaded_weights();
-  }
-  virtual void merge_loaded_weights() {
-    decoder_layer_->merge_loaded_weights();
-#if defined(USE_NPU)
-    block_copy_->merge_loaded_weights();
-#endif
+  //   virtual void verify_loaded_weights(const std::string& prefix) const {
+  //     decoder_layer_->verify_loaded_weights();
+  //   }
+  //   virtual void merge_loaded_weights() {
+  //     decoder_layer_->merge_loaded_weights();
+  // #if defined(USE_NPU)
+  //     block_copy_->merge_loaded_weights();
+  // #endif
+  //   }
+  virtual torch::Tensor forward(torch::Tensor& x,
+                                torch::Tensor& positions,
+                                const layer::AttentionMetadata& attn_metadata,
+                                KVCache& kv_cache,
+                                const ModelInputParams& input_params) {
+    return decoder_layer_->forward(
+        x, positions, attn_metadata, kv_cache, input_params);
   }
 #elif defined(USE_MLU)
   virtual torch::Tensor forward(torch::Tensor& x,
@@ -279,35 +291,48 @@ class LlmModelImplBase : public torch::nn::Module {
 #endif
     }
 #if defined(USE_NPU)
+    // for (size_t i = 0; i < layers_.size(); i++) {
+    //   std::vector<aclrtEvent*> events(micro_batch_num, nullptr);
+    //   std::vector<std::atomic<bool>*> event_flags(micro_batch_num, nullptr);
+    //   for (auto j = 0; j < micro_batch_num; ++j) {
+    //     if (input_params[j].layer_synchronizer != nullptr) {
+    //       events[j] = input_params[j].layer_synchronizer->get_event(i);
+    //       event_flags[j] =
+    //           input_params[j].layer_synchronizer->get_event_flag(i);
+    //     }
+    //   }
+    //   auto& layer = layers_[i];
+
+    //   if (layer_forward_interrupted_) {
+    //     VLOG(1) << "Forward interrupted at layer: " << i;
+    //     return torch::Tensor();
+    //   }
+
+    //   layer(hs,
+    //         cos_poss,
+    //         sin_poss,
+    //         attn_masks,
+    //         kv_caches[i],
+    //         input_params_news,
+    //         i,
+    //         events,
+    //         event_flags);
+    // }
+    // auto cancated_h = torch::cat(hs, 0);
+    // return norm_(cancated_h, 0);
+    bool is_prefill = input_params[0].q_max_seq_len > 1;
+    auto attn_metadata = layer::AttentionMetadata::build(
+        input_params[0], is_prefill, attn_masks[0]);
+
+    torch::Tensor h = torch::cat(hs, 0);
+    torch::Tensor pos = torch::cat(positions, 0);
     for (size_t i = 0; i < layers_.size(); i++) {
-      std::vector<aclrtEvent*> events(micro_batch_num, nullptr);
-      std::vector<std::atomic<bool>*> event_flags(micro_batch_num, nullptr);
-      for (auto j = 0; j < micro_batch_num; ++j) {
-        if (input_params[j].layer_synchronizer != nullptr) {
-          events[j] = input_params[j].layer_synchronizer->get_event(i);
-          event_flags[j] =
-              input_params[j].layer_synchronizer->get_event_flag(i);
-        }
-      }
       auto& layer = layers_[i];
-
-      if (layer_forward_interrupted_) {
-        VLOG(1) << "Forward interrupted at layer: " << i;
-        return torch::Tensor();
-      }
-
-      layer(hs,
-            cos_poss,
-            sin_poss,
-            attn_masks,
-            kv_caches[i],
-            input_params_news,
-            i,
-            events,
-            event_flags);
+      h = layer->forward(h, pos, attn_metadata, kv_caches[i], input_params[0]);
+      // layer(h, pos, attn_metadata, kv_caches[i], input_params[0]);
     }
-    auto cancated_h = torch::cat(hs, 0);
-    return norm_(cancated_h, 0);
+    h = norm_v1_(h);
+    return h;
 #elif defined(USE_MLU)
     bool is_prefill = input_params[0].q_max_seq_len > 1;
     auto attn_metadata =
@@ -334,7 +359,9 @@ class LlmModelImplBase : public torch::nn::Module {
       layers_[i]->load_state_dict(
           state_dict.get_dict_with_prefix("layers." + std::to_string(i) + "."));
     }
-    norm_->load_state_dict(state_dict.get_dict_with_prefix("norm."));
+    // todo
+    //  norm_->load_state_dict(state_dict.get_dict_with_prefix("norm."));
+    norm_v1_->load_state_dict(state_dict.get_dict_with_prefix("norm."));
   }
 
 #if defined(USE_NPU)
@@ -342,21 +369,22 @@ class LlmModelImplBase : public torch::nn::Module {
     for (auto i = 0; i < FLAGS_default_micro_batch_num; i++) {
       embed_tokens_[i]->verify_loaded_weights(prefix + "embed_tokens.");
     }
-    for (int i = 0; i < layers_.size(); i++) {
-      layers_[i]->verify_loaded_weights(prefix + "layers." + std::to_string(i) +
-                                        ".");
-    }
-    norm_->verify_loaded_weights(prefix + "norm.");
+    // for (int i = 0; i < layers_.size(); i++) {
+    //   layers_[i]->verify_loaded_weights(prefix + "layers." +
+    //   std::to_string(i) +
+    //                                     ".");
+    // }
+    // norm_->verify_loaded_weights(prefix + "norm.");
   }
 
   virtual void merge_loaded_weights() {
     for (auto i = 0; i < FLAGS_default_micro_batch_num; i++) {
       embed_tokens_[i]->merge_loaded_weights();
     }
-    for (int i = 0; i < layers_.size(); i++) {
-      layers_[i]->merge_loaded_weights();
-    }
-    norm_->merge_loaded_weights();
+    // for (int i = 0; i < layers_.size(); i++) {
+    //   layers_[i]->merge_loaded_weights();
+    // }
+    // norm_->merge_loaded_weights();
   }
 #endif
 
@@ -387,6 +415,7 @@ class LlmModelImplBase : public torch::nn::Module {
   //  ParallelEmbedding embed_tokens_{nullptr};
   std::vector<layer::WordEmbedding> embed_tokens_;
   layer::RmsNorm norm_{nullptr};
+  xllm::layer::RmsNormV1 norm_v1_{nullptr};
 
   torch::nn::ModuleList blocks_{nullptr};
   // hold same data but different type as blocks_ to avoid type cast
@@ -407,7 +436,16 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
     model_ = register_module("model", LlmModelType(context));
 
 #if defined(USE_NPU)
-    lm_head_ = register_module("lm_head", layer::LmHead(context));
+    // lm_head_ = register_module("lm_head", layer::LmHead(context));
+    lm_head_v1_ =
+        register_module("lm_head",
+                        layer::LmHeadV1(context.get_model_args().hidden_size(),
+                                        context.get_model_args().vocab_size(),
+                                        /*bias=*/false,
+                                        /*gather_output=*/true,
+                                        context.get_parallel_args(),
+                                        context.get_tensor_options()));
+
 #elif defined(USE_MLU)
     lm_head_ =
         register_module("lm_head",
@@ -432,7 +470,8 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
       const std::vector<torch::Tensor>& positions,
       std::vector<KVCache>& kv_caches,
       const std::vector<ModelInputParams>& input_params) {
-    return model_(tokens, positions, kv_caches, input_params);
+    auto output = model_(tokens, positions, kv_caches, input_params);
+    return output;
   }
 
   // hidden_states: [num_tokens, hidden_size]
@@ -444,7 +483,11 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
     auto h = hidden_states;
     // test
 #if defined(USE_NPU)
-    return lm_head_(hidden_states, seleted_idxes, 0);
+    if (seleted_idxes.defined()) {
+      h = h.index_select(/*dim=*/0, seleted_idxes);
+    }
+    auto output = lm_head_v1_(h);
+    return output;
 #elif defined(USE_MLU)
     if (seleted_idxes.defined()) {
       h = h.index_select(/*dim=*/0, seleted_idxes);
@@ -459,21 +502,21 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
       model_->load_state_dict(
           state_dict->get_dict_with_prefix(prefix + "model."));
       if (tie_word_embeddings) {
-        lm_head_->load_state_dict(
+        lm_head_v1_->load_state_dict(
             state_dict->get_dict_with_prefix(prefix + "model.embed_tokens."));
       } else {
-        lm_head_->load_state_dict(
+        lm_head_v1_->load_state_dict(
             state_dict->get_dict_with_prefix(prefix + "lm_head."));
       }
     }
 #if defined(USE_NPU)
     // verify
     model_->verify_loaded_weights(prefix + "model.");
-    lm_head_->verify_loaded_weights(prefix + "lm_head.");
+    // lm_head_->verify_loaded_weights(prefix + "lm_head.");
 
     model_->merge_loaded_weights();
-    // test
-    lm_head_->merge_loaded_weights();
+    // // test
+    // lm_head_->merge_loaded_weights();
 #endif
   }
 
@@ -503,6 +546,7 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
   bool tie_word_embeddings{false};
   // test
   layer::LmHead lm_head_{nullptr};
+  layer::LmHeadV1 lm_head_v1_{nullptr};
 };
 
 }  // namespace xllm

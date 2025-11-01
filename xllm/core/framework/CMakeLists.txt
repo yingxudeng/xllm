@@ -41,6 +41,7 @@ cc_library(
     :model
     :models
     $<$<BOOL:${USE_NPU}>:npu_layers>
+    $<$<BOOL:${USE_NPU}>:npu_v1_layers>
     :tokenizer
     torch
 )

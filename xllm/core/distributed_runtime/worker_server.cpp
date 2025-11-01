@@ -93,6 +93,8 @@ void WorkerServer::create_server(const runtime::Options& options,
   const ParallelArgs* parallel_args = comm.parallel_args();
 #if defined(USE_MLU)
   comm.create_process_groups_cncl(master_node_addr, device);
+#elif defined(USE_NPU)
+  comm.create_process_groups_hccl(master_node_addr, device);
 #endif
 
   WorkerType worker_type =

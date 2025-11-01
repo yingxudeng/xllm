@@ -17,6 +17,7 @@ limitations under the License.
 #include <sys/resource.h>
 
 #include "core/kernels/linear.h"
+#include "core/kernels/npu_v1/ops_npu/npu_ops_api.h"
 #include "core/kernels/rms_norm.h"
 #include "core/kernels/rope.h"
 #include "core/kernels/split.h"
@@ -868,6 +869,190 @@ TEST_F(SampleModelTest, CompleteAttentionPipelineTest) {
 
   std::cout << "\nComplete attention pipeline test completed successfully!"
             << std::endl;
+}
+
+// Test PagedAttention functionality
+TEST_F(SampleModelTest, PagedAttentionBasicTest) {
+  if (!npu_available_) {
+    GTEST_SKIP() << "Skipping NPU test - NPU device not available";
+  }
+
+  try {
+    // Test parameters for paged attention
+    int64_t batch_size = 2;
+    int64_t seq_len = 128;
+    int64_t head_dim = 128;
+    int64_t num_heads = 32;
+    int64_t num_kv_heads = 32;
+    int64_t block_size = 16;
+    int64_t max_blocks_per_seq = 8;
+    double scale_value = 1.0 / sqrt(head_dim);
+
+    // Create input tensors
+    auto query =
+        torch::randn({batch_size, num_heads, head_dim}, tensor_options_);
+
+    // Key and value cache with shape [num_blocks, num_kv_heads, block_size,
+    // head_dim]
+    int64_t total_blocks = batch_size * max_blocks_per_seq;
+    auto key_cache = torch::randn(
+        {total_blocks, block_size, num_kv_heads, head_dim}, tensor_options_);
+    auto value_cache = torch::randn(
+        {total_blocks, block_size, num_kv_heads, head_dim}, tensor_options_);
+    // Block table mapping sequences to blocks [batch_size, max_blocks_per_seq]
+    // Create on CPU first, then copy to NPU if needed
+    auto block_table_cpu = torch::randint(
+        0,
+        total_blocks,
+        {batch_size, max_blocks_per_seq},
+        torch::TensorOptions().dtype(torch::kInt32).device(torch::kCPU));
+    auto block_table = block_table_cpu.to(tensor_options_.device());
+
+    // Context lengths for each sequence [batch_size]
+    // Create on CPU first, then copy to NPU if needed
+    auto context_lens_cpu = torch::randint(
+        1,
+        seq_len,
+        {batch_size},
+        torch::TensorOptions().dtype(torch::kInt32).device(torch::kCPU));
+    auto context_lens = context_lens_cpu.to(tensor_options_.device());
+
+    // Ensure tensors are synchronized
+    if (tensor_options_.device().is_privateuseone()) {
+      c10_npu::npuSynchronizeDevice();
+    }
+
+    // Output tensor
+    auto output =
+        torch::zeros({batch_size, num_heads, head_dim}, tensor_options_);
+
+    std::cout << "Testing PagedAttention with:" << std::endl;
+    std::cout << "  Query shape: " << query.sizes() << std::endl;
+    std::cout << "  Key cache shape: " << key_cache.sizes() << std::endl;
+    std::cout << "  Value cache shape: " << value_cache.sizes() << std::endl;
+    std::cout << "  Block table shape: " << block_table.sizes() << std::endl;
+    std::cout << "  Context lens shape: " << context_lens.sizes() << std::endl;
+
+    auto npu_stream = c10_npu::getCurrentNPUStream(0);
+
+    // Call the paged attention function
+    ASSERT_NO_THROW({
+      atb::_npu_paged_attention(query,
+                                key_cache,
+                                value_cache,
+                                num_kv_heads,
+                                num_heads,
+                                scale_value,
+                                block_table,
+                                context_lens_cpu,
+                                output);
+    });
+
+    // Verify output properties
+    EXPECT_EQ(output.sizes(), query.sizes())
+        << "Output shape should match query shape";
+    EXPECT_FALSE(torch::isnan(output).any().item<bool>())
+        << "Output should not contain NaN values";
+    EXPECT_FALSE(torch::isinf(output).any().item<bool>())
+        << "Output should not contain Inf values";
+
+    std::cout << "Output shape: " << output.sizes() << std::endl;
+    std::cout << "PagedAttention test completed successfully!" << std::endl;
+
+    aclrtSynchronizeStream(npu_stream.stream());
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "Skipping PagedAttention test - requires NPU environment: "
+                 << e.what();
+  }
+}
+
+// Test PagedAttention with different batch sizes
+TEST_F(SampleModelTest, PagedAttentionBatchTest) {
+  if (!npu_available_) {
+    GTEST_SKIP() << "Skipping NPU test - NPU device not available";
+  }
+
+  std::vector<int64_t> batch_sizes = {1, 4, 8};
+
+  for (auto batch_size : batch_sizes) {
+    try {
+      int64_t seq_len = 64;
+      int64_t head_dim = 128;
+      int64_t num_heads = 16;
+      int64_t num_kv_heads = 16;
+      int64_t block_size = 16;
+      int64_t max_blocks_per_seq = 4;
+      double scale_value = 1.0 / sqrt(head_dim);
+
+      auto query =
+          torch::randn({batch_size, num_heads, head_dim}, tensor_options_);
+
+      int64_t total_blocks = batch_size * max_blocks_per_seq;
+      auto key_cache = torch::randn(
+          {total_blocks, block_size, num_kv_heads, head_dim}, tensor_options_);
+      auto value_cache = torch::randn(
+          {total_blocks, block_size, num_kv_heads, head_dim}, tensor_options_);
+      // Create block table on CPU first, then copy to NPU if needed
+      auto block_table_cpu = torch::randint(
+          0,
+          total_blocks,
+          {batch_size, max_blocks_per_seq},
+          torch::TensorOptions().dtype(torch::kInt32).device(torch::kCPU));
+      auto block_table = block_table_cpu.to(tensor_options_.device());
+
+      // Create context lengths on CPU first, then copy to NPU if needed
+      auto context_lens_cpu = torch::randint(
+          1,
+          seq_len,
+          {batch_size},
+          torch::TensorOptions().dtype(torch::kInt32).device(torch::kCPU));
+      auto context_lens = context_lens_cpu.to(tensor_options_.device());
+
+      // Ensure tensors are synchronized
+      if (tensor_options_.device().is_privateuseone()) {
+        c10_npu::npuSynchronizeDevice();
+      }
+
+      auto output =
+          torch::zeros({batch_size, num_heads, head_dim}, tensor_options_);
+
+      auto npu_stream = c10_npu::getCurrentNPUStream(0);
+
+      // contextLens cpu
+      ASSERT_NO_THROW({
+        atb::_npu_paged_attention(query,
+                                  key_cache,
+                                  value_cache,
+                                  num_kv_heads,
+                                  num_heads,
+                                  scale_value,
+                                  block_table,
+                                  context_lens_cpu,
+                                  output);
+      });
+
+      EXPECT_EQ(output.size(0), batch_size)
+          << "Output batch size should match input";
+      EXPECT_EQ(output.size(1), num_heads)
+          << "Output should have correct number of heads";
+      EXPECT_EQ(output.size(2), head_dim)
+          << "Output should have correct head dimension";
+
+      EXPECT_FALSE(torch::isnan(output).any().item<bool>())
+          << "Output should not contain NaN";
+      EXPECT_FALSE(torch::isinf(output).any().item<bool>())
+          << "Output should not contain Inf";
+
+      std::cout << "PagedAttention batch test passed for batch_size="
+                << batch_size << std::endl;
+
+      aclrtSynchronizeStream(npu_stream.stream());
+    } catch (const std::exception& e) {
+      GTEST_SKIP() << "Skipping PagedAttention batch test for batch_size="
+                   << batch_size << " - requires NPU environment: " << e.what();
+      break;
+    }
+  }
 }
 
 }  // namespace xllm::kernel

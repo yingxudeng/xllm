@@ -39,7 +39,11 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
     blocks_ = register_module("layers", torch::nn::ModuleList());
     layers_.reserve(model_args.n_layers());
 #if defined(USE_NPU)
-    norm_ = register_module("norm", layer::RmsNorm(context));
+    // norm_ = register_module("norm", layer::RmsNorm(context));
+    norm_v1_ = register_module(
+        "norm",
+        xllm::layer::RmsNormV1(
+            model_args.hidden_size(), model_args.rms_norm_eps(), options));
     for (auto i = 0; i < FLAGS_default_micro_batch_num; i++) {
       embed_tokens_.push_back(layer::WordEmbedding(context));
       atb_pos_embeds_.push_back(layer::PosEmbedding(context));
