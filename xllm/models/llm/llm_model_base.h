@@ -17,6 +17,8 @@ limitations under the License.
 
 #if defined(USE_NPU)
 #include <atb/atb_infer.h>
+#include <torch_npu/csrc/aten/CustomFunctions.h>
+
 #endif
 #include <gflags/gflags.h>
 #include <torch/torch.h>
@@ -32,14 +34,14 @@ limitations under the License.
 #include "core/framework/model_context.h"
 #include "core/layers/attention_mask.h"
 #include "core/layers/block_copy.h"
+#include "core/layers/common/attention.h"
 #include "core/layers/lm_head.h"
 #include "core/layers/pos_embedding.h"
 #include "core/layers/rms_norm.h"
 #include "models/model_registry.h"
+
 #if defined(USE_NPU)
 #include "xllm_kernels/core/include/atb_speed/log.h"
-#else
-#include "core/layers/common/attention.h"
 #endif
 
 namespace xllm {
@@ -81,12 +83,12 @@ class LlmDecoderLayerImplBase : public torch::nn::Module {
   LlmDecoderLayerImplBase(const ModelContext& context) {
     // register submodules
     decoder_layer_ = register_module("decoder_layer", DecoderType(context));
-#if defined(USE_NPU)
+#if defined(USE_NPU) && !defined(USE_NPU_TORCH)
     block_copy_ = register_module("block_copy", layer::BlockCopy(context));
 #endif
   }
 
-#if defined(USE_NPU)
+#if defined(USE_NPU) && !defined(USE_NPU_TORCH)
   virtual torch::Tensor forward(std::vector<torch::Tensor>& x,
                                 std::vector<torch::Tensor>& cos_pos,
                                 std::vector<torch::Tensor>& sin_pos,
@@ -144,7 +146,7 @@ class LlmDecoderLayerImplBase : public torch::nn::Module {
 
  private:
   DecoderType decoder_layer_{nullptr};
-#if defined(USE_NPU)
+#if defined(USE_NPU) && !defined(USE_NPU_TORCH)
   layer::BlockCopy block_copy_{nullptr};
 #endif
 };
@@ -163,7 +165,11 @@ class LlmModelImplBase : public torch::nn::Module {
 
   torch::Tensor get_input_embeddings(torch::Tensor input_ids) {
 #if defined(USE_NPU)
+#if defined(USE_NPU_TORCH)
+    return embed_tokens_native_[0](input_ids);
+#else
     return embed_tokens_[0](input_ids, 0);
+#endif
 #else
     return embed_tokens_[0](input_ids);
 #endif
@@ -201,7 +207,11 @@ class LlmModelImplBase : public torch::nn::Module {
         h = inputs_embeds;
       } else {
 #if defined(USE_NPU)
+#if defined(USE_NPU_TORCH)
+        h = embed_tokens_native_[i](tokens[i]);
+#else
         h = embed_tokens_[i](tokens[i], 0);
+#endif
 #else
         h = embed_tokens_[i](tokens[i]);
 #endif
@@ -275,7 +285,7 @@ class LlmModelImplBase : public torch::nn::Module {
       attn_masks.push_back(std::move(attn_mask));
 #endif
     }
-#if defined(USE_NPU)
+#if defined(USE_NPU) && !defined(USE_NPU_TORCH)
     for (size_t i = 0; i < layers_.size(); i++) {
       std::vector<aclrtEvent*> events(micro_batch_num, nullptr);
       std::vector<std::atomic<bool>*> event_flags(micro_batch_num, nullptr);
@@ -307,8 +317,13 @@ class LlmModelImplBase : public torch::nn::Module {
     return norm_(cancated_h, 0);
 #else
     bool is_prefill = input_params[0].q_max_seq_len > 1;
+#if defined(USE_NPU_TORCH)
+    auto attn_metadata = layer::AttentionMetadata::build(
+        input_params[0], is_prefill, attn_masks[0]);
+#else
     auto attn_metadata =
         layer::AttentionMetadata::build(input_params[0], is_prefill);
+#endif
 
     torch::Tensor h;
     for (size_t i = 0; i < layers_.size(); i++) {
@@ -323,8 +338,13 @@ class LlmModelImplBase : public torch::nn::Module {
   // load the weight from the checkpoint
   virtual void load_state_dict(const StateDict& state_dict) {
     for (auto i = 0; i < FLAGS_micro_batch_num; i++) {
+#if defined(USE_NPU_TORCH)
+      embed_tokens_native_[i]->load_state_dict(
+          state_dict.get_dict_with_prefix("embed_tokens."));
+#else
       embed_tokens_[i]->load_state_dict(
           state_dict.get_dict_with_prefix("embed_tokens."));
+#endif
     }
     // call each layer's load_state_dict function
     for (int i = 0; i < layers_.size(); i++) {
@@ -336,6 +356,7 @@ class LlmModelImplBase : public torch::nn::Module {
 
 #if defined(USE_NPU)
   virtual void verify_loaded_weights(const std::string& prefix) const {
+#if !defined(USE_NPU_TORCH)
     for (auto i = 0; i < FLAGS_micro_batch_num; i++) {
       embed_tokens_[i]->verify_loaded_weights(prefix + "embed_tokens.");
     }
@@ -344,9 +365,11 @@ class LlmModelImplBase : public torch::nn::Module {
                                         ".");
     }
     norm_->verify_loaded_weights(prefix + "norm.");
+#endif
   }
 
   virtual void merge_loaded_weights() {
+#if !defined(USE_NPU_TORCH)
     for (auto i = 0; i < FLAGS_micro_batch_num; i++) {
       embed_tokens_[i]->merge_loaded_weights();
     }
@@ -354,6 +377,7 @@ class LlmModelImplBase : public torch::nn::Module {
       layers_[i]->merge_loaded_weights();
     }
     norm_->merge_loaded_weights();
+#endif
   }
 #endif
 
@@ -383,7 +407,13 @@ class LlmModelImplBase : public torch::nn::Module {
   // test
   //  ParallelEmbedding embed_tokens_{nullptr};
   std::vector<layer::WordEmbedding> embed_tokens_;
-  layer::RmsNorm norm_{nullptr};
+
+#if !defined(USE_NPU_TORCH) && defined(USE_NPU)
+  layer::NpuRmsNorm norm_{nullptr};
+#else
+  xllm::layer::RmsNorm norm_{nullptr};
+  std::vector<layer::WordEmbeddingNative> embed_tokens_native_;
+#endif
 
   torch::nn::ModuleList blocks_{nullptr};
   // hold same data but different type as blocks_ to avoid type cast
@@ -404,7 +434,20 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
     model_ = register_module("model", LlmModelType(context));
 
 #if defined(USE_NPU)
+#if defined(USE_NPU_TORCH)
+    lm_head_native_ = register_module(
+        "lm_head",
+        layer::LmHeadNative(context.get_model_args().hidden_size(),
+                            context.get_model_args().vocab_size(),
+                            /*bias=*/false,
+                            /*gather_output=*/true,
+                            QuantArgs{},
+                            context.get_parallel_args(),
+                            context.get_tensor_options()));
+#else
     lm_head_ = register_module("lm_head", layer::LmHead(context));
+#endif
+
 #else
     // lm_head_ is default to no quantization
     lm_head_ =
@@ -443,7 +486,15 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
     auto h = hidden_states;
     // test
 #if defined(USE_NPU)
+#if defined(USE_NPU_TORCH)
+    if (seleted_idxes.defined()) {
+      h = h.index_select(/*dim=*/0, seleted_idxes);
+    }
+    return lm_head_native_(h);
+#else
     return lm_head_(hidden_states, seleted_idxes, 0);
+#endif
+
 #else
     if (seleted_idxes.defined()) {
       h = h.index_select(/*dim=*/0, seleted_idxes);
@@ -456,21 +507,33 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
                   std::string prefix = "model." /*llm model weight prefix*/) {
     for (const auto& state_dict : loader->get_state_dicts()) {
       model_->load_state_dict(state_dict->get_dict_with_prefix(prefix));
+#if defined(USE_NPU_TORCH)
+      if (tie_word_embeddings) {
+        lm_head_native_->load_state_dict(
+            state_dict->get_dict_with_prefix(prefix + "embed_tokens."));
+      } else {
+        lm_head_native_->load_state_dict(
+            state_dict->get_dict_with_prefix("lm_head."));
+      }
+#else
       if (tie_word_embeddings) {
         lm_head_->load_state_dict(
             state_dict->get_dict_with_prefix(prefix + "embed_tokens."));
       } else {
         lm_head_->load_state_dict(state_dict->get_dict_with_prefix("lm_head."));
       }
+#endif
     }
 #if defined(USE_NPU)
     // verify
     model_->verify_loaded_weights(prefix);
+    model_->merge_loaded_weights();
+#if !defined(USE_NPU_TORCH)
     lm_head_->verify_loaded_weights("lm_head.");
 
-    model_->merge_loaded_weights();
     // test
     lm_head_->merge_loaded_weights();
+#endif
 #endif
   }
 
@@ -500,6 +563,9 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
   bool tie_word_embeddings{false};
   // test
   layer::LmHead lm_head_{nullptr};
+#if defined(USE_NPU_TORCH)
+  layer::LmHeadNative lm_head_native_{nullptr};
+#endif
 };
 
 }  // namespace xllm

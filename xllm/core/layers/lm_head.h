@@ -17,9 +17,8 @@ limitations under the License.
 
 #if defined(USE_NPU)
 #include "npu/npu_lm_head_impl.h"
-#else
-#include "common/linear_impl.h"
 #endif
+#include "common/linear_impl.h"
 
 namespace xllm {
 namespace layer {
@@ -33,6 +32,33 @@ class LmHead : public torch::nn::ModuleHolder<NpuLmHeadImpl> {
   LmHead(const ModelContext& context)
       : ModuleHolder(std::make_shared<NpuLmHeadImpl>(context)) {}
 };
+
+/**
+ * TODO: Rename the original LmHead definition to NpuLmHead,
+ * and define the current one as LmHead to unify NPU's LmHead
+ * related code with MLU and GPU
+ */
+class LmHeadNative : public torch::nn::ModuleHolder<ColumnParallelLinearImpl> {
+ public:
+  using torch::nn::ModuleHolder<ColumnParallelLinearImpl>::ModuleHolder;
+  using Impl __attribute__((__unused__)) = ColumnParallelLinearImpl;
+
+  LmHeadNative(int64_t in_features,
+               int64_t out_features,
+               bool bias,
+               bool gather_output,
+               const QuantArgs& quant_args,
+               const ParallelArgs& parallel_args,
+               const torch::TensorOptions& options)
+      : ModuleHolder(std::make_shared<ColumnParallelLinearImpl>(in_features,
+                                                                out_features,
+                                                                bias,
+                                                                gather_output,
+                                                                quant_args,
+                                                                parallel_args,
+                                                                options)) {}
+};
+
 #else
 class LmHead : public torch::nn::ModuleHolder<ColumnParallelLinearImpl> {
  public:

@@ -206,3 +206,9 @@ DECLARE_bool(enable_shm);
 DECLARE_bool(enable_prefetch_weight);
 
 DECLARE_int32(flashinfer_workspace_buffer_size);
+
+DECLARE_bool(enable_prefetch_weight);
+
+DECLARE_int32(flashinfer_workspace_buffer_size);
+
+DECLARE_bool(enable_native_npu);

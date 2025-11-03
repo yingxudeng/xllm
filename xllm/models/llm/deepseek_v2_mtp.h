@@ -81,11 +81,11 @@ class DeepseekV2MtpModelImpl : public torch::nn::Module {
                                                   sm_scale,
                                                   options));
       atb_pos_embs_.push_back(layer::PosEmbedding(context));
-      eh_projs_.push_back(layer::ColumnParallelLinear(context));
+      eh_projs_.push_back(layer::NpuColumnParallelLinear(context));
     }
-    enorm_ = register_module("enorm", layer::RmsNorm(context));
-    hnorm_ = register_module("hnorm", layer::RmsNorm(context));
-    final_norm_ = register_module("final_norm", layer::RmsNorm(context));
+    enorm_ = register_module("enorm", layer::NpuRmsNorm(context));
+    hnorm_ = register_module("hnorm", layer::NpuRmsNorm(context));
+    final_norm_ = register_module("final_norm", layer::NpuRmsNorm(context));
 
     // dp_size_=4;
     dp_size_ = parallel_args.dp_size();
@@ -241,10 +241,10 @@ class DeepseekV2MtpModelImpl : public torch::nn::Module {
   std::vector<std::shared_ptr<RotaryEmbedding>> pos_embs_;
   std::vector<layer::PosEmbedding> atb_pos_embs_;
   layer::AttentionMask attn_mask_;
-  std::vector<layer::ColumnParallelLinear> eh_projs_;
-  layer::RmsNorm enorm_{nullptr};
-  layer::RmsNorm hnorm_{nullptr};
-  layer::RmsNorm final_norm_{nullptr};
+  std::vector<layer::NpuColumnParallelLinear> eh_projs_;
+  layer::NpuRmsNorm enorm_{nullptr};
+  layer::NpuRmsNorm hnorm_{nullptr};
+  layer::NpuRmsNorm final_norm_{nullptr};
 };
 TORCH_MODULE(DeepseekV2MtpModel);
 

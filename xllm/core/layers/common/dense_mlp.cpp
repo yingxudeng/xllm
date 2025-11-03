@@ -89,6 +89,11 @@ torch::Tensor DenseMLPImpl::forward(const torch::Tensor& hidden_states) {
     return down_proj_->forward(gate_up);
   } else {
     int64_t batch_size = gate_up.sizes()[0];
+#if defined(USE_NPU)
+    xllm::kernel::ActivationParams activation_params;
+    activation_params.input = gate_up;
+    auto output = xllm::kernel::active_tensor(activation_params);
+#else
     auto output = torch::empty(
         {batch_size,
          intermediate_size_ / parallel_args_.tp_group_->world_size()},
@@ -100,6 +105,7 @@ torch::Tensor DenseMLPImpl::forward(const torch::Tensor& hidden_states) {
     activation_params.act_mode = hidden_act_;
     activation_params.is_gated = is_gated_;
     xllm::kernel::active(activation_params);
+#endif
 
     return down_proj_->forward(output);
   }

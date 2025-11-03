@@ -17,16 +17,14 @@ limitations under the License.
 
 #include "param.h"
 
-namespace xllm::kernel {
-
-static const std::string kActModeSilu = "silu";
-static const std::string kActModeGelu = "gelu";
-static const std::string kActModeQuickGelu = "quick_gelu";
-static const std::string kActModeSwish = "swish";
+namespace xllm {
+namespace kernel {
 
 void apply_rotary(RotaryParams& params);
 
 void active(ActivationParams& params);
+
+torch::Tensor active_tensor(ActivationParams& params);
 
 void reshape_paged_cache(ReshapePagedCacheParams& params);
 
@@ -35,6 +33,8 @@ void batch_prefill(AttentionParams& params);
 void batch_decode(AttentionParams& params);
 
 void fused_layernorm(FusedLayerNormParams& params);
+
+torch::Tensor fused_layernorm_tensor(FusedLayerNormParams& params);
 
 torch::Tensor matmul(MatmulParams& params);
 

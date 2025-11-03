@@ -13,20 +13,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#pragma once
-#include "impl/npu_rms_norm_impl.h"
+#include <torch_npu/csrc/aten/CustomFunctions.h>
 
-namespace xllm {
-namespace kernel {
+#include "npu_ops_api.h"
+#include "ops_npu/npu_ops.h"
 
-class RmsNorm : public torch::nn::ModuleHolder<NpuRmsNormImpl> {
- public:
-  using torch::nn::ModuleHolder<NpuRmsNormImpl>::ModuleHolder;
-  using Impl __attribute__((__unused__)) = NpuRmsNormImpl;
+namespace xllm::kernel::npu {
 
-  RmsNorm(const ModelContext& context)
-      : ModuleHolder(std::make_shared<NpuRmsNormImpl>(context)) {}
-};
-
-}  // namespace kernel
-}  // namespace xllm
+torch::Tensor active(const torch::Tensor& input) {
+  return at_npu::native::custom_ops::npu_swiglu(input);
+}
+}  // namespace xllm::kernel::npu
