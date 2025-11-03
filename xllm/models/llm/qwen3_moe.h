@@ -122,7 +122,7 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
     attn_mask_ = layer::AttentionMask(options.device(),
                                       options.dtype().toScalarType(),
                                       /*mask_value=*/mask_value);
-    norm_ = register_module("norm", layer::RmsNorm(context));
+    norm_ = register_module("norm", layer::NpuRmsNorm(context));
     mapping_data_ = parallel_args.mapping_data();
 #elif defined(USE_MLU)
     norm_ = register_module(

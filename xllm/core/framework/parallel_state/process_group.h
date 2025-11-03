@@ -19,6 +19,11 @@ limitations under the License.
 
 #include <torch/csrc/distributed/c10d/Backend.hpp>
 #include <torch/csrc/distributed/c10d/TCPStore.hpp>
+
+#if defined(USE_NPU)
+#include <torch_npu/csrc/distributed/ProcessGroupHCCL.hpp>
+#endif
+
 namespace xllm {
 std::pair<int, std::vector<uint64_t>> get_group_rank(int world_size,
                                                      int global_rank,
@@ -60,7 +65,11 @@ class ProcessGroup {
   torch::Device device_;
 
  protected:
+#if defined(USE_NPU)
+  std::unique_ptr<c10d_npu::ProcessGroupHCCL> pg_{nullptr};
+#else
   std::unique_ptr<c10d::Backend> pg_{nullptr};
+#endif
 };
 
 }  // namespace xllm

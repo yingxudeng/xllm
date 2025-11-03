@@ -115,7 +115,7 @@ class LlamaModelImpl : public torch::nn::Module {
     layers_.reserve(context.get_model_args().n_layers());
     embed_tokens_ =
         register_module("embed_tokens", layer::WordEmbedding(context));
-    norm_ = register_module("norm", layer::RmsNorm(context));
+    norm_ = register_module("norm", layer::NpuRmsNorm(context));
 
     std::tie(cos_pos_, sin_pos_) =
         get_llama_rotary_embedding(128,
@@ -230,7 +230,7 @@ class LlamaModelImpl : public torch::nn::Module {
   int device_id_ = 0;
   layer::AttentionMask attn_mask_;
   layer::WordEmbedding embed_tokens_{nullptr};
-  layer::RmsNorm norm_{nullptr};
+  layer::NpuRmsNorm norm_{nullptr};
 
   torch::nn::ModuleList blocks_{nullptr};
   // hold same data but different type as blocks_ to avoid type cast

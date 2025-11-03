@@ -140,7 +140,7 @@ class DeepseekV2ModelImpl : public torch::nn::Module {
       blocks_->push_back(block);
     }
 
-    norm_ = register_module("norm", layer::RmsNorm(context));
+    norm_ = register_module("norm", layer::NpuRmsNorm(context));
     // dp_size_=4;
     dp_size_ = parallel_args.dp_size();
     std::vector<int64_t> indices;
@@ -289,7 +289,7 @@ class DeepseekV2ModelImpl : public torch::nn::Module {
   std::vector<std::shared_ptr<RotaryEmbedding>> pos_embs_;
   std::vector<layer::PosEmbedding> atb_pos_embs_;
   layer::AttentionMask attn_mask_;
-  layer::RmsNorm norm_{nullptr};
+  layer::NpuRmsNorm norm_{nullptr};
 };
 TORCH_MODULE(DeepseekV2Model);
 

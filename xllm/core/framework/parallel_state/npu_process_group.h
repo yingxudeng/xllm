@@ -18,6 +18,10 @@ limitations under the License.
 #include "hccl/hccl.h"
 #include "process_group.h"
 
+namespace c10d_npu {
+class ProcessGroupHCCL;
+}
+
 namespace xllm {
 
 class ProcessGroupHCCL : public ProcessGroup {
@@ -28,16 +32,30 @@ class ProcessGroupHCCL : public ProcessGroup {
                    const torch::Device& device,
                    HcclComm comm);
 
+  ProcessGroupHCCL(int rank,
+                   int world_size,
+                   int rank_size,
+                   int port,
+                   bool trans,
+                   const std::string& host,
+                   const std::string& group_name,
+                   const torch::Device& device);
+
   // Destructor.
   ~ProcessGroupHCCL() override;
-
-  void allreduce(torch::Tensor& input) override;
-
-  void allgather(const torch::Tensor& input,
-                 std::vector<torch::Tensor>& outputs) override;
 
  private:
   HcclComm comm_ = nullptr;
 };
+
+std::unique_ptr<xllm::ProcessGroup> create_process_group(
+    int rank,
+    int world_size,
+    int rank_size,
+    int port,
+    bool trans,
+    const std::string& host,
+    const std::string& group_name,
+    const torch::Device& device);
 
 }  // namespace xllm

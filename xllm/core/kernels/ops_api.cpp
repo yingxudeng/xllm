@@ -30,6 +30,8 @@ void apply_rotary(RotaryParams& params) {
                     params.discrete,
                     params.dynamic_ntk,
                     params.max_query_len);
+#elif defined(USE_NPU)
+  npu::apply_rotary(params.q, params.k, params.cos_sin, params.positions);
 #else
   throw std::runtime_error("apply_rotary not implemented");
 #endif
@@ -50,6 +52,14 @@ void active(ActivationParams& params) {
 #endif
 }
 
+torch::Tensor active_tensor(ActivationParams& params) {
+#if defined(USE_NPU)
+  return npu::active(params.input);
+#else
+  throw std::runtime_error("active not implemented");
+#endif
+}
+
 void reshape_paged_cache(ReshapePagedCacheParams& params) {
 #if defined(USE_MLU)
   mlu::reshape_paged_cache(params.key,
@@ -58,6 +68,12 @@ void reshape_paged_cache(ReshapePagedCacheParams& params) {
                            params.v_cache,
                            params.slot_mapping,
                            params.direction);
+#elif defined(USE_NPU)
+  npu::reshape_paged_cache(params.key,
+                           params.value,
+                           params.k_cache,
+                           params.v_cache,
+                           params.slot_mapping);
 #else
   throw std::runtime_error("reshape_paged_cache not implemented");
 #endif
@@ -87,6 +103,16 @@ void batch_prefill(AttentionParams& params) {
                      params.window_size_right,
                      params.compute_dtype,
                      params.return_lse);
+#elif defined(USE_NPU)
+  npu::batch_prefill(params.query,
+                     params.key,
+                     params.value,
+                     params.attn_mask,
+                     params.seq_lens,
+                     params.scale,
+                     params.num_heads,
+                     params.num_kv_heads,
+                     params.output);
 #else
   throw std::runtime_error("batch_prefill not implemented");
 #endif
@@ -114,6 +140,16 @@ void batch_decode(AttentionParams& params) {
                     params.scale,
                     params.return_lse,
                     params.kv_cache_quant_bit_size);
+#elif defined(USE_NPU)
+  npu::batch_decode(params.query,
+                    params.k_cache,
+                    params.v_cache,
+                    params.num_kv_heads,
+                    params.num_heads,
+                    params.scale,
+                    params.block_table.value(),
+                    params.seq_lens,
+                    params.output);
 #else
   throw std::runtime_error("batch_decode not implemented");
 #endif
@@ -141,10 +177,20 @@ void fused_layernorm(FusedLayerNormParams& params) {
 #endif
 }
 
+torch::Tensor fused_layernorm_tensor(FusedLayerNormParams& params) {
+#if defined(USE_NPU)
+  return npu::fused_layernorm(params.input, params.weight, params.eps);
+#else
+  throw std::runtime_error("fused_layernorm not implemented");
+#endif
+}
+
 torch::Tensor matmul(MatmulParams& params) {
 #if defined(USE_MLU)
   return mlu::matmul(
       params.a, params.b, params.bias, params.c, params.alpha, params.beta);
+#elif defined(USE_NPU)
+  return npu::matmul(params.a, params.b, params.bias);
 #else
   throw std::runtime_error("matmul not implemented");
 #endif

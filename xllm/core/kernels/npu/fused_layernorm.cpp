@@ -12,19 +12,20 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <torch_npu/csrc/aten/CustomFunctions.h>
 
-#pragma once
-#include "impl/npu_rope_impl.h"
+#include "npu_ops_api.h"
+#include "ops_npu/npu_ops.h"
 
-namespace xllm::kernel {
+namespace xllm::kernel::npu {
 
-class Rope : public torch::nn::ModuleHolder<NpuRopeImpl> {
- public:
-  using torch::nn::ModuleHolder<NpuRopeImpl>::ModuleHolder;
-  using Impl __attribute__((__unused__)) = NpuRopeImpl;
+torch::Tensor fused_layernorm(const torch::Tensor& input,
+                              const torch::Tensor& weight,
+                              double eps) {
+  std::tuple<at::Tensor, at::Tensor> result =
+      at_npu::native::custom_ops::npu_rms_norm(input, weight, eps);
+  auto normalized_input = std::get<0>(result);
+  return normalized_input;
+}
 
-  Rope(const ModelContext& context)
-      : ModuleHolder(std::make_shared<NpuRopeImpl>(context)) {}
-};
-
-}  // namespace xllm::kernel
+}  // namespace xllm::kernel::npu

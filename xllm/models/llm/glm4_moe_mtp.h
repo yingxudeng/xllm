@@ -60,10 +60,11 @@ class Glm4MoeMtpModelImpl : public torch::nn::Module {
       blocks_->push_back(block);
     }
 
-    eh_proj_ = register_module("eh_proj", layer::ColumnParallelLinear(context));
-    enorm_ = register_module("enorm", layer::RmsNorm(context));
-    hnorm_ = register_module("hnorm", layer::RmsNorm(context));
-    final_norm_ = register_module("final_norm", layer::RmsNorm(context));
+    eh_proj_ =
+        register_module("eh_proj", layer::NpuColumnParallelLinear(context));
+    enorm_ = register_module("enorm", layer::NpuRmsNorm(context));
+    hnorm_ = register_module("hnorm", layer::NpuRmsNorm(context));
+    final_norm_ = register_module("final_norm", layer::NpuRmsNorm(context));
 
     dp_size_ = parallel_args.dp_size();
     std::vector<int64_t> indices;
@@ -229,10 +230,10 @@ class Glm4MoeMtpModelImpl : public torch::nn::Module {
   layer::AttentionMask attn_mask_;
   torch::Tensor cos_sin_;
   layer::PosEmbedding atb_pos_emb_{nullptr};
-  layer::ColumnParallelLinear eh_proj_{nullptr};
-  layer::RmsNorm enorm_{nullptr};
-  layer::RmsNorm hnorm_{nullptr};
-  layer::RmsNorm final_norm_{nullptr};
+  layer::NpuColumnParallelLinear eh_proj_{nullptr};
+  layer::NpuRmsNorm enorm_{nullptr};
+  layer::NpuRmsNorm hnorm_{nullptr};
+  layer::NpuRmsNorm final_norm_{nullptr};
 };
 TORCH_MODULE(Glm4MoeMtpModel);
 

@@ -19,6 +19,8 @@ limitations under the License.
 
 #if defined(USE_MLU)
 #include "mlu/mlu_ops_api.h"
+#elif defined(USE_NPU)
+#include "npu/npu_ops_api.h"
 #endif
 
 namespace xllm {
@@ -28,6 +30,8 @@ void apply_rotary(RotaryParams& params);
 
 void active(ActivationParams& params);
 
+torch::Tensor active_tensor(ActivationParams& params);
+
 void reshape_paged_cache(ReshapePagedCacheParams& params);
 
 void batch_prefill(AttentionParams& params);
@@ -35,6 +39,8 @@ void batch_prefill(AttentionParams& params);
 void batch_decode(AttentionParams& params);
 
 void fused_layernorm(FusedLayerNormParams& params);
+
+torch::Tensor fused_layernorm_tensor(FusedLayerNormParams& params);
 
 torch::Tensor matmul(MatmulParams& params);
 

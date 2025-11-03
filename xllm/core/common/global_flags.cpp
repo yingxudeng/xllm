@@ -389,3 +389,5 @@ DEFINE_string(reasoning_parser,
 
 // --- qwen3 reranker config ---
 DEFINE_bool(enable_qwen3_reranker, false, "Whether to enable qwen3 reranker.");
+
+DEFINE_bool(enable_native_npu, true, "Whether to enable native NPU support.");

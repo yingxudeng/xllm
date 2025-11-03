@@ -287,7 +287,7 @@ class Qwen2_5_VisionPatchMergerImpl : public torch::nn::Module {
 
     hidden_size_ =
         context_dim * static_cast<int>(std::pow(spatial_merge_size, 2));
-    ln_q_ = register_module("ln_q", layer::RmsNorm(context));
+    ln_q_ = register_module("ln_q", layer::NpuRmsNorm(context));
 
     auto cpl = torch::nn::Linear(
         torch::nn::LinearOptions(hidden_size_, hidden_size_).bias(true));
@@ -361,7 +361,7 @@ class Qwen2_5_VisionPatchMergerImpl : public torch::nn::Module {
  private:
   int64_t hidden_size_;
 
-  layer::RmsNorm ln_q_{nullptr};
+  layer::NpuRmsNorm ln_q_{nullptr};
   torch::nn::Sequential mlp_{nullptr};
   std::tuple<torch::nn::Linear, torch::nn::GELU, torch::nn::Linear> layers_ = {
       nullptr,

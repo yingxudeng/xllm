@@ -39,6 +39,7 @@ struct RotaryParams {
   bool discrete;
   bool dynamic_ntk = false;
   int max_query_len;
+  torch::Tensor positions;
 };
 
 // Activation parameters
@@ -79,6 +80,11 @@ struct AttentionParams {
   int window_size_right = -1;
   float scale;
   bool return_lse = false;
+  // for npu
+  torch::Tensor seq_lens;
+  int num_heads;
+  int num_kv_heads;
+  torch::Tensor attn_mask;
   // for flashinfer
   torch::Tensor paged_kv_indptr;
   torch::Tensor paged_kv_indices;
