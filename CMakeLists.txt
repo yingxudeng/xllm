@@ -330,7 +330,7 @@ else()
 endif()
 
 if(USE_NPU)
-  add_definitions(-DUSE_NPU_TORCH)
+  # add_definitions(-DUSE_NPU_TORCH)
   add_definitions(-DUSE_NPU)
   add_definitions(-DBUILD_LIBTORCH)
   add_definitions(-DTORCH_SETCUSTOMHANDLER=ON)

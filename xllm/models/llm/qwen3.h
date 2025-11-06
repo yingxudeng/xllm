@@ -45,7 +45,7 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
         xllm::layer::RmsNorm(
             model_args.hidden_size(), model_args.rms_norm_eps(), options));
 #else
-    norm_ = register_module("norm", layer::RmsNorm(context));
+    norm_ = register_module("norm", layer::NpuRmsNorm(context));
 #endif
     for (auto i = 0; i < FLAGS_micro_batch_num; i++) {
 #if defined(USE_NPU_TORCH)

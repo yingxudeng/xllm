@@ -367,10 +367,13 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
   torch::Dtype dtype_;
   layer::WordEmbedding embed_tokens_{nullptr};
   layer::AttentionMask attn_mask_;
-  layer::RmsNorm norm_{nullptr};
+
 #if defined(USE_NPU)
   torch::Tensor cos_sin_;
   layer::PosEmbedding atb_pos_emb_{nullptr};
+  layer::NpuRmsNorm norm_{nullptr};
+#else
+  layer::RmsNorm norm_{nullptr};
 #endif
   std::vector<int64_t> mrope_section_;
 };
