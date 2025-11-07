@@ -17,7 +17,7 @@ limitations under the License.
 #pragma once
 
 #include "core/layers/qwen2_decoder_layer.h"
-#include "llm_model_base.h"
+#include "models/common/llm/llm_model_base.h"
 
 // QWen2 model compatible with huggingface weights
 // ref to:

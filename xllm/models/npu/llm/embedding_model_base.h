@@ -15,7 +15,7 @@ limitations under the License.
 
 #pragma once
 
-#include "models/llm/llm_model_base.h"
+#include "models/common/llm/llm_model_base.h"
 
 namespace xllm {
 

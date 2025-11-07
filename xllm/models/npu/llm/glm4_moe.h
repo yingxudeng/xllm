@@ -19,20 +19,64 @@ limitations under the License.
 
 #include "core/framework/model/npu_dp_ep_padding.h"
 #include "core/framework/model_context.h"
-#include "core/layers/column_parallel_linear.h"
 #include "core/layers/npu/npu_glm4_moe_decoder_layer.h"
-#include "glm4_moe.h"
-#include "llm_model_base.h"
+#include "models/common/llm/llm_model_base.h"
 
-namespace xllm::hf {
+namespace xllm {
 
-class Glm4MoeMtpModelImpl : public torch::nn::Module {
+using torch::indexing::None;
+using ISlice = torch::indexing::Slice;
+
+class Glm4MoeDecoderLayerImpl : public torch::nn::Module {
  public:
-  Glm4MoeMtpModelImpl(const ModelContext& context)
+  Glm4MoeDecoderLayerImpl(const ModelContext& context, const int32_t i) {
+    // register submodules
+    decoder_layer_ =
+        register_module("decoder_layer", layer::Glm4MoeDecoder(context, i));
+  }
+
+  torch::Tensor forward(torch::Tensor x,
+                        torch::Tensor cos_pos,
+                        torch::Tensor sin_pos,
+                        torch::Tensor attn_mask,
+                        KVCache& kv_cache,
+                        const ModelInputParams& input_params,
+                        torch::Tensor expert_array,
+                        std::vector<aclrtEvent*> event,
+                        std::vector<std::atomic<bool>*> event_flag) {
+    return decoder_layer_(x,
+                          cos_pos,
+                          sin_pos,
+                          attn_mask,
+                          kv_cache,
+                          input_params,
+                          expert_array,
+                          event,
+                          event_flag);
+  }
+
+  void load_state_dict(const StateDict& state_dict) {
+    decoder_layer_->load_state_dict(state_dict);
+  }
+
+  void verify_loaded_weights(const std::string& prefix) const {
+    decoder_layer_->verify_loaded_weights(prefix);
+  }
+
+  void merge_loaded_weights() { decoder_layer_->merge_loaded_weights(); }
+
+ private:
+  layer::Glm4MoeDecoder decoder_layer_{nullptr};
+};
+TORCH_MODULE(Glm4MoeDecoderLayer);
+
+class Glm4MoeModelImpl : public torch::nn::Module {
+ public:
+  Glm4MoeModelImpl(const ModelContext& context)
       : device_(context.get_tensor_options().device()) {
+    auto options = context.get_tensor_options();
     auto model_args = context.get_model_args();
     auto parallel_args = context.get_parallel_args();
-    auto options = context.get_tensor_options();
 
     blocks_ = register_module("layers", torch::nn::ModuleList());
     layers_.reserve(model_args.n_layers());
@@ -49,23 +93,18 @@ class Glm4MoeMtpModelImpl : public torch::nn::Module {
                                            model_args.rope_theta(),
                                            options);
 
+    // int32_t mask_value = model_args.dtype() == "bfloat16" ? 1 : -9984;
     int32_t mask_value = FLAGS_enable_chunked_prefill ? -9984 : 1;
     attn_mask_ = layer::AttentionMask(options.device(),
                                       options.dtype().toScalarType(),
                                       /*mask_value=*/mask_value);
-
     for (int32_t i = 0; i < model_args.n_layers(); ++i) {
       auto block = Glm4MoeDecoderLayer(context, i);
       layers_.push_back(block);
       blocks_->push_back(block);
     }
 
-    eh_proj_ =
-        register_module("eh_proj", layer::NpuColumnParallelLinear(context));
-    enorm_ = register_module("enorm", layer::NpuRmsNorm(context));
-    hnorm_ = register_module("hnorm", layer::NpuRmsNorm(context));
-    final_norm_ = register_module("final_norm", layer::NpuRmsNorm(context));
-
+    norm_ = register_module("norm", layer::NpuRmsNorm(context));
     dp_size_ = parallel_args.dp_size();
     std::vector<int64_t> indices;
     dp_local_tp_size_ = parallel_args.world_size() / dp_size_;
@@ -91,28 +130,18 @@ class Glm4MoeMtpModelImpl : public torch::nn::Module {
       }
     }
 
-    torch::Tensor h = embed_tokens_(tokens, 0);
-    torch::Tensor enorm = enorm_(h, 0);
-    const auto& res = input_params.mm_data.get<torch::Tensor>("embedding");
-    if (res) {
-      h = res.value();
-    } else {
-      LOG(WARNING) << "hnorm use embedding from tokens.";
-    }
-
-    torch::Tensor hnorm = hnorm_(h, 0);
-    CHECK_EQ(enorm.dim(), hnorm.dim());
-    CHECK_EQ(enorm.size(0), hnorm.size(0));
-    h = torch::cat({enorm, hnorm}, /*dim=*/-1);
-    h = eh_proj_(h, 0);
-
-    auto cos_sin = atb_pos_emb_(cos_sin_, positions, 0);
-    auto cos_sin_chunks = cos_sin.chunk(/*chunks=*/2, /*dim=*/-1);
-    auto cos_pos = cos_sin_chunks[0].contiguous();
-    auto sin_pos = cos_sin_chunks[1].contiguous();
+    auto h = embed_tokens_(tokens, 0);
+    int64_t input_length = tokens.size(0);
+    torch::Tensor expert_array = torch::arange(
+        0,
+        input_length * num_experts_per_tok_,
+        torch::TensorOptions().dtype(torch::kInt32).device(tokens.device()));
+    auto target_cos_sin = atb_pos_emb_(cos_sin_, positions, 0);
+    auto target_cos_sin_chunks = target_cos_sin.chunk(/*chunks=*/2, /*dim=*/-1);
+    auto cos_pos = target_cos_sin_chunks[0].contiguous();
+    auto sin_pos = target_cos_sin_chunks[1].contiguous();
     cos_pos = cos_pos.view(at::IntArrayRef{-1, 2, cos_pos.size(-1) / 2});
     sin_pos = sin_pos.view(at::IntArrayRef{-1, 2, sin_pos.size(-1) / 2});
-
     torch::Tensor attn_mask;
     if (FLAGS_enable_chunked_prefill) {
       int max_kv_seq = input_params.kv_max_seq_len;
@@ -141,12 +170,6 @@ class Glm4MoeMtpModelImpl : public torch::nn::Module {
       }
     }
 
-    int64_t input_length = tokens.size(0);
-    torch::Tensor expert_array = torch::arange(
-        0,
-        input_length * num_experts_per_tok_,
-        torch::TensorOptions().dtype(torch::kInt32).device(tokens.device()));
-
     for (size_t i = 0; i < layers_.size(); i++) {
       std::vector<aclrtEvent*> events(1, nullptr);
       std::vector<std::atomic<bool>*> event_flags(1, nullptr);
@@ -154,6 +177,7 @@ class Glm4MoeMtpModelImpl : public torch::nn::Module {
         events[0] = input_params.layer_synchronizer->get_event(i);
         event_flags[0] = input_params.layer_synchronizer->get_event_flag(i);
       }
+
       auto& layer = layers_[i];
       layer(h,
             cos_pos,
@@ -165,45 +189,36 @@ class Glm4MoeMtpModelImpl : public torch::nn::Module {
             events,
             event_flags);
     }
-    return final_norm_(h, 0);
+    return norm_(h, 0);
   }
 
   // load the weight from the checkpoint
   void load_state_dict(const StateDict& state_dict) {
-    // embed_tokens_->load_state_dict(state_dict.get_dict_with_prefix("embed_tokens."));
+    embed_tokens_->load_state_dict(
+        state_dict.get_dict_with_prefix("embed_tokens."));
     // call each layer's load_state_dict function
     for (int i = 0; i < layers_.size(); i++) {
       layers_[i]->load_state_dict(
           state_dict.get_dict_with_prefix("layers." + std::to_string(i) + "."));
     }
-    eh_proj_->load_state_dict(state_dict.get_dict_with_prefix("eh_proj."));
-    enorm_->load_state_dict(state_dict.get_dict_with_prefix("enorm."));
-    hnorm_->load_state_dict(state_dict.get_dict_with_prefix("hnorm."));
-    final_norm_->load_state_dict(
-        state_dict.get_dict_with_prefix("shared_head.norm."));
+    norm_->load_state_dict(state_dict.get_dict_with_prefix("norm."));
   }
 
   void verify_loaded_weights(const std::string& prefix) const {
-    // embed_tokens_->verify_loaded_weights(prefix + "embed_tokens.");
+    embed_tokens_->verify_loaded_weights(prefix + "embed_tokens.");
     for (int i = 0; i < layers_.size(); i++) {
       layers_[i]->verify_loaded_weights(prefix + "layers." + std::to_string(i) +
                                         ".");
     }
-    eh_proj_->verify_loaded_weights(prefix + "eh_proj.");
-    enorm_->verify_loaded_weights(prefix + "enorm.");
-    hnorm_->verify_loaded_weights(prefix + "hnorm.");
-    final_norm_->verify_loaded_weights(prefix + "shared_head.norm.");
+    norm_->verify_loaded_weights(prefix + "norm.");
   }
 
   void merge_loaded_weights() {
-    // embed_tokens_->merge_loaded_weights();
+    embed_tokens_->merge_loaded_weights();
     for (int i = 0; i < layers_.size(); i++) {
       layers_[i]->merge_loaded_weights();
     }
-    eh_proj_->merge_loaded_weights();
-    enorm_->merge_loaded_weights();
-    hnorm_->merge_loaded_weights();
-    final_norm_->merge_loaded_weights();
+    norm_->merge_loaded_weights();
   }
 
   std::vector<layer::WordEmbedding> get_word_embedding() {
@@ -217,6 +232,7 @@ class Glm4MoeMtpModelImpl : public torch::nn::Module {
  private:
   torch::nn::ModuleList blocks_{nullptr};
   std::vector<Glm4MoeDecoderLayer> layers_;
+  int32_t max_seq_len_ = 0;
   int32_t dp_rank_;
   int32_t rank_;
   int32_t dp_size_;
@@ -228,21 +244,17 @@ class Glm4MoeMtpModelImpl : public torch::nn::Module {
   torch::Dtype dtype_;
   layer::WordEmbedding embed_tokens_{nullptr};
   layer::AttentionMask attn_mask_;
+  layer::NpuRmsNorm norm_{nullptr};
   torch::Tensor cos_sin_;
   layer::PosEmbedding atb_pos_emb_{nullptr};
-  layer::NpuColumnParallelLinear eh_proj_{nullptr};
-  layer::NpuRmsNorm enorm_{nullptr};
-  layer::NpuRmsNorm hnorm_{nullptr};
-  layer::NpuRmsNorm final_norm_{nullptr};
 };
-TORCH_MODULE(Glm4MoeMtpModel);
+TORCH_MODULE(Glm4MoeModel);
 
-class Glm4MoeMtpForCausalLMImpl : public torch::nn::Module {
+class Glm4MoeForCausalLMImpl : public torch::nn::Module {
  public:
-  Glm4MoeMtpForCausalLMImpl(const ModelContext& context) {
-    model_ = register_module("model", Glm4MoeMtpModel(context));
-    // lm_head_ = register_module(
-    //     "lm_head", LlmHead(context));
+  Glm4MoeForCausalLMImpl(const ModelContext& context) {
+    model_ = register_module("model", Glm4MoeModel(context));
+    lm_head_ = register_module("lm_head", layer::NpuLmHead(context));
   }
 
   // tokens: [num_tokens]
@@ -261,29 +273,29 @@ class Glm4MoeMtpForCausalLMImpl : public torch::nn::Module {
   torch::Tensor logits(const torch::Tensor& hidden_states,
                        const torch::Tensor& seleted_idxes) {
     // select tokens if provided
+    auto h = hidden_states;
     return lm_head_(hidden_states, seleted_idxes, 0);
   }
 
-  // load model
   void load_model(std::unique_ptr<ModelLoader> loader) {
     for (const auto& state_dict : loader->get_state_dicts()) {
       model_->load_state_dict(state_dict->get_dict_with_prefix("model."));
-      // lm_head_->load_state_dict(state_dict.get_dict_with_prefix("model.shared_head.head."));
+      lm_head_->load_state_dict(state_dict->get_dict_with_prefix("lm_head."));
     }
 
     // verify
     model_->verify_loaded_weights("model.");
-    // lm_head_->verify_loaded_weights("model.shared_head.head.");
+    lm_head_->verify_loaded_weights("lm_head.");
 
     model_->merge_loaded_weights();
-    // lm_head_->merge_loaded_weights();
+    lm_head_->merge_loaded_weights();
   }
 
-  void prepare_expert_weight(int32_t layer_id,
-                             const std::vector<int32_t>& expert_ids) {
+  virtual void prepare_expert_weight(int32_t layer_id,
+                                     const std::vector<int32_t>& expert_ids) {
     return;
   }
-  void update_expert_weight(int32_t layer_id) { return; }
+  virtual void update_expert_weight(int32_t layer_id) { return; }
 #if defined(USE_NPU)
   layer::NpuLmHead get_lm_head() { return lm_head_; }
 
@@ -301,17 +313,18 @@ class Glm4MoeMtpForCausalLMImpl : public torch::nn::Module {
   layer::NpuLmHead lm_head_{nullptr};
 #endif
  private:
-  Glm4MoeMtpModel model_{nullptr};
+  Glm4MoeModel model_{nullptr};
 };
-TORCH_MODULE(Glm4MoeMtpForCausalLM);
+TORCH_MODULE(Glm4MoeForCausalLM);
 
 // register the causal model
-REGISTER_CAUSAL_MODEL(glm4_moe_mtp, Glm4MoeMtpForCausalLM);
+REGISTER_CAUSAL_MODEL(glm4_moe, Glm4MoeForCausalLM);
 
+// register the model args
 // example config:
 // https://huggingface.co/zai-org/GLM-4.5-Air/blob/main/config.json
-REGISTER_MODEL_ARGS(glm4_moe_mtp, [&] {
-  LOAD_ARG_OR(model_type, "model_type", "glm4_moe_mtp");
+REGISTER_MODEL_ARGS(glm4_moe, [&] {
+  LOAD_ARG_OR(model_type, "model_type", "glm4_moe");
   LOAD_ARG_OR(dtype, "torch_dtype", "");
   LOAD_ARG_OR(attention_bias, "attention_bias", false);
   LOAD_ARG_OR(attention_dropout, "attention_dropout", 0.0f);
@@ -344,4 +357,4 @@ REGISTER_MODEL_ARGS(glm4_moe_mtp, [&] {
           std::unordered_set<int32_t>(args->eos_token_id_vec().begin(),
                                       args->eos_token_id_vec().end()));
 });
-}  // namespace xllm::hf
+}  // namespace xllm
