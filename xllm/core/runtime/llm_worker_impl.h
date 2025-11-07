@@ -49,11 +49,11 @@ class LLMWorkerImpl : public WorkerImpl {
 
   void set_lm_head(layer::NpuLmHead& head) { model_->set_lm_head(head); };
 
-  std::vector<layer::WordEmbedding> get_word_embedding() {
+  std::vector<layer::NpuWordEmbedding> get_word_embedding() {
     return model_->get_word_embedding();
   };
 
-  void set_word_embedding(std::vector<layer::WordEmbedding>& embedding) {
+  void set_word_embedding(std::vector<layer::NpuWordEmbedding>& embedding) {
     model_->set_word_embedding(embedding);
   };
 #endif

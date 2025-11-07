@@ -78,12 +78,12 @@ class LlmForEmbeddingImplBase : public torch::nn::Module {
 
   virtual void set_lm_head(layer::NpuLmHead& head) { lm_head_ = head; }
 
-  virtual std::vector<layer::WordEmbedding> get_word_embedding() {
+  virtual std::vector<layer::NpuWordEmbedding> get_word_embedding() {
     return model_->get_word_embedding();
   }
 
   virtual void set_word_embedding(
-      std::vector<layer::WordEmbedding>& word_embedding) {
+      std::vector<layer::NpuWordEmbedding>& word_embedding) {
     model_->set_word_embedding(word_embedding);
   }
 

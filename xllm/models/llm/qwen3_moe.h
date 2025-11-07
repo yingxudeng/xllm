@@ -147,7 +147,7 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
     num_speculative_tokens_ = model_args.num_speculative_tokens();
 #if defined(USE_NPU)
     embed_tokens_ =
-        register_module("embed_tokens", layer::WordEmbedding(context));
+        register_module("embed_tokens", layer::NpuWordEmbedding(context));
 
     atb_pos_emb_ = layer::PosEmbedding(context);
     cos_sin_ =
@@ -170,10 +170,10 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
             model_args.hidden_size(), model_args.rms_norm_eps(), options));
     embed_tokens_ =
         register_module("embed_tokens",
-                        layer::WordEmbedding(model_args.vocab_size(),
-                                             model_args.hidden_size(),
-                                             context.get_parallel_args(),
-                                             options));
+                        layer::NpuWordEmbedding(model_args.vocab_size(),
+                                                model_args.hidden_size(),
+                                                context.get_parallel_args(),
+                                                options));
 #endif
     for (int32_t i = 0; i < model_args.n_layers(); ++i) {
       auto block = Qwen3MoeDecoderLayer(context, i);
@@ -335,11 +335,12 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
   }
 #endif
 
-  std::vector<layer::WordEmbedding> get_word_embedding() {
+  std::vector<layer::NpuWordEmbedding> get_word_embedding() {
     return {embed_tokens_};
   }
 
-  void set_word_embedding(std::vector<layer::WordEmbedding>& word_embedding) {
+  void set_word_embedding(
+      std::vector<layer::NpuWordEmbedding>& word_embedding) {
     embed_tokens_ = word_embedding[0];
   }
   torch::Tensor get_input_embeddings(torch::Tensor input_ids) {
@@ -365,7 +366,7 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
   int32_t num_speculative_tokens_ = 0;
   at::Device device_;
   torch::Dtype dtype_;
-  layer::WordEmbedding embed_tokens_{nullptr};
+  layer::NpuWordEmbedding embed_tokens_{nullptr};
   layer::AttentionMask attn_mask_;
 
 #if defined(USE_NPU)
@@ -457,11 +458,12 @@ class Qwen3MoeForCausalLMImpl : public torch::nn::Module {
 
   void set_lm_head(layer::NpuLmHead& head) { lm_head_ = head; }
 
-  std::vector<layer::WordEmbedding> get_word_embedding() {
+  std::vector<layer::NpuWordEmbedding> get_word_embedding() {
     return model_->get_word_embedding();
   }
 
-  void set_word_embedding(std::vector<layer::WordEmbedding>& word_embedding) {
+  void set_word_embedding(
+      std::vector<layer::NpuWordEmbedding>& word_embedding) {
     model_->set_word_embedding(word_embedding);
   }
 
