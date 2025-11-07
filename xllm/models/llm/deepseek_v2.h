@@ -119,7 +119,7 @@ class DeepseekV2ModelImpl : public torch::nn::Module {
         model_args.rope_scaling_original_max_position_embeddings());
     float sm_scale = 1.0f;
     for (auto i = 0; i < FLAGS_micro_batch_num; i++) {
-      embed_tokens_.push_back(layer::WordEmbedding(context));
+      embed_tokens_.push_back(layer::NpuWordEmbedding(context));
       pos_embs_.push_back(create_rotary_embedding(model_args,
                                                   model_args.rotary_dim(),
                                                   inv_freq,
@@ -264,11 +264,12 @@ class DeepseekV2ModelImpl : public torch::nn::Module {
     layers_[layer_id]->update_expert_weight();
   }
 
-  std::vector<layer::WordEmbedding> get_word_embedding() {
+  std::vector<layer::NpuWordEmbedding> get_word_embedding() {
     return embed_tokens_;
   }
 
-  void set_word_embedding(std::vector<layer::WordEmbedding>& word_embedding) {
+  void set_word_embedding(
+      std::vector<layer::NpuWordEmbedding>& word_embedding) {
     embed_tokens_ = word_embedding;
   }
 
@@ -285,7 +286,7 @@ class DeepseekV2ModelImpl : public torch::nn::Module {
   int32_t num_speculative_tokens_ = 0;
   at::Device device_;
   torch::Dtype dtype_;
-  std::vector<layer::WordEmbedding> embed_tokens_;
+  std::vector<layer::NpuWordEmbedding> embed_tokens_;
   std::vector<std::shared_ptr<RotaryEmbedding>> pos_embs_;
   std::vector<layer::PosEmbedding> atb_pos_embs_;
   layer::AttentionMask attn_mask_;
@@ -347,11 +348,12 @@ class DeepseekV2ForCausalLMImpl : public torch::nn::Module {
 
   void set_lm_head(layer::NpuLmHead& head) { lm_head_ = head; }
 
-  std::vector<layer::WordEmbedding> get_word_embedding() {
+  std::vector<layer::NpuWordEmbedding> get_word_embedding() {
     return model_->get_word_embedding();
   }
 
-  void set_word_embedding(std::vector<layer::WordEmbedding>& word_embedding) {
+  void set_word_embedding(
+      std::vector<layer::NpuWordEmbedding>& word_embedding) {
     model_->set_word_embedding(word_embedding);
   }
 

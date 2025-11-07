@@ -70,12 +70,12 @@ class CausalVLMImpl : public CausalVLM {
     model_->set_lm_head(head);
   };
 
-  std::vector<layer::WordEmbedding> get_word_embedding() override {
+  std::vector<layer::NpuWordEmbedding> get_word_embedding() override {
     return model_->get_word_embedding();
   };
 
   void set_word_embedding(
-      std::vector<layer::WordEmbedding>& embedding) override {
+      std::vector<layer::NpuWordEmbedding>& embedding) override {
     model_->set_word_embedding(embedding);
   };
 #endif

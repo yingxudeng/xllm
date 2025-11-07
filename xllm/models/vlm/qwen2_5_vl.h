@@ -752,11 +752,12 @@ class Qwen2_5_VLForConditionalGenerationImpl : public torch::nn::Module {
     language_model_->set_lm_head(head);
   }
 
-  std::vector<layer::WordEmbedding> get_word_embedding() {
+  std::vector<layer::NpuWordEmbedding> get_word_embedding() {
     return language_model_->get_word_embedding();
   }
 
-  void set_word_embedding(std::vector<layer::WordEmbedding>& word_embedding) {
+  void set_word_embedding(
+      std::vector<layer::NpuWordEmbedding>& word_embedding) {
     language_model_->set_word_embedding(word_embedding);
   }
 #endif

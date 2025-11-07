@@ -85,7 +85,7 @@ class Glm4MoeModelImpl : public torch::nn::Module {
     dtype_ = options.dtype().toScalarType();
     num_speculative_tokens_ = model_args.num_speculative_tokens();
     embed_tokens_ =
-        register_module("embed_tokens", layer::WordEmbedding(context));
+        register_module("embed_tokens", layer::NpuWordEmbedding(context));
 
     atb_pos_emb_ = layer::PosEmbedding(context);
     cos_sin_ = get_concat_rotary_embedding(64,
@@ -221,11 +221,12 @@ class Glm4MoeModelImpl : public torch::nn::Module {
     norm_->merge_loaded_weights();
   }
 
-  std::vector<layer::WordEmbedding> get_word_embedding() {
+  std::vector<layer::NpuWordEmbedding> get_word_embedding() {
     return {embed_tokens_};
   }
 
-  void set_word_embedding(std::vector<layer::WordEmbedding>& word_embedding) {
+  void set_word_embedding(
+      std::vector<layer::NpuWordEmbedding>& word_embedding) {
     embed_tokens_ = word_embedding[0];
   }
 
@@ -242,7 +243,7 @@ class Glm4MoeModelImpl : public torch::nn::Module {
   int32_t num_speculative_tokens_ = 0;
   at::Device device_;
   torch::Dtype dtype_;
-  layer::WordEmbedding embed_tokens_{nullptr};
+  layer::NpuWordEmbedding embed_tokens_{nullptr};
   layer::AttentionMask attn_mask_;
   layer::NpuRmsNorm norm_{nullptr};
   torch::Tensor cos_sin_;
@@ -301,11 +302,12 @@ class Glm4MoeForCausalLMImpl : public torch::nn::Module {
 
   void set_lm_head(layer::NpuLmHead& head) { lm_head_ = head; }
 
-  std::vector<layer::WordEmbedding> get_word_embedding() {
+  std::vector<layer::NpuWordEmbedding> get_word_embedding() {
     return model_->get_word_embedding();
   }
 
-  void set_word_embedding(std::vector<layer::WordEmbedding>& word_embedding) {
+  void set_word_embedding(
+      std::vector<layer::NpuWordEmbedding>& word_embedding) {
     model_->set_word_embedding(word_embedding);
   }
 
