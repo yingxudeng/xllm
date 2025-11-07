@@ -297,7 +297,7 @@ class DeepseekV2ForCausalLMImpl : public torch::nn::Module {
  public:
   DeepseekV2ForCausalLMImpl(const ModelContext& context) {
     model_ = register_module("model", DeepseekV2Model(context));
-    lm_head_ = register_module("lm_head", layer::LmHead(context));
+    lm_head_ = register_module("lm_head", layer::NpuLmHead(context));
     first_k_dense_replace_ = context.get_model_args().first_k_dense_replace();
   }
 
@@ -342,10 +342,10 @@ class DeepseekV2ForCausalLMImpl : public torch::nn::Module {
   void update_expert_weight(int32_t layer_id) {
     model_->update_expert_weight(layer_id + first_k_dense_replace_);
   }
+#if defined(USE_NPU)
+  layer::NpuLmHead get_lm_head() { return lm_head_; }
 
-  layer::LmHead get_lm_head() { return lm_head_; }
-
-  void set_lm_head(layer::LmHead& head) { lm_head_ = head; }
+  void set_lm_head(layer::NpuLmHead& head) { lm_head_ = head; }
 
   std::vector<layer::WordEmbedding> get_word_embedding() {
     return model_->get_word_embedding();
@@ -356,8 +356,10 @@ class DeepseekV2ForCausalLMImpl : public torch::nn::Module {
   }
 
  private:
+  layer::NpuLmHead lm_head_{nullptr};
+#endif
+ private:
   DeepseekV2Model model_{nullptr};
-  layer::LmHead lm_head_{nullptr};
   int32_t first_k_dense_replace_;
 };
 TORCH_MODULE(DeepseekV2ForCausalLM);

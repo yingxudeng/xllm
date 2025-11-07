@@ -24,42 +24,16 @@ namespace xllm {
 namespace layer {
 
 #if defined(USE_NPU)
-class LmHead : public torch::nn::ModuleHolder<NpuLmHeadImpl> {
+class NpuLmHead : public torch::nn::ModuleHolder<NpuLmHeadImpl> {
  public:
   using torch::nn::ModuleHolder<NpuLmHeadImpl>::ModuleHolder;
   using Impl __attribute__((__unused__)) = NpuLmHeadImpl;
 
-  LmHead(const ModelContext& context)
+  NpuLmHead(const ModelContext& context)
       : ModuleHolder(std::make_shared<NpuLmHeadImpl>(context)) {}
 };
 
-/**
- * TODO: Rename the original LmHead definition to NpuLmHead,
- * and define the current one as LmHead to unify NPU's LmHead
- * related code with MLU and GPU
- */
-class LmHeadNative : public torch::nn::ModuleHolder<ColumnParallelLinearImpl> {
- public:
-  using torch::nn::ModuleHolder<ColumnParallelLinearImpl>::ModuleHolder;
-  using Impl __attribute__((__unused__)) = ColumnParallelLinearImpl;
-
-  LmHeadNative(int64_t in_features,
-               int64_t out_features,
-               bool bias,
-               bool gather_output,
-               const QuantArgs& quant_args,
-               const ParallelArgs& parallel_args,
-               const torch::TensorOptions& options)
-      : ModuleHolder(std::make_shared<ColumnParallelLinearImpl>(in_features,
-                                                                out_features,
-                                                                bias,
-                                                                gather_output,
-                                                                quant_args,
-                                                                parallel_args,
-                                                                options)) {}
-};
-
-#else
+#endif
 class LmHead : public torch::nn::ModuleHolder<ColumnParallelLinearImpl> {
  public:
   using torch::nn::ModuleHolder<ColumnParallelLinearImpl>::ModuleHolder;
@@ -80,7 +54,6 @@ class LmHead : public torch::nn::ModuleHolder<ColumnParallelLinearImpl> {
                                                                 parallel_args,
                                                                 options)) {}
 };
-#endif
 
 }  // namespace layer
 }  // namespace xllm
