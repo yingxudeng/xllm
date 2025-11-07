@@ -295,9 +295,10 @@ class DeepseekV2MtpForCausalLMImpl : public torch::nn::Module {
     return;
   }
   void update_expert_weight(int32_t layer_id) { return; }
-  layer::LmHead get_lm_head() { return lm_head_; }
+#if defined(USE_NPU)
+  layer::NpuLmHead get_lm_head() { return lm_head_; }
 
-  void set_lm_head(layer::LmHead& head) { lm_head_ = head; }
+  void set_lm_head(layer::NpuLmHead& head) { lm_head_ = head; }
 
   std::vector<layer::WordEmbedding> get_word_embedding() {
     return model_->get_word_embedding();
@@ -308,8 +309,10 @@ class DeepseekV2MtpForCausalLMImpl : public torch::nn::Module {
   }
 
  private:
+  layer::NpuLmHead lm_head_{nullptr};
+#endif
+ private:
   DeepseekV2MtpModel model_{nullptr};
-  layer::LmHead lm_head_{nullptr};
 };
 TORCH_MODULE(DeepseekV2MtpForCausalLM);
 

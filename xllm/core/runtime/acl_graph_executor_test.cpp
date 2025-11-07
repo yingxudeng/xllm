@@ -234,12 +234,12 @@ class SimpleCausalLM : public CausalLM {
     // Simple implementation for testing
   }
 
-  layer::LmHead get_lm_head() override {
+  layer::NpuLmHead get_lm_head() override {
     // Simple implementation for testing
-    return layer::LmHead(nullptr);
+    return layer::NpuLmHead(nullptr);
   }
 
-  void set_lm_head(layer::LmHead& head) override {
+  void set_lm_head(layer::NpuLmHead& head) override {
     // Simple implementation for testing
   }
 

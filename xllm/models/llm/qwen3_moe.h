@@ -384,7 +384,7 @@ class Qwen3MoeForCausalLMImpl : public torch::nn::Module {
   Qwen3MoeForCausalLMImpl(const ModelContext& context) {
     model_ = register_module("model", Qwen3MoeModel(context));
 #if defined(USE_NPU)
-    lm_head_ = register_module("lm_head", layer::LmHead(context));
+    lm_head_ = register_module("lm_head", layer::NpuLmHead(context));
 #else
     // lm_head_ is default to no quantization
     lm_head_ =
@@ -452,10 +452,10 @@ class Qwen3MoeForCausalLMImpl : public torch::nn::Module {
     return;
   }
   virtual void update_expert_weight(int32_t layer_id) { return; }
+#if defined(USE_NPU)
+  layer::NpuLmHead get_lm_head() { return lm_head_; }
 
-  layer::LmHead get_lm_head() { return lm_head_; }
-
-  void set_lm_head(layer::LmHead& head) { lm_head_ = head; }
+  void set_lm_head(layer::NpuLmHead& head) { lm_head_ = head; }
 
   std::vector<layer::WordEmbedding> get_word_embedding() {
     return model_->get_word_embedding();
@@ -466,8 +466,11 @@ class Qwen3MoeForCausalLMImpl : public torch::nn::Module {
   }
 
  private:
+  layer::NpuLmHead lm_head_{nullptr};
+#endif
+
+ private:
   Qwen3MoeModel model_{nullptr};
-  layer::LmHead lm_head_{nullptr};
 };
 TORCH_MODULE(Qwen3MoeForCausalLM);
 

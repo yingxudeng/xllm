@@ -746,9 +746,11 @@ class Qwen2_5_VLForConditionalGenerationImpl : public torch::nn::Module {
       language_model_->load_model(std::move(loader));
     }
   }
-
-  layer::LmHead get_lm_head() { return language_model_->get_lm_head(); }
-  void set_lm_head(layer::LmHead& head) { language_model_->set_lm_head(head); }
+#if defined(USE_NPU)
+  layer::NpuLmHead get_lm_head() { return language_model_->get_lm_head(); }
+  void set_lm_head(layer::NpuLmHead& head) {
+    language_model_->set_lm_head(head);
+  }
 
   std::vector<layer::WordEmbedding> get_word_embedding() {
     return language_model_->get_word_embedding();
@@ -757,7 +759,7 @@ class Qwen2_5_VLForConditionalGenerationImpl : public torch::nn::Module {
   void set_word_embedding(std::vector<layer::WordEmbedding>& word_embedding) {
     language_model_->set_word_embedding(word_embedding);
   }
-
+#endif
  private:
   ModelArgs model_args_;
   torch::TensorOptions options_;

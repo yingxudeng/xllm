@@ -246,7 +246,7 @@ class LlamaForCausalLMImpl : public torch::nn::Module {
     // register submodules
     model_ = register_module("model", LlamaModel(context));
     device_id_ = options.device().index();
-    lm_head_ = register_module("lm_head", layer::LmHead(context));
+    lm_head_ = register_module("lm_head", layer::NpuLmHead(context));
   }
   // tokens: [num_tokens]
   // positions: [num_tokens] token pos in the sequence
@@ -285,10 +285,10 @@ class LlamaForCausalLMImpl : public torch::nn::Module {
     return;
   }
   void update_expert_weight(int32_t layer_id) { return; }
+#if defined(USE_NPU)
+  layer::NpuLmHead get_lm_head() { return lm_head_; }
 
-  layer::LmHead get_lm_head() { return lm_head_; }
-
-  void set_lm_head(layer::LmHead& head) { lm_head_ = head; }
+  void set_lm_head(layer::NpuLmHead& head) { lm_head_ = head; }
 
   std::vector<layer::WordEmbedding> get_word_embedding() {
     return model_->get_word_embedding();
@@ -299,10 +299,12 @@ class LlamaForCausalLMImpl : public torch::nn::Module {
   }
 
  private:
+  layer::NpuLmHead lm_head_{nullptr};
+#endif
+ private:
   // parameter members, must be registered
   LlamaModel model_{nullptr};
   int device_id_ = 0;
-  layer::LmHead lm_head_{nullptr};
 };
 TORCH_MODULE(LlamaForCausalLM);
 

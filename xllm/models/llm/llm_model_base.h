@@ -433,21 +433,8 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
     // register submodules
     model_ = register_module("model", LlmModelType(context));
 
-#if defined(USE_NPU)
-#if defined(USE_NPU_TORCH)
-    lm_head_native_ = register_module(
-        "lm_head",
-        layer::LmHeadNative(context.get_model_args().hidden_size(),
-                            context.get_model_args().vocab_size(),
-                            /*bias=*/false,
-                            /*gather_output=*/true,
-                            QuantArgs{},
-                            context.get_parallel_args(),
-                            context.get_tensor_options()));
-#else
-    lm_head_ = register_module("lm_head", layer::LmHead(context));
-#endif
-
+#if defined(USE_NPU) && !defined(USE_NPU_TORCH)
+    npu_lm_head_ = register_module("lm_head", layer::NpuLmHead(context));
 #else
     // lm_head_ is default to no quantization
     lm_head_ =
@@ -485,16 +472,8 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
     // select tokens if provided
     auto h = hidden_states;
     // test
-#if defined(USE_NPU)
-#if defined(USE_NPU_TORCH)
-    if (seleted_idxes.defined()) {
-      h = h.index_select(/*dim=*/0, seleted_idxes);
-    }
-    return lm_head_native_(h);
-#else
-    return lm_head_(hidden_states, seleted_idxes, 0);
-#endif
-
+#if defined(USE_NPU) && !defined(USE_NPU_TORCH)
+    return npu_lm_head_(hidden_states, seleted_idxes, 0);
 #else
     if (seleted_idxes.defined()) {
       h = h.index_select(/*dim=*/0, seleted_idxes);
@@ -507,12 +486,13 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
                   std::string prefix = "model." /*llm model weight prefix*/) {
     for (const auto& state_dict : loader->get_state_dicts()) {
       model_->load_state_dict(state_dict->get_dict_with_prefix(prefix));
-#if defined(USE_NPU_TORCH)
+#if !defined(USE_NPU_TORCH) && defined(USE_NPU)
+      // todo
       if (tie_word_embeddings) {
-        lm_head_native_->load_state_dict(
+        npu_lm_head_->load_state_dict(
             state_dict->get_dict_with_prefix(prefix + "embed_tokens."));
       } else {
-        lm_head_native_->load_state_dict(
+        npu_lm_head_->load_state_dict(
             state_dict->get_dict_with_prefix("lm_head."));
       }
 #else
@@ -529,10 +509,10 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
     model_->verify_loaded_weights(prefix);
     model_->merge_loaded_weights();
 #if !defined(USE_NPU_TORCH)
-    lm_head_->verify_loaded_weights("lm_head.");
+    npu_lm_head_->verify_loaded_weights("lm_head.");
 
     // test
-    lm_head_->merge_loaded_weights();
+    npu_lm_head_->merge_loaded_weights();
 #endif
 #endif
   }
@@ -542,10 +522,10 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
     return;
   }
   virtual void update_expert_weight(int32_t layer_id) { return; }
+#if defined(USE_NPU)
+  virtual layer::NpuLmHead get_lm_head() { return npu_lm_head_; }
 
-  virtual layer::LmHead get_lm_head() { return lm_head_; }
-
-  virtual void set_lm_head(layer::LmHead& head) { lm_head_ = head; }
+  virtual void set_lm_head(layer::NpuLmHead& head) { npu_lm_head_ = head; }
 
   virtual std::vector<layer::WordEmbedding> get_word_embedding() {
     return model_->get_word_embedding();
@@ -557,15 +537,15 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
   }
 
  protected:
+  layer::NpuLmHead npu_lm_head_{nullptr};
+#endif
+ protected:
   // parameter members, must be registered
   LlmModelType model_{nullptr};
   int device_id = 0;
   bool tie_word_embeddings{false};
   // test
   layer::LmHead lm_head_{nullptr};
-#if defined(USE_NPU_TORCH)
-  layer::LmHeadNative lm_head_native_{nullptr};
-#endif
 };
 
 }  // namespace xllm

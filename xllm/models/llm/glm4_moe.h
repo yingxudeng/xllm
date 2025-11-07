@@ -254,7 +254,7 @@ class Glm4MoeForCausalLMImpl : public torch::nn::Module {
  public:
   Glm4MoeForCausalLMImpl(const ModelContext& context) {
     model_ = register_module("model", Glm4MoeModel(context));
-    lm_head_ = register_module("lm_head", layer::LmHead(context));
+    lm_head_ = register_module("lm_head", layer::NpuLmHead(context));
   }
 
   // tokens: [num_tokens]
@@ -296,10 +296,10 @@ class Glm4MoeForCausalLMImpl : public torch::nn::Module {
     return;
   }
   virtual void update_expert_weight(int32_t layer_id) { return; }
+#if defined(USE_NPU)
+  layer::NpuLmHead get_lm_head() { return lm_head_; }
 
-  layer::LmHead get_lm_head() { return lm_head_; }
-
-  void set_lm_head(layer::LmHead& head) { lm_head_ = head; }
+  void set_lm_head(layer::NpuLmHead& head) { lm_head_ = head; }
 
   std::vector<layer::WordEmbedding> get_word_embedding() {
     return model_->get_word_embedding();
@@ -310,8 +310,10 @@ class Glm4MoeForCausalLMImpl : public torch::nn::Module {
   }
 
  private:
+  layer::NpuLmHead lm_head_{nullptr};
+#endif
+ private:
   Glm4MoeModel model_{nullptr};
-  layer::LmHead lm_head_{nullptr};
 };
 TORCH_MODULE(Glm4MoeForCausalLM);
 
