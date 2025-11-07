@@ -24,6 +24,7 @@ limitations under the License.
 #include <torch/torch.h>
 #include <unistd.h>
 
+#include <cstdlib>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -50,6 +51,9 @@ limitations under the License.
 extern char** environ;
 
 namespace xllm {
+namespace {
+void handle_signal(int signum) { _exit(0); }
+}  // namespace
 
 void WorkerServer::create_server(
     const runtime::Options& options,
@@ -217,6 +221,10 @@ WorkerServer::WorkerServer(int local_worker_idx,
           local_worker_idx, master_node_addr, done, parallel_args, d, options);
       return;
     } else {
+      // worker process should handle SIGTREM and SIGINT signals.
+      signal(SIGINT, handle_signal);
+      signal(SIGTERM, handle_signal);
+
       std::unique_ptr<ForwardSharedMemoryManager> input_shm_manager = nullptr;
       std::unique_ptr<ForwardSharedMemoryManager> output_shm_manager = nullptr;
       prepare_shm(

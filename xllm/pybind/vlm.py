@@ -45,6 +45,8 @@ class VLM:
         is_local: bool = True,
         **kwargs,
     ) -> None:
+        signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
+        signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
 
         if not os.path.exists(model):
             raise ValueError(f"model {model} not exists")
@@ -97,7 +99,8 @@ class VLM:
     def finish(self):
         try:
             #os.kill(os.getpid(), signal.SIGTERM)
-            os.kill(os.getpid(), signal.SIGKILL)
+            #os.kill(os.getpid(), signal.SIGKILL)
+            util.terminate_process(os.getpid())
         except Exception as e:
             pass
 

@@ -21,6 +21,7 @@ limitations under the License.
 
 #include <algorithm>
 #include <boost/algorithm/string.hpp>
+#include <cstdlib>
 #include <memory>
 
 #include "common/metrics.h"
@@ -33,7 +34,16 @@ limitations under the License.
 
 namespace xllm {
 
+namespace {
+void handle_signal(int signum) { _exit(0); }
+}  // namespace
+
 VLMEngine::VLMEngine(const runtime::Options& options) : options_(options) {
+  // worker process should handle SIGTREM and SIGINT signals.
+  // TODO: delete these code when multi-process impl is supported.
+  signal(SIGINT, handle_signal);
+  signal(SIGTERM, handle_signal);
+
   const auto& devices = options_.devices();
   CHECK_GT(devices.size(), 0) << "At least one device is required";
 

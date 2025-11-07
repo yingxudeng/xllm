@@ -45,10 +45,19 @@ limitations under the License.
 #include <pybind11/pybind11.h>
 #endif
 
+namespace brpc {
+DECLARE_bool(graceful_quit_on_sigterm);
+DECLARE_bool(graceful_quit_on_sighup);
+}  // namespace brpc
+
 namespace xllm {
 
 Master::Master(const Options& options, EngineType type) : options_(options) {
   LOG(INFO) << "Master init options: " << options.to_string();
+
+  // Allow brpc receive SIGTREM and SIGINT signal.
+  brpc::FLAGS_graceful_quit_on_sigterm = true;
+  brpc::FLAGS_graceful_quit_on_sighup = true;
 
 #if defined(USE_NPU)
   if (options.rank_tablefile().has_value()) {
