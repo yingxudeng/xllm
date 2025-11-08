@@ -413,4 +413,4 @@ DEFINE_bool(
     "If adjustments are needed, e.g. export PREFETCH_COEFFOCIENT=0.5");
 
 
-DEFINE_bool(enable_native_npu, true, "Whether to enable native NPU support.");
+DEFINE_bool(enable_npu_torch, true, "Whether to enable native NPU support.");

@@ -21,7 +21,12 @@ namespace xllm::kernel::npu {
 
 torch::Tensor fused_layernorm(const torch::Tensor& input,
                               const torch::Tensor& weight,
-                              double eps) {
+                              double eps,
+                              const std::string& mode) {
+  if (mode != "rmsnorm") {
+    throw std::runtime_error(
+        "Only rmsnorm mode is supported in NPU fused_layernorm");
+  }
   std::tuple<at::Tensor, at::Tensor> result =
       at_npu::native::custom_ops::npu_rms_norm(input, weight, eps);
   auto normalized_input = std::get<0>(result);

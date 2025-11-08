@@ -18,10 +18,6 @@ limitations under the License.
 #include "hccl/hccl.h"
 #include "process_group.h"
 
-namespace c10d_npu {
-class ProcessGroupHCCL;
-}
-
 namespace xllm {
 
 class ProcessGroupHCCL : public ProcessGroup {

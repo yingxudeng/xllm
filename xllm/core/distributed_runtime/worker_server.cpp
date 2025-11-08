@@ -107,7 +107,7 @@ void WorkerServer::create_server(
 #elif defined(USE_NPU)
   // TODO: Refactor to use model_type or other appropriate enumeration for
   // condition checking
-  if (FLAGS_enable_native_npu) {
+  if (FLAGS_enable_npu_torch) {
     comm.create_process_groups(master_node_addr, device);
   }
 #endif

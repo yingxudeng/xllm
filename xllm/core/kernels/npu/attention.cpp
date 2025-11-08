@@ -31,9 +31,9 @@ void batch_prefill(const torch::Tensor& query,
                    const torch::Tensor& mask,
                    const torch::Tensor& seq_len,
                    float scale,
-                   int num_heads,
-                   int num_kv_heads,
                    torch::Tensor& output) {
+  auto num_heads = query.size(-2);
+  auto num_kv_heads = key.size(-2);
   atb::_npu_flash_attention(
       query, key, value, mask, seq_len, scale, num_heads, num_kv_heads, output);
 }
@@ -41,13 +41,16 @@ void batch_prefill(const torch::Tensor& query,
 void batch_decode(const torch::Tensor& query,
                   const torch::Tensor& k_cache,
                   const torch::Tensor& v_cache,
-                  int num_kv_heads,
-                  int num_heads,
                   float scale,
                   const torch::Tensor& block_table,
                   const torch::Tensor& seq_lens,
                   torch::Tensor& output) {
-  atb::_npu_paged_attention(query,
+  auto head_size = query.size(-1);
+  auto num_heads = query.size(-2);
+  auto num_kv_heads = k_cache.size(-2);
+  auto q = query.view({-1, num_heads, head_size});
+  auto o = output.view({-1, num_heads, head_size});
+  atb::_npu_paged_attention(q,
                             k_cache,
                             v_cache,
                             num_kv_heads,
@@ -55,7 +58,7 @@ void batch_decode(const torch::Tensor& query,
                             scale,
                             block_table,
                             seq_lens,
-                            output);
+                            o);
 }
 
 }  // namespace xllm::kernel::npu

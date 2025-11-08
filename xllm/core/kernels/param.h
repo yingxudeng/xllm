@@ -198,8 +198,6 @@ struct AttentionParams {
   bool return_lse = false;
   // ========== Torch NPU related parameters ==========
   torch::Tensor seq_lens;
-  int num_heads;
-  int num_kv_heads;
   torch::Tensor attn_mask;
 
   // ========== FlashInfer related parameters ==========
