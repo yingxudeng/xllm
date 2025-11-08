@@ -92,6 +92,7 @@ torch::Tensor DenseMLPImpl::forward(const torch::Tensor& hidden_states) {
 #if defined(USE_NPU)
     xllm::kernel::ActivationParams activation_params;
     activation_params.input = gate_up;
+    activation_params.act_mode = hidden_act_;
     auto output = xllm::kernel::active_tensor(activation_params);
 #else
     auto output = torch::empty(

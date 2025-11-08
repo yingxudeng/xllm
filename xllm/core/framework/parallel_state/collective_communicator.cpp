@@ -18,8 +18,6 @@ limitations under the License.
 #include "mapping_npu.h"
 
 #if defined(USE_NPU)
-#include <torch_npu/csrc/distributed/ProcessGroupHCCL.hpp>
-
 #include "npu_process_group.h"
 #include "xllm_kernels/core/include/atb_speed/base/external_comm_manager.h"
 #include "xllm_kernels/core/include/atb_speed/utils/singleton.h"

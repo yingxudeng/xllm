@@ -27,25 +27,15 @@ namespace layer {
 
 struct AttentionMetadata {
  public:
-#if defined(USE_NPU)
-  static AttentionMetadata build(const ModelInputParams& params,
-                                 bool is_prefill,
-                                 const torch::Tensor& attn_mask);
-
-  static AttentionMetadata build(const ModelInputParams& params,
-                                 const std::string& compute_dtype,
-                                 bool is_prefill,
-                                 const torch::Tensor& attn_mask);
-  torch::Tensor attn_mask;
-  torch::Tensor seq_lens;
-#else
-  static AttentionMetadata build(const ModelInputParams& params,
-                                 bool is_prefill);
-
-  static AttentionMetadata build(const ModelInputParams& params,
-                                 const std::string& compute_dtype,
-                                 bool is_prefill);
-#endif
+  static AttentionMetadata build(
+      const ModelInputParams& params,
+      bool is_prefill,
+      const std::optional<torch::Tensor>& attn_mask = std::nullopt);
+  static AttentionMetadata build(
+      const ModelInputParams& params,
+      const std::string& compute_dtype,
+      bool is_prefill,
+      const std::optional<torch::Tensor>& attn_mask = std::nullopt);
 
   torch::Tensor query_start_loc;
   torch::Tensor seq_start_loc;
@@ -57,6 +47,10 @@ struct AttentionMetadata {
   std::string compute_dtype;
   bool is_prefill;
   bool is_chunked_prefill;
+
+  // for npu
+  torch::Tensor attn_mask;
+  torch::Tensor seq_lens;
 };
 
 class AttentionImpl : public torch::nn::Module {

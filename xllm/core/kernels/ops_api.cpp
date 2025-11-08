@@ -54,7 +54,7 @@ void active(ActivationParams& params) {
 
 torch::Tensor active_tensor(ActivationParams& params) {
 #if defined(USE_NPU)
-  return npu::active(params.input);
+  return npu::active(params.input, params.act_mode);
 #else
   throw std::runtime_error("active not implemented");
 #endif
@@ -110,8 +110,6 @@ void batch_prefill(AttentionParams& params) {
                      params.attn_mask,
                      params.seq_lens,
                      params.scale,
-                     params.num_heads,
-                     params.num_kv_heads,
                      params.output);
 #else
   throw std::runtime_error("batch_prefill not implemented");
@@ -144,8 +142,6 @@ void batch_decode(AttentionParams& params) {
   npu::batch_decode(params.query,
                     params.k_cache,
                     params.v_cache,
-                    params.num_kv_heads,
-                    params.num_heads,
                     params.scale,
                     params.block_table.value(),
                     params.seq_lens,
@@ -179,7 +175,8 @@ void fused_layernorm(FusedLayerNormParams& params) {
 
 torch::Tensor fused_layernorm_tensor(FusedLayerNormParams& params) {
 #if defined(USE_NPU)
-  return npu::fused_layernorm(params.input, params.weight, params.eps);
+  return npu::fused_layernorm(
+      params.input, params.weight, params.eps, params.mode);
 #else
   throw std::runtime_error("fused_layernorm not implemented");
 #endif

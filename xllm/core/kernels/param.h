@@ -82,9 +82,8 @@ struct AttentionParams {
   bool return_lse = false;
   // for npu
   torch::Tensor seq_lens;
-  int num_heads;
-  int num_kv_heads;
   torch::Tensor attn_mask;
+
   // for flashinfer
   torch::Tensor paged_kv_indptr;
   torch::Tensor paged_kv_indices;

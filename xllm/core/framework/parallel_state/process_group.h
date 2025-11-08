@@ -66,6 +66,9 @@ class ProcessGroup {
 
  protected:
 #if defined(USE_NPU)
+  // Using ProcessGroupHCCL for NPU devices
+  // Note: torch_npu uses an older torch version where c10d::Backend lacks
+  // shutdown() method
   std::unique_ptr<c10d_npu::ProcessGroupHCCL> pg_{nullptr};
 #else
   std::unique_ptr<c10d::Backend> pg_{nullptr};

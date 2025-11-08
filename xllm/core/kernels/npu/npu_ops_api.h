@@ -34,15 +34,11 @@ void batch_prefill(const torch::Tensor& query,
                    const torch::Tensor& mask,
                    const torch::Tensor& seq_len,
                    float scale,
-                   int num_heads,
-                   int num_kv_heads,
                    torch::Tensor& output);
 
 void batch_decode(const torch::Tensor& query,
                   const torch::Tensor& k_cache,
                   const torch::Tensor& v_cache,
-                  int num_kv_heads,
-                  int num_heads,
                   float scale,
                   const torch::Tensor& block_table,
                   const torch::Tensor& seq_lens,
@@ -52,11 +48,12 @@ torch::Tensor matmul(const torch::Tensor& a,
                      const torch::Tensor& b,
                      const std::optional<torch::Tensor>& bias);
 
-torch::Tensor active(const torch::Tensor& input);
+torch::Tensor active(const torch::Tensor& input, const std::string& act_mode);
 
 torch::Tensor fused_layernorm(const torch::Tensor& input,
                               const torch::Tensor& weight,
-                              double eps);
+                              double eps,
+                              const std::string& mode);
 
 void apply_rotary(torch::Tensor& q,
                   torch::Tensor& k,

@@ -351,9 +351,8 @@ class LlmModelImplBase : public torch::nn::Module {
     }
   }
 
-#if defined(USE_NPU)
+#if defined(USE_NPU) && !defined(USE_NPU_TORCH)
   virtual void verify_loaded_weights(const std::string& prefix) const {
-#if !defined(USE_NPU_TORCH)
     for (auto i = 0; i < FLAGS_micro_batch_num; i++) {
       npu_embed_tokens_[i]->verify_loaded_weights(prefix + "embed_tokens.");
     }
@@ -362,11 +361,9 @@ class LlmModelImplBase : public torch::nn::Module {
                                         ".");
     }
     npu_norm_->verify_loaded_weights(prefix + "norm.");
-#endif
   }
 
   virtual void merge_loaded_weights() {
-#if !defined(USE_NPU_TORCH)
     for (auto i = 0; i < FLAGS_micro_batch_num; i++) {
       npu_embed_tokens_[i]->merge_loaded_weights();
     }
@@ -374,7 +371,6 @@ class LlmModelImplBase : public torch::nn::Module {
       layers_[i]->merge_loaded_weights();
     }
     npu_norm_->merge_loaded_weights();
-#endif
   }
 #endif
 
@@ -500,16 +496,14 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
       }
 #endif
     }
-#if defined(USE_NPU)
+#if defined(USE_NPU) && !defined(USE_NPU_TORCH)
     // verify
     model_->verify_loaded_weights(prefix + "model.");
     model_->merge_loaded_weights();
-#if !defined(USE_NPU_TORCH)
-    npu_lm_head_->verify_loaded_weights(prefix + "lm_head.");
 
+    npu_lm_head_->verify_loaded_weights(prefix + "lm_head.");
     // test
     npu_lm_head_->merge_loaded_weights();
-#endif
 #endif
   }
 

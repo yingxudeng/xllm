@@ -203,4 +203,4 @@ DECLARE_string(reasoning_parser);
 
 DECLARE_bool(enable_shm);
 
-DECLARE_bool(enable_native_npu);
+DECLARE_bool(enable_npu_torch);
