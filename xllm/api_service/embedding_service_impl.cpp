@@ -94,6 +94,7 @@ void EmbeddingServiceImpl::process_async_impl(
   // TODO only support input_str for now
   auto& input = rpc_request.input();
 
+  auto saved_request_id = request_params.request_id;
   // schedule the request
   master_->handle_request(
       std::move(input),
@@ -102,7 +103,7 @@ void EmbeddingServiceImpl::process_async_impl(
       call.get(),
       [call,
        model,
-       request_id = request_params.request_id,
+       request_id = std::move(saved_request_id),
        created_time = absl::ToUnixSeconds(absl::Now())](
           const RequestOutput& req_output) -> bool {
         if (req_output.status.has_value()) {

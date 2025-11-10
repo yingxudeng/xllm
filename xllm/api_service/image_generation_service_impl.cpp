@@ -83,13 +83,14 @@ void ImageGenerationServiceImpl::process_async_impl(
   DiTRequestParams request_params(
       rpc_request, call->get_x_request_id(), call->get_x_request_time());
 
+  auto saved_request_id = request_params.request_id;
   // schedule the request
   master_->handle_request(
       std::move(request_params),
       call.get(),
       [call,
        model,
-       request_id = request_params.request_id,
+       request_id = std::move(saved_request_id),
        created_time = absl::ToUnixSeconds(absl::Now())](
           const DiTRequestOutput& req_output) -> bool {
         if (req_output.status.has_value()) {
