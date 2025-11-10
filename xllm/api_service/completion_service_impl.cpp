@@ -196,6 +196,8 @@ void CompletionServiceImpl::process_async_impl(
     request_params.decode_address = rpc_request.routing().decode_name();
   }
 
+  auto saved_streaming = request_params.streaming;
+  auto saved_request_id = request_params.request_id;
   // schedule the request
   master_->handle_request(
       std::move(rpc_request.prompt()),
@@ -205,9 +207,9 @@ void CompletionServiceImpl::process_async_impl(
       [call,
        model,
        master = master_,
-       stream = request_params.streaming,
+       stream = std::move(saved_streaming),
        include_usage = include_usage,
-       request_id = request_params.request_id,
+       request_id = std::move(saved_request_id),
        created_time = absl::ToUnixSeconds(absl::Now())](
           const RequestOutput& req_output) -> bool {
         if (req_output.status.has_value()) {
