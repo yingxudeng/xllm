@@ -131,8 +131,8 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
       if (inputs_embeds.defined()) {
         h = inputs_embeds;
       } else {
-#if defined(USE_NPU)
-        h = embed_tokens_[i](tokens[i], 0);
+#if defined(USE_NPU) && !defined(USE_NPU_TORCH)
+        h = npu_embed_tokens_[i](tokens[i], 0);
 #else
         h = embed_tokens_[i](tokens[i]);
 #endif
@@ -206,7 +206,7 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
       attn_masks.push_back(std::move(attn_mask));
 #endif
     }
-#if defined(USE_NPU)
+#if defined(USE_NPU) && !defined(USE_NPU_TORCH)
     for (size_t i = 0; i < layers_.size(); i++) {
       std::vector<aclrtEvent*> events(micro_batch_num, nullptr);
       std::vector<std::atomic<bool>*> event_flags(micro_batch_num, nullptr);
@@ -238,12 +238,16 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
       }
     }
     auto cancated_h = torch::cat(hs, 0);
-    return norm_(cancated_h, 0);
+    return npu_norm_(cancated_h, 0);
 #else
     bool is_prefill = input_params[0].q_max_seq_len > 1;
+#if defined(USE_NPU_TORCH)
+    auto attn_metadata = layer::AttentionMetadata::build(
+        input_params[0], is_prefill, attn_masks[0]);
+#else
     auto attn_metadata =
         layer::AttentionMetadata::build(input_params[0], is_prefill);
-
+#endif
     torch::Tensor h;
     for (size_t i = 0; i < layers_.size(); i++) {
       auto& layer = layers_[i];

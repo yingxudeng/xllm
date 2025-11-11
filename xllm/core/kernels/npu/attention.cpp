@@ -18,11 +18,12 @@ limitations under the License.
 namespace xllm::kernel::npu {
 
 void reshape_paged_cache(torch::Tensor& key,
-                         torch::Tensor& value,
+                         std::optional<torch::Tensor>& value,
                          torch::Tensor& k_cache,
-                         torch::Tensor& v_cache,
+                         std::optional<torch::Tensor>& v_cache,
                          const torch::Tensor& slot_mapping) {
-  atb::_npu_reshape_and_cache(key, value, k_cache, v_cache, slot_mapping);
+  atb::_npu_reshape_and_cache(
+      key, value.value(), k_cache, v_cache.value(), slot_mapping);
 }
 
 void batch_prefill(const torch::Tensor& query,

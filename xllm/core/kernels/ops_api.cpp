@@ -74,15 +74,7 @@ torch::Tensor active_tensor(ActivationParams& params) {
 #if defined(USE_NPU)
   return npu::active(params.input, params.act_mode);
 #else
-  LOG(FATAL) << "active not implemented";
-#endif
-}
-
-torch::Tensor active_tensor(ActivationParams& params) {
-#if defined(USE_NPU)
-  return npu::active(params.input);
-#else
-  LOG(FATAL) << "active not implemented";
+  LOG(FATAL) << "active_tensor not implemented";
 #endif
 }
 
@@ -234,14 +226,6 @@ void fused_layernorm(FusedLayerNormParams& params) {
                        params.dynamic_quant);
 #elif defined(USE_CUDA)
   cuda::rmsnorm(params.output, params.input, params.weight, params.eps);
-#else
-  LOG(FATAL) << "fused_layernorm not implemented";
-#endif
-}
-
-torch::Tensor fused_layernorm_tensor(FusedLayerNormParams& params) {
-#if defined(USE_NPU)
-  return npu::fused_layernorm(params.input, params.weight, params.eps);
 #else
   LOG(FATAL) << "fused_layernorm not implemented";
 #endif

@@ -17,8 +17,12 @@ limitations under the License.
 
 #include "param.h"
 
-namespace xllm {
-namespace kernel {
+namespace xllm::kernel {
+
+static const std::string kActModeSilu = "silu";
+static const std::string kActModeGelu = "gelu";
+static const std::string kActModeQuickGelu = "quick_gelu";
+static const std::string kActModeSwish = "swish";
 
 void apply_rotary(RotaryParams& params);
 
