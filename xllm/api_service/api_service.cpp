@@ -135,14 +135,16 @@ void ChatCompletionsImpl(std::unique_ptr<Service>& service,
   auto resp_pb =
       google::protobuf::Arena::CreateMessage<typename ChatCall::ResType>(arena);
 
+  std::string attachment = std::move(ctrl->request_attachment().to_string());
   std::string error;
-  json2pb::Json2PbOptions options;
-  butil::IOBuf& buf = ctrl->request_attachment();
-  butil::IOBufAsZeroCopyInputStream iobuf_stream(buf);
-  auto st = json2pb::JsonToProtoMessage(&iobuf_stream, req_pb, options, &error);
-  if (!st) {
-    ctrl->SetFailed(error);
-    LOG(ERROR) << "parse json to proto failed: " << buf.to_string();
+
+  google::protobuf::util::JsonParseOptions options;
+  options.ignore_unknown_fields = true;
+  auto json_status =
+      google::protobuf::util::JsonStringToMessage(attachment, req_pb, options);
+  if (!json_status.ok()) {
+    ctrl->SetFailed(json_status.ToString());
+    LOG(ERROR) << "parse json to proto failed: " << json_status.ToString();
     return;
   }
 
