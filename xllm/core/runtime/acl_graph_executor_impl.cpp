@@ -121,6 +121,11 @@ bool AclGraph::capture(CausalLM* model,
   }
   LOG(INFO) << "capture begin, bucket_size: " << bucket_size
             << " actual_batch_size: " << actual_batch_size << std::endl;
+#if defined(USE_NPU_TORCH)
+  // TODO: Temporary fix - replace with attention that accepts kv_seq_lens on
+  // NPU once attention precision is verified.
+  graph_params.kv_seq_lens = kv_seq_lens_.to(torch::kCPU);
+#endif
   graph_.capture_begin();
 
   // Execute forward pass - NPUGraph mempool manages temporary tensors

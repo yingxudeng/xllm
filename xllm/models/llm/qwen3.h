@@ -143,11 +143,13 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
         deep_stacks.push_back(
             input_params[i].deep_stacks);  // [num_deepstack, hidden_size]
       }
+#if !defined(USE_NPU_TORCH)
       auto target_cos_sin = atb_pos_embeds_[i](cos_sin_, positions[i], 0);
       auto target_cos_sin_chunks =
           target_cos_sin.chunk(/*chunks=*/2, /*dim=*/-1);
       auto cos_pos = target_cos_sin_chunks[0].contiguous();
       auto sin_pos = target_cos_sin_chunks[1].contiguous();
+#endif
 
       if (positions[i].dim() == 2) {  // mrope
         auto apply = [this](torch::Tensor x) {
@@ -168,20 +170,29 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
           }
           return freqs_t;
         };
+#if !defined(USE_NPU_TORCH)
         cos_pos = apply(cos_pos.reshape(
             {positions[i].sizes().front(), -1, cos_pos.sizes().back()}));
         sin_pos = apply(sin_pos.reshape(
             {positions[i].sizes().front(), -1, sin_pos.sizes().back()}));
+        cos_poss.push_back(std::move(cos_pos));
+        sin_poss.push_back(std::move(sin_pos));
+#endif
       }
 
       torch::Tensor attn_mask;
 
       torch::Tensor max_of_seq = torch::max(input_params[i].kv_seq_lens);
+      // max_seq_len_ = std::max(max_of_seq.item<int>(), max_seq_len_);
+#if !defined(USE_NPU_TORCH)
       max_seq_len_ = FLAGS_enable_chunked_prefill
                          ? std::max(max_of_seq.item<int>(), max_seq_len_)
                          : 128;
+#else
+      max_seq_len_ = std::max(max_of_seq.item<int>(), max_seq_len_);
+#endif
       attn_mask = attn_mask_.get_attn_mask(
-          max_seq_len_, cos_pos.dtype().toScalarType(), cos_pos.device());
+          max_seq_len_, hs[0].dtype().toScalarType(), hs[0].device());
 
       if (FLAGS_enable_chunked_prefill) {
         int batch_size = input_params[i].q_seq_lens_vec.size();
@@ -201,8 +212,6 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
         }
       }
 
-      cos_poss.push_back(std::move(cos_pos));
-      sin_poss.push_back(std::move(sin_pos));
       attn_masks.push_back(std::move(attn_mask));
 #endif
     }
