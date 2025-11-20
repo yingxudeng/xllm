@@ -57,6 +57,16 @@ using MMContentVec = std::vector<MMContent>;
 struct Message {
   using Content = std::variant<std::string, MMContentVec>;
 
+  struct ToolCall {
+    std::string id;
+    std::string type;
+    struct Function {
+      std::string name;
+      std::string arguments;
+    } function;
+  };
+  using ToolCallVec = std::vector<ToolCall>;
+
   Message(const std::string& role, const std::string& content)
       : role(role), content(content) {}
 
@@ -85,6 +95,11 @@ struct Message {
 
   std::string role;
   Content content;
+
+  // Additional fields for tool calls and reasoning
+  std::optional<std::string> tool_call_id;
+  std::optional<std::string> reasoning_content;
+  std::optional<ToolCallVec> tool_calls;
 };
 
 using ChatMessages = std::vector<Message>;
