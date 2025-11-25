@@ -403,7 +403,6 @@ void NpuQwen3MoeDecoderLayerImpl::initialize_parallel_parameters(
                               nullptr,
                               ""};
 
-  param.PrintParam();
   param.maxDecodeDpTokenSize = 0;  // TODO
 }
 
