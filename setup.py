@@ -275,7 +275,8 @@ class ExtBuild(build_ext):
             for ext in self.extensions:
                 self.build_extension(ext)
         except Exception as e:
-            print("Build failed.")
+            print("ERROR: Build failed.")
+            print(f"Details: {e}")
             exit(1)
 
     def build_extension(self, ext: CMakeExtension):
