@@ -464,3 +464,9 @@ DEFINE_bool(enable_constrained_decoding,
             "Whether to enable constrained decoding, which is used to ensure "
             "that the output meets specific format or structural requirements "
             "through pre-defined rules.");
+
+
+DEFINE_string(
+    npu_kernel_backend,
+    "ATB",
+    "NPU kernel backend. Supported options: ATB, TORCH. Default is ATB.");
