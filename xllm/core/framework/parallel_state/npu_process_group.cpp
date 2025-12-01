@@ -14,12 +14,6 @@ limitations under the License.
 ==============================================================================*/
 
 #include "npu_process_group.h"
-#ifdef TORCH_HIGHER_THAN_PTA6
-#include <torch_npu/csrc/framework/OpCommand.h>
-#else
-#include <torch_npu/csrc/aten/NPUNativeFunctions.h>
-#include <torch_npu/csrc/framework/utils/OpPreparation.h>
-#endif
 
 #include <c10d/ProcessGroup.hpp>
 #include <c10d/TCPStore.hpp>
@@ -49,7 +43,10 @@ ProcessGroupHCCL::ProcessGroupHCCL(int global_rank,
     : ProcessGroup(device) {
   c10::intrusive_ptr<c10d_npu::ProcessGroupHCCL::Options> hccl_pg_options =
       c10d_npu::ProcessGroupHCCL::Options::create();
-  // hccl_pg_options->group_name = group_name;
+#if TORCH_VERSION_MAJOR > 2 || \
+    (TORCH_VERSION_MAJOR == 2 && TORCH_VERSION_MINOR >= 7)
+  hccl_pg_options->group_name = group_name;
+#endif
   int rank = global_rank;
   if (world_size != rank_size) {
     auto [local_rank, group_ranks] =

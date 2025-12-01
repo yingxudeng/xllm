@@ -466,7 +466,9 @@ DEFINE_bool(enable_constrained_decoding,
             "through pre-defined rules.");
 
 
+#if defined(USE_NPU)
 DEFINE_string(
     npu_kernel_backend,
     "ATB",
     "NPU kernel backend. Supported options: ATB, TORCH. Default is ATB.");
+#endif

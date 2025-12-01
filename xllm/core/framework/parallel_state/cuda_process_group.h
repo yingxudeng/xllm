@@ -34,7 +34,8 @@ class ProcessGroupNccl : public ProcessGroup {
       : ProcessGroup(device) {
     c10::intrusive_ptr<c10d::ProcessGroupNCCL::Options> pg_options =
         c10d::ProcessGroupNCCL::Options::create();
-#if TORCH_VERSION_MAJOR >= 2 && TORCH_VERSION_MINOR >= 7
+#if TORCH_VERSION_MAJOR > 2 || \
+    (TORCH_VERSION_MAJOR == 2 && TORCH_VERSION_MINOR >= 7)
     pg_options->group_name = group_name;
 #endif
     int rank = global_rank;
