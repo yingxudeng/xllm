@@ -195,6 +195,9 @@ struct AttentionParams {
   float scale;
   // Whether to return log-sum-exp values in output_lse.
   bool return_lse = false;
+  // ========== Torch NPU related parameters ==========
+  torch::Tensor seq_lens;
+  torch::Tensor attn_mask;
 
   // ========== FlashInfer related parameters ==========
   torch::Tensor paged_kv_indptr;
