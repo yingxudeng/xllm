@@ -215,7 +215,7 @@ std::vector<std::unique_ptr<ProcessGroup>> create_npu_process_groups(
   std::vector<std::unique_ptr<ProcessGroup>> process_groups;
   process_groups.reserve(devices.size());
   for (int i = 0; i < world_size; ++i) {
-    process_groups.emplace_back(std::make_unique<ProcessGroupHCCL>(
+    process_groups.emplace_back(std::make_unique<ProcessGroupImpl>(
         /*rank=*/i, world_size, devices[i], comms[i]));
   }
 

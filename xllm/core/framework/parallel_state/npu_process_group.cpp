@@ -32,10 +32,10 @@ namespace {
 
 namespace xllm {
 
-ProcessGroupHCCL::ProcessGroupHCCL(int global_rank,
-                                   int world_size,
-                                   int rank_size,
-                                   int port,
+ProcessGroupImpl::ProcessGroupImpl(int32_t global_rank,
+                                   int32_t world_size,
+                                   int32_t rank_size,
+                                   int32_t port,
                                    bool trans,
                                    const std::string& host,
                                    const std::string& group_name,
@@ -47,7 +47,7 @@ ProcessGroupHCCL::ProcessGroupHCCL(int global_rank,
     (TORCH_VERSION_MAJOR == 2 && TORCH_VERSION_MINOR >= 7)
   hccl_pg_options->group_name = group_name;
 #endif
-  int rank = global_rank;
+  int32_t rank = global_rank;
   if (world_size != rank_size) {
     auto [local_rank, group_ranks] =
         get_group_rank(world_size, global_rank, rank_size, trans);
@@ -65,7 +65,7 @@ ProcessGroupHCCL::ProcessGroupHCCL(int global_rank,
 }
 
 // Destructor.
-ProcessGroupHCCL::~ProcessGroupHCCL() {
+ProcessGroupImpl::~ProcessGroupImpl() {
   if (pg_) {
     pg_->shutdown();
   } else {
@@ -73,23 +73,10 @@ ProcessGroupHCCL::~ProcessGroupHCCL() {
   }
 }
 
-ProcessGroupHCCL::ProcessGroupHCCL(int rank,
+ProcessGroupImpl::ProcessGroupImpl(int rank,
                                    int world_size,
                                    const torch::Device& device,
                                    HcclComm comm)
     : ProcessGroup(device), comm_(comm) {}
-
-std::unique_ptr<xllm::ProcessGroup> create_process_group(
-    int rank,
-    int world_size,
-    int rank_size,
-    int port,
-    bool trans,
-    const std::string& host,
-    const std::string& group_name,
-    const torch::Device& device) {
-  return std::make_unique<ProcessGroupHCCL>(
-      rank, world_size, rank_size, port, trans, host, group_name, device);
-}
 
 }  // namespace xllm

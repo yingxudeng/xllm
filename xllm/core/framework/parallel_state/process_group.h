@@ -25,6 +25,9 @@ limitations under the License.
 #endif
 
 namespace xllm {
+
+class ProcessGroupImpl;
+
 std::pair<int, std::vector<uint64_t>> get_group_rank(int world_size,
                                                      int global_rank,
                                                      int split_size,
@@ -76,5 +79,15 @@ class ProcessGroup {
   std::unique_ptr<c10d::Backend> pg_{nullptr};
 #endif
 };
+
+std::unique_ptr<xllm::ProcessGroup> create_process_group(
+    int32_t rank,
+    int32_t world_size,
+    int32_t rank_size,
+    int32_t port,
+    bool trans,
+    const std::string& host,
+    const std::string& group_name,
+    const torch::Device& device);
 
 }  // namespace xllm

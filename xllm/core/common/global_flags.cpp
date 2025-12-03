@@ -465,7 +465,6 @@ DEFINE_bool(enable_constrained_decoding,
             "that the output meets specific format or structural requirements "
             "through pre-defined rules.");
 
-
 #if defined(USE_NPU)
 DEFINE_string(
     npu_kernel_backend,

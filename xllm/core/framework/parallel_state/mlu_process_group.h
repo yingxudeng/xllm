@@ -23,9 +23,9 @@ namespace xllm {
 
 constexpr int32_t local_device_count = 8;
 
-class ProcessGroupCncl : public ProcessGroup {
+class ProcessGroupImpl : public ProcessGroup {
  public:
-  ProcessGroupCncl(int32_t global_rank,
+  ProcessGroupImpl(int32_t global_rank,
                    int32_t world_size,
                    int32_t rank_size,
                    int32_t port,
@@ -56,18 +56,5 @@ class ProcessGroupCncl : public ProcessGroup {
         store, rank, rank_size, pg_options);
   }
 };
-
-std::unique_ptr<xllm::ProcessGroup> create_process_group(
-    int32_t rank,
-    int32_t world_size,
-    int32_t rank_size,
-    int32_t port,
-    bool trans,
-    const std::string& host,
-    const std::string& group_name,
-    const torch::Device& device) {
-  return std::make_unique<ProcessGroupCncl>(
-      rank, world_size, rank_size, port, trans, host, group_name, device);
-}
 
 }  // namespace xllm

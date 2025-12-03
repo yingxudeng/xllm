@@ -28,6 +28,7 @@ limitations under the License.
 #endif
 #include "common/global_flags.h"
 #include "parallel_args.h"
+#include "process_group.h"
 #include "util/net.h"
 
 namespace xllm {

@@ -15,6 +15,14 @@ limitations under the License.
 
 #include "process_group.h"
 
+#if defined(USE_NPU)
+#include "npu_process_group.h"
+#elif defined(USE_MLU)
+#include "mlu_process_group.h"
+#elif defined(USE_CUDA)
+#include "cuda_process_group.h"
+#endif
+
 namespace {
 std::pair<int, std::vector<uint64_t>> get_trans_group_rank(int world_size,
                                                            int global_rank,
@@ -75,4 +83,18 @@ void ProcessGroup::allgather(const torch::Tensor& input,
   std::vector<std::vector<torch::Tensor>> output_tensors = {outputs};
   pg_->allgather(output_tensors, input_tensors)->wait();
 }
+
+std::unique_ptr<ProcessGroup> create_process_group(
+    int32_t rank,
+    int32_t world_size,
+    int32_t rank_size,
+    int32_t port,
+    bool trans,
+    const std::string& host,
+    const std::string& group_name,
+    const torch::Device& device) {
+  return std::make_unique<ProcessGroupImpl>(
+      rank, world_size, rank_size, port, trans, host, group_name, device);
+}
+
 }  // namespace xllm
