@@ -77,20 +77,14 @@ void active(ActivationParams& params) {
               params.is_gated,
               params.start_expert_id,
               params.expert_size);
+#elif defined(USE_NPU)
+  params.output = npu::active(params.input, params.act_mode);
 #elif defined(USE_CUDA)
   cuda::act_and_mul(params.output, params.input, params.act_mode);
 #elif defined(USE_ILU)
   ilu::act_and_mul(params.output, params.input, params.act_mode);
 #else
   LOG(FATAL) << "active not implemented";
-#endif
-}
-
-torch::Tensor active_tensor(ActivationParams& params) {
-#if defined(USE_NPU)
-  return npu::active(params.input, params.act_mode);
-#else
-  LOG(FATAL) << "active_tensor not implemented";
 #endif
 }
 

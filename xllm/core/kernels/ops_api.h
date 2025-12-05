@@ -28,8 +28,6 @@ void apply_rotary(RotaryParams& params);
 
 void active(ActivationParams& params);
 
-torch::Tensor active_tensor(ActivationParams& params);
-
 void reshape_paged_cache(ReshapePagedCacheParams& params);
 
 void batch_prefill(AttentionParams& params);
