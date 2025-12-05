@@ -240,14 +240,8 @@ void fused_layernorm(FusedLayerNormParams& params) {
   } else {
     cuda::rms_norm(params.output, params.input, params.weight, params.eps);
   }
-#else
-  LOG(FATAL) << "fused_layernorm not implemented";
-#endif
-}
-
-torch::Tensor fused_layernorm_tensor(FusedLayerNormParams& params) {
-#if defined(USE_NPU)
-  return npu::fused_layernorm(
+#elif defined(USE_NPU)
+  params.output = npu::fused_layernorm(
       params.input, params.weight, params.eps, params.mode);
 #else
   LOG(FATAL) << "fused_layernorm not implemented";
