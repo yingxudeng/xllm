@@ -109,6 +109,11 @@ struct ActivationParams {
   // Expert size for MoE activation. Used when bias is provided.
   // Bias tensor shape must be [expert_size, in_channel].
   int64_t expert_size = 0;
+
+  // Note: Derivation from input is uncertain; using explicit parameter for
+  // robustness.
+  int64_t intermediate_size = 0;
+  int64_t world_size = 0;
 };
 
 // Reshape paged cache parameters
