@@ -18,6 +18,7 @@ limitations under the License.
 #include <glog/logging.h>
 
 #include "kernels/ops_api.h"
+#include "platform/device.h"
 
 namespace xllm {
 namespace layer {
@@ -40,7 +41,10 @@ RMSNormImpl::RMSNormImpl(const ModelContext& context)
                   context.get_tensor_options()) {}
 
 torch::Tensor RMSNormImpl::forward(torch::Tensor& input) {
-  auto output = torch::empty_like(input);
+  torch::Tensor output;
+  if (Device::type_str() != "npu") {
+    output = torch::empty_like(input);
+  }
   return forward_output(input, output);
 }
 

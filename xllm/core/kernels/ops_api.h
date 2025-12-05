@@ -36,8 +36,6 @@ void batch_decode(AttentionParams& params);
 
 void fused_layernorm(FusedLayerNormParams& params);
 
-torch::Tensor fused_layernorm_tensor(FusedLayerNormParams& params);
-
 torch::Tensor matmul(MatmulParams& params);
 
 torch::Tensor group_gemm(GroupGemmParams& params);

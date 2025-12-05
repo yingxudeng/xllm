@@ -283,6 +283,9 @@ void fused_layernorm(FusedLayerNormParams& params) {
                        params.store_output_before_norm,
                        params.store_output_after_norm,
                        params.dynamic_quant);
+#elif defined(USE_NPU)
+  params.output = npu::fused_layernorm(
+      params.input, params.weight, params.eps, params.mode);
 #elif defined(USE_CUDA)
   if (params.residual.has_value()) {
     cuda::fused_add_rms_norm(
@@ -301,15 +304,6 @@ void fused_layernorm(FusedLayerNormParams& params) {
                            params.bias,  // residual_bias
                            params.residual_out,
                            params.eps);
-#else
-  LOG(FATAL) << "fused_layernorm not implemented";
-#endif
-}
-
-torch::Tensor fused_layernorm_tensor(FusedLayerNormParams& params) {
-#if defined(USE_NPU)
-  return npu::fused_layernorm(
-      params.input, params.weight, params.eps, params.mode);
 #else
   LOG(FATAL) << "fused_layernorm not implemented";
 #endif
