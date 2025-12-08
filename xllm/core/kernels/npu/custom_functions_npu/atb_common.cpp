@@ -33,7 +33,7 @@ atb::Tensor at_tensor_to_atb_tensor(const at::Tensor at_tensor) {
       {at::ScalarType::ComplexDouble, ACL_COMPLEX128},
   };
 
-  TORCH_CHECK(at_tensor.is_contiguous(), "at_tensor is not contiguous");
+  CHECK(at_tensor.is_contiguous()) << "at_tensor is not contiguous";
   atb::Tensor tensor;
   tensor.desc.format = atb::utils::get_format_for_atb(at_tensor);
   if (at_tensor.device().type() == at::kCPU) {
@@ -48,9 +48,8 @@ atb::Tensor at_tensor_to_atb_tensor(const at::Tensor at_tensor) {
   }
 
   auto dtype_iterator = dtype_map.find(at_tensor.scalar_type());
-  TORCH_CHECK(dtype_iterator != dtype_map.end(),
-              "not support dtype: ",
-              at_tensor.scalar_type());
+  CHECK(dtype_iterator != dtype_map.end())
+      << "not support dtype: " << at_tensor.scalar_type();
   tensor.desc.dtype = dtype_iterator->second;
 
   tensor.dataSize = atb::Utils::GetTensorSize(tensor);
@@ -168,7 +167,7 @@ uint64_t operation_setup(atb::VariantPack variant_pack,
   uint64_t workspace_size = 0;
   atb::Status status =
       operation->Setup(variant_pack, workspace_size, context_ptr);
-  TORCH_CHECK(status == 0, operation->GetName(), " setup failed!");
+  CHECK_EQ(status, 0) << operation->GetName() << " setup failed!";
   return workspace_size;
 }
 

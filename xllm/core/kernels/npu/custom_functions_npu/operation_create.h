@@ -15,6 +15,7 @@ limitations under the License.
 
 #pragma once
 
+#include <glog/logging.h>
 #include <torch_npu/csrc/core/npu/NPUGraphsUtils.h>
 #include <torch_npu/csrc/framework/OpCommand.h>
 
@@ -55,7 +56,7 @@ atb::Operation* create_atb_operation(const ParamType& param,
                                      const std::string& name) {
   atb::Operation* op = nullptr;
   atb::CreateOperation(param, &op);
-  TORCH_CHECK(op != nullptr, name, " CreateOperation failed!");
+  CHECK(op != nullptr) << name << " CreateOperation failed!";
   return op;
 }
 

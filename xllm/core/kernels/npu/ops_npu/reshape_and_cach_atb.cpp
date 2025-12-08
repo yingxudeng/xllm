@@ -15,21 +15,21 @@ limitations under the License.
 
 #include <acl/acl.h>
 
-#include "../custom_functions_npu/atb_common.h"
+#include "kernels/npu/custom_functions_npu/atb_common.h"
 
 using namespace std;
 namespace atb {
-using ReshapeAndCacheParam = atb::infer::ReshapeAndCacheParam;
 void _npu_reshape_and_cache(const at::Tensor& key,
                             const at::Tensor& value,
                             at::Tensor& key_cache,
                             at::Tensor& value_cache,
                             const at::Tensor& slot_indices) {
   const c10::OptionalDeviceGuard device_guard(device_of(key));
-  OpParamCache<ReshapeAndCacheParam>& reshapeAndCacheParamCache =
-      OpParamCache<ReshapeAndCacheParam>::getInstance();
-  ReshapeAndCacheParam reshapeparam;
-  reshapeparam.compressType = ReshapeAndCacheParam::COMPRESS_TYPE_UNDEFINED;
+  OpParamCache<atb::infer::ReshapeAndCacheParam>& reshapeAndCacheParamCache =
+      OpParamCache<atb::infer::ReshapeAndCacheParam>::getInstance();
+  atb::infer::ReshapeAndCacheParam reshapeparam;
+  reshapeparam.compressType =
+      atb::infer::ReshapeAndCacheParam::COMPRESS_TYPE_UNDEFINED;
 
   auto key_cache_format = at_npu::native::get_npu_format(key_cache);
   auto value_cache_format = at_npu::native::get_npu_format(value_cache);
@@ -37,9 +37,10 @@ void _npu_reshape_and_cache(const at::Tensor& key,
   bool is_value_cache_nz = (value_cache_format == ACL_FORMAT_FRACTAL_NZ);
 
   if (is_key_cache_nz && is_value_cache_nz) {
-    reshapeparam.kvCacheCfg = ReshapeAndCacheParam::K_CACHE_V_CACHE_NZ;
+    reshapeparam.kvCacheCfg =
+        atb::infer::ReshapeAndCacheParam::K_CACHE_V_CACHE_NZ;
   } else {
-    reshapeparam.kvCacheCfg = ReshapeAndCacheParam::K_CACHE_V_CACHE;
+    reshapeparam.kvCacheCfg = atb::infer::ReshapeAndCacheParam::K_CACHE_V_CACHE;
   }
 
   ParamSetter parametter;

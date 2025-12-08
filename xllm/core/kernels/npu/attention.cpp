@@ -46,9 +46,9 @@ void batch_decode(const torch::Tensor& query,
                   const torch::Tensor& block_table,
                   const torch::Tensor& seq_lens,
                   torch::Tensor& output) {
-  auto head_size = query.size(-1);
-  auto num_heads = query.size(-2);
-  auto num_kv_heads = k_cache.size(-2);
+  int64_t head_size = query.size(-1);
+  int64_t num_heads = query.size(-2);
+  int64_t num_kv_heads = k_cache.size(-2);
   auto q = query.view({-1, num_heads, head_size});
   auto o = output.view({-1, num_heads, head_size});
   atb::_npu_paged_attention(q,

@@ -14,15 +14,11 @@ limitations under the License.
 ==============================================================================*/
 #pragma once
 
-#include "../custom_functions_npu/atb_common.h"
+#include "kernels/npu/custom_functions_npu/atb_common.h"
 
 using namespace std;
 
 namespace atb {
-
-using PagedAttentionParam = atb::infer::PagedAttentionParam;
-using ReshapeAndCacheParam = atb::infer::ReshapeAndCacheParam;
-using SelfAttentionParam = atb::infer::SelfAttentionParam;
 
 void _npu_paged_attention(const at::Tensor& query,
                           const at::Tensor& key_cache,

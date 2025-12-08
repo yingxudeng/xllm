@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <glog/logging.h>
 #include <torch_npu/csrc/aten/CustomFunctions.h>
 
 #include "npu_ops_api.h"
@@ -22,8 +23,7 @@ namespace xllm::kernel::npu {
 
 torch::Tensor active(const torch::Tensor& input, const std::string& act_mode) {
   if (act_mode != "silu" && act_mode != "swiglu") {
-    throw std::runtime_error(
-        "Only swiglu activation is supported in NPU active");
+    LOG(FATAL) << "Only swiglu activation is supported in NPU active";
   }
   return at_npu::native::custom_ops::npu_swiglu(input);
 }

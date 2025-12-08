@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <ATen/ATen.h>
 #include <acl/acl.h>
+#include <glog/logging.h>
 #include <torch_npu/csrc/core/npu/NPUFormat.h>
 
 #include "atb/atb_infer.h"
@@ -88,12 +89,8 @@ inline int get_op_mode(const MapType& mode_map,
                        const char* mode_name) {
   c10::string_view mode_str = mode_opt.value_or(default_mode);
   auto it = mode_map.find(mode_str);
-  TORCH_CHECK(it != mode_map.end(),
-              "Unsupported ",
-              mode_name,
-              " value: '",
-              mode_str,
-              "'");
+  CHECK(it != mode_map.end())
+      << "Unsupported " << mode_name << " value: '" << mode_str << "'";
   return it->second;
 }
 }  // namespace utils

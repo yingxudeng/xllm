@@ -30,7 +30,7 @@ ContextManager::ContextManager() : atb_context_(nullptr) {}
 ContextManager::~ContextManager() {
   if (atb_context_) {
     auto status = atb::DestroyContext(atb_context_);
-    TORCH_CHECK(status == 0, "Destroy context failed!");
+    CHECK_EQ(status, 0) << "Destroy context failed!";
     atb_context_ = nullptr;
   }
 }
@@ -38,7 +38,7 @@ ContextManager::~ContextManager() {
 atb::Context* ContextManager::get_context(aclrtStream stream) {
   std::call_once(create_flag_, [this]() {
     auto status = atb::CreateContext(&atb_context_);
-    TORCH_CHECK(status == 0, "Create context failed!");
+    CHECK_EQ(status, 0) << "Create context failed!";
   });
 
   atb_context_->SetExecuteStream(stream);
@@ -52,8 +52,8 @@ atb::Context* get_context(aclrtStream stream) {
 aclDataType convert_to_acl_data_type(const at::ScalarType& data_type) {
   auto acl_dtype =
       kATenScalarTypeToAclDataTypeTable[static_cast<int64_t>(data_type)];
-  TORCH_CHECK(acl_dtype != ACL_DT_UNDEFINED,
-              std::string(c10::toString(data_type)) + " has not been supported")
+  CHECK_NE(acl_dtype, ACL_DT_UNDEFINED)
+      << std::string(c10::toString(data_type)) << " has not been supported";
   return acl_dtype;
 }
 

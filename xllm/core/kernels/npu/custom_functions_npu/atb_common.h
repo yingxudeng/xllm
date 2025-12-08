@@ -16,6 +16,7 @@ limitations under the License.
 #pragma once
 
 #include <dlfcn.h>
+#include <glog/logging.h>
 #include <torch/library.h>
 #include <torch_npu/csrc/core/npu/NPUStream.h>
 #include <torch_npu/csrc/core/npu/NPUWorkspaceAllocator.h>
@@ -30,7 +31,7 @@ namespace atb {
 
 using aclTensor = struct aclTensor;
 constexpr int64_t MAX_DIM_NUM = 5;
-const int N = 32;
+const int64_t N = 32;
 
 using _aclCreateTensor = aclTensor* (*)(const int64_t* view_dims,
                                         uint64_t view_dims_num,
@@ -87,7 +88,7 @@ inline void* get_api_func_addr(const char* api_name) {
     if (func_addr != nullptr) {
       return func_addr;
     }
-    TORCH_CHECK(false, "get_api_func_addr not found ", api_name);
+    LOG(FATAL) << "get_api_func_addr not found " << api_name;
   }
 }
 
@@ -119,8 +120,8 @@ inline aclTensor* convert_type(TensorMaintainer& maintainer,
   c10::SmallVector<int64_t, MAX_DIM_NUM> storageDims;
   // if acl_data_type is ACL_STRING, storageDims is empty.
   if (acl_data_type != ACL_STRING) {
-    TORCH_CHECK(at_tensor.itemsize() > 0,
-                "the itemsize of tensor must be greater than 0.");
+    CHECK_GT(at_tensor.itemsize(), 0)
+        << "the itemsize of tensor must be greater than 0.";
     storageDims.push_back(at_tensor.storage().nbytes() / at_tensor.itemsize());
   }
 
@@ -245,8 +246,8 @@ inline aclTensor* convert_type_v2(TensorStructPtr at_tensor) {
       atb::utils::convert_to_acl_data_type(scalar_data_type);
   c10::SmallVector<int64_t, MAX_DIM_NUM> storageDims;
   if (acl_data_type != ACL_STRING) {
-    TORCH_CHECK((*at_tensor).itemsize > 0,
-                "the itemsize of tensor must be greater than 0.");
+    CHECK_GT((*at_tensor).itemsize, 0)
+        << "the itemsize of tensor must be greater than 0.";
     storageDims.push_back((*at_tensor).nbytes / (*at_tensor).itemsize);
   }
 
@@ -349,16 +350,10 @@ void release_convert_types(Tuple& t) {
     static const auto getWorkspaceSizeFuncAddr =                             \
         get_api_func_addr(#atb_api "GetWorkspaceSize");                      \
     static const auto atbApiFuncAddr = get_api_func_addr(#atb_api);          \
-    TORCH_CHECK(                                                             \
-        getWorkspaceSizeFuncAddr != nullptr && atbApiFuncAddr != nullptr,    \
-        #atb_api,                                                            \
-        " or ",                                                              \
-        #atb_api "GetWorkspaceSize",                                         \
-        " not in ",                                                          \
-        get_atb_api_lib_name(),                                              \
-        ", or ",                                                             \
-        get_atb_api_lib_name(),                                              \
-        "not found.");                                                       \
+    CHECK(getWorkspaceSizeFuncAddr != nullptr && atbApiFuncAddr != nullptr)  \
+        << #atb_api << " or " << #atb_api "GetWorkspaceSize" << " not in "   \
+        << get_atb_api_lib_name() << ", or " << get_atb_api_lib_name()       \
+        << "not found.";                                                     \
     auto acl_stream = c10_npu::getCurrentNPUStream().stream(false);          \
     auto context_ptr = atb::utils::get_context(acl_stream);                  \
     uint64_t workspace_size = 0;                                             \
@@ -374,7 +369,7 @@ void release_convert_types(Tuple& t) {
     static auto getWorkspaceSizeFunc =                                       \
         convert_to_op_api_func(converted_params, getWorkspaceSizeFuncAddr);  \
     auto workspace_status = call(getWorkspaceSizeFunc, converted_params);    \
-    TORCH_CHECK(workspace_status == 0, "call " #atb_api " failed, detail:"); \
+    CHECK_EQ(workspace_status, 0) << "call " #atb_api " failed, detail:";    \
     void* workspace_addr = nullptr;                                          \
     at::Tensor workspace_tensor;                                             \
     if (workspace_size != 0) {                                               \
@@ -395,7 +390,7 @@ void release_convert_types(Tuple& t) {
       AtbApiFunc atbApiFunc = reinterpret_cast<AtbApiFunc>(atbApiFuncAddr);  \
       auto api_ret =                                                         \
           atbApiFunc(workspace_addr, workspace_size, op, context_ptr);       \
-      TORCH_CHECK(api_ret == 0, "call " #atb_api " failed, detail:");        \
+      CHECK_EQ(api_ret, 0) << "call " #atb_api " failed, detail:";           \
       DestroyOperation(op);                                                  \
       release_convert_types(converted_params);                               \
       return api_ret;                                                        \
@@ -408,16 +403,10 @@ void release_convert_types(Tuple& t) {
     static const auto getWorkspaceSizeFuncAddr =                               \
         get_api_func_addr(#atb_api "GetWorkspaceSize");                        \
     static const auto AtbApiFuncAddr = get_api_func_addr(#atb_api);            \
-    TORCH_CHECK(                                                               \
-        getWorkspaceSizeFuncAddr != nullptr && AtbApiFuncAddr != nullptr,      \
-        #atb_api,                                                              \
-        " or ",                                                                \
-        #atb_api "GetWorkspaceSize",                                           \
-        " not in ",                                                            \
-        get_atb_api_lib_name(),                                                \
-        ", or ",                                                               \
-        get_atb_api_lib_name(),                                                \
-        "not found.");                                                         \
+    CHECK(getWorkspaceSizeFuncAddr != nullptr && AtbApiFuncAddr != nullptr)    \
+        << #atb_api << " or " << #atb_api "GetWorkspaceSize" << " not in "     \
+        << get_atb_api_lib_name() << ", or " << get_atb_api_lib_name()         \
+        << "not found.";                                                       \
     auto acl_stream = c10_npu::getCurrentNPUStream().stream(false);            \
     TensorMaintainer tensor_maintainer;                                        \
     auto copied_params = copy_types_v2(tensor_maintainer, __VA_ARGS__);        \
@@ -440,8 +429,8 @@ void release_convert_types(Tuple& t) {
           convert_to_op_api_func(converted_params, getWorkspaceSizeFuncAddr);  \
       auto workspace_status = call(getWorkspaceSizeFunc, converted_params);    \
       opParamCache.save_operation(hash_id, op);                                \
-      TORCH_CHECK(workspace_status == 0,                                       \
-                  "call " #atb_api "GetWorkspaceSize failed");                 \
+      CHECK_EQ(workspace_status, 0)                                            \
+          << "call " #atb_api "GetWorkspaceSize failed";                       \
       void* workspace_addr = nullptr;                                          \
       at::Tensor workspace_tensor;                                             \
       if (workspace_size != 0) {                                               \
@@ -451,7 +440,7 @@ void release_convert_types(Tuple& t) {
       }                                                                        \
       AtbApiFunc atbApiFunc = reinterpret_cast<AtbApiFunc>(AtbApiFuncAddr);    \
       api_ret = atbApiFunc(workspace_addr, workspace_size, op, context_ptr);   \
-      TORCH_CHECK(api_ret == 0, "call " #atb_api " failed");                   \
+      CHECK_EQ(api_ret, 0) << "call " #atb_api " failed";                      \
       release_convert_types(converted_params);                                 \
       return api_ret;                                                          \
     };                                                                         \

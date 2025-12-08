@@ -284,8 +284,8 @@ void fused_layernorm(FusedLayerNormParams& params) {
                        params.store_output_after_norm,
                        params.dynamic_quant);
 #elif defined(USE_NPU)
-  params.output = npu::fused_layernorm(
-      params.input, params.weight, params.eps, params.mode);
+  params.output =
+      npu::rms_norm(params.input, params.weight, params.eps, params.mode);
 #elif defined(USE_CUDA)
   if (params.residual.has_value()) {
     cuda::fused_add_rms_norm(

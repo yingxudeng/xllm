@@ -15,11 +15,10 @@ limitations under the License.
 
 #include <acl/acl.h>
 
-#include "../custom_functions_npu/atb_common.h"
+#include "kernels/npu/custom_functions_npu/atb_common.h"
 
 using namespace std;
 namespace atb {
-using SelfAttentionParam = atb::infer::SelfAttentionParam;
 void _npu_flash_attention(const at::Tensor& query,
                           const at::Tensor& key,
                           const at::Tensor& value,
@@ -30,18 +29,23 @@ void _npu_flash_attention(const at::Tensor& query,
                           const int64_t num_kv_heads,
                           at::Tensor& out) {
   const c10::OptionalDeviceGuard device_guard(device_of(query));
-  OpParamCache<SelfAttentionParam>& selfAttentionParamCache =
-      OpParamCache<SelfAttentionParam>::getInstance();
-  SelfAttentionParam selfattentionparam;
+  OpParamCache<atb::infer::SelfAttentionParam>& selfAttentionParamCache =
+      OpParamCache<atb::infer::SelfAttentionParam>::getInstance();
+  atb::infer::SelfAttentionParam selfattentionparam;
 
-  selfattentionparam.calcType = SelfAttentionParam::PA_ENCODER;
-  selfattentionparam.kernelType = SelfAttentionParam::KERNELTYPE_DEFAULT;
-  selfattentionparam.clampType = SelfAttentionParam::CLAMP_TYPE_UNDEFINED;
-  selfattentionparam.maskType = SelfAttentionParam::MASK_TYPE_NORM;
-  selfattentionparam.kvcacheCfg = SelfAttentionParam::K_CACHE_V_CACHE;
-  selfattentionparam.scaleType = SelfAttentionParam::SCALE_TYPE_TOR;
-  selfattentionparam.quantType = SelfAttentionParam::TYPE_QUANT_UNDEFINED;
-  selfattentionparam.cacheType = SelfAttentionParam::CACHE_TYPE_NORM;
+  selfattentionparam.calcType = atb::infer::SelfAttentionParam::PA_ENCODER;
+  selfattentionparam.kernelType =
+      atb::infer::SelfAttentionParam::KERNELTYPE_DEFAULT;
+  selfattentionparam.clampType =
+      atb::infer::SelfAttentionParam::CLAMP_TYPE_UNDEFINED;
+  selfattentionparam.maskType = atb::infer::SelfAttentionParam::MASK_TYPE_NORM;
+  selfattentionparam.kvcacheCfg =
+      atb::infer::SelfAttentionParam::K_CACHE_V_CACHE;
+  selfattentionparam.scaleType = atb::infer::SelfAttentionParam::SCALE_TYPE_TOR;
+  selfattentionparam.quantType =
+      atb::infer::SelfAttentionParam::TYPE_QUANT_UNDEFINED;
+  selfattentionparam.cacheType =
+      atb::infer::SelfAttentionParam::CACHE_TYPE_NORM;
   selfattentionparam.outDataType = ACL_DT_UNDEFINED;
   selfattentionparam.headNum = num_heads;
   selfattentionparam.kvHeadNum = num_kv_heads;

@@ -12,6 +12,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <glog/logging.h>
 #include <torch_npu/csrc/aten/CustomFunctions.h>
 
 #include "npu_ops_api.h"
@@ -19,13 +20,12 @@ limitations under the License.
 
 namespace xllm::kernel::npu {
 
-torch::Tensor fused_layernorm(const torch::Tensor& input,
-                              const torch::Tensor& weight,
-                              double eps,
-                              const std::string& mode) {
+torch::Tensor rms_norm(const torch::Tensor& input,
+                       const torch::Tensor& weight,
+                       double eps,
+                       const std::string& mode) {
   if (mode != "rmsnorm") {
-    throw std::runtime_error(
-        "Only rmsnorm mode is supported in NPU fused_layernorm");
+    LOG(FATAL) << "Only rmsnorm mode is supported in NPU rms_norm";
   }
   std::tuple<at::Tensor, at::Tensor> result =
       at_npu::native::custom_ops::npu_rms_norm(input, weight, eps);

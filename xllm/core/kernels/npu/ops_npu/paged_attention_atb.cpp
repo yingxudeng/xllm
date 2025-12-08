@@ -14,10 +14,9 @@ limitations under the License.
 ==============================================================================*/
 #include <acl/acl.h>
 
-#include "../custom_functions_npu/atb_common.h"
+#include "kernels/npu/custom_functions_npu/atb_common.h"
 
 namespace atb {
-using PagedAttentionParam = atb::infer::PagedAttentionParam;
 void _npu_paged_attention(const at::Tensor& query,
                           const at::Tensor& key_cache,
                           const at::Tensor& value_cache,
@@ -28,20 +27,21 @@ void _npu_paged_attention(const at::Tensor& query,
                           const at::Tensor& context_lens,
                           at::Tensor& out) {
   const c10::OptionalDeviceGuard device_guard(device_of(query));
-  OpParamCache<PagedAttentionParam>& pagedAttentionParamCache =
-      OpParamCache<PagedAttentionParam>::getInstance();
-  PagedAttentionParam pagedparam;
+  OpParamCache<atb::infer::PagedAttentionParam>& pagedAttentionParamCache =
+      OpParamCache<atb::infer::PagedAttentionParam>::getInstance();
+  atb::infer::PagedAttentionParam pagedparam;
   pagedparam.headNum = num_heads;
   pagedparam.qkScale = scale_value;
   pagedparam.kvHeadNum = num_kv_heads;
-  pagedparam.maskType = PagedAttentionParam::UNDEFINED;
+  pagedparam.maskType = atb::infer::PagedAttentionParam::UNDEFINED;
   pagedparam.batchRunStatusEnable = false;
-  pagedparam.quantType = PagedAttentionParam::TYPE_QUANT_UNDEFINED;
+  pagedparam.quantType = atb::infer::PagedAttentionParam::TYPE_QUANT_UNDEFINED;
   pagedparam.outDataType = ACL_DT_UNDEFINED;
   pagedparam.hasQuantOffset = false;
-  pagedparam.compressType = PagedAttentionParam::COMPRESS_TYPE_UNDEFINED;
-  pagedparam.calcType = PagedAttentionParam::CALC_TYPE_UNDEFINED;
-  pagedparam.scaleType = PagedAttentionParam::SCALE_TYPE_TOR;
+  pagedparam.compressType =
+      atb::infer::PagedAttentionParam::COMPRESS_TYPE_UNDEFINED;
+  pagedparam.calcType = atb::infer::PagedAttentionParam::CALC_TYPE_UNDEFINED;
+  pagedparam.scaleType = atb::infer::PagedAttentionParam::SCALE_TYPE_TOR;
   pagedparam.inputLayout = atb::infer::TYPE_BSND;
   pagedparam.mlaVHeadSize = 0;
 

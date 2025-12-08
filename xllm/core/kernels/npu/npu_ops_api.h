@@ -18,7 +18,7 @@ limitations under the License.
 
 #include <optional>
 
-#include "./custom_functions_npu/atb_common.h"
+#include "custom_functions_npu/atb_common.h"
 
 namespace xllm::kernel::npu {
 
@@ -50,10 +50,10 @@ torch::Tensor matmul(const torch::Tensor& a,
 
 torch::Tensor active(const torch::Tensor& input, const std::string& act_mode);
 
-torch::Tensor fused_layernorm(const torch::Tensor& input,
-                              const torch::Tensor& weight,
-                              double eps,
-                              const std::string& mode);
+torch::Tensor rms_norm(const torch::Tensor& input,
+                       const torch::Tensor& weight,
+                       double eps,
+                       const std::string& mode);
 
 void apply_rotary(torch::Tensor& q,
                   torch::Tensor& k,
