@@ -17,6 +17,7 @@ limitations under the License.
 #include <torch/torch.h>
 
 #include <optional>
+#include <tuple>
 
 #include "custom_functions_npu/atb_common.h"
 
@@ -54,6 +55,12 @@ torch::Tensor rms_norm(const torch::Tensor& input,
                        const torch::Tensor& weight,
                        double eps,
                        const std::string& mode);
+
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> add_rms_norm(
+    const torch::Tensor& x1,
+    const torch::Tensor& x2,
+    const torch::Tensor& gamma,
+    double epsilon);
 
 void apply_rotary(torch::Tensor& q,
                   torch::Tensor& k,

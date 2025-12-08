@@ -33,8 +33,8 @@ void batch_prefill(const torch::Tensor& query,
                    const torch::Tensor& seq_len,
                    float scale,
                    torch::Tensor& output) {
-  auto num_heads = query.size(-2);
-  auto num_kv_heads = key.size(-2);
+  int64_t num_heads = query.size(-2);
+  int64_t num_kv_heads = key.size(-2);
   atb::_npu_flash_attention(
       query, key, value, mask, seq_len, scale, num_heads, num_kv_heads, output);
 }

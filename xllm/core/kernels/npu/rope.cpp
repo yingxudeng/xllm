@@ -25,7 +25,7 @@ void apply_rotary(torch::Tensor& q,
                   const torch::Tensor& cos_sin_cache,
                   const torch::Tensor& positions) {
   auto cos_sin = cos_sin_cache.index_select(0, positions);
-  auto last_dim = cos_sin.size(-1);
+  int64_t last_dim = cos_sin.size(-1);
   auto cos_sin_vec = cos_sin.view({-1, 2, last_dim / 2})
                          .repeat({1, 1, 2})
                          .chunk(2, /*dim=*/-2);

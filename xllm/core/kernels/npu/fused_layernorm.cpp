@@ -33,4 +33,12 @@ torch::Tensor rms_norm(const torch::Tensor& input,
   return normalized_input;
 }
 
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> add_rms_norm(
+    const torch::Tensor& x1,
+    const torch::Tensor& x2,
+    const torch::Tensor& gamma,
+    double epsilon) {
+  return at_npu::native::custom_ops::npu_add_rms_norm(x1, x2, gamma, epsilon);
+}
+
 }  // namespace xllm::kernel::npu
