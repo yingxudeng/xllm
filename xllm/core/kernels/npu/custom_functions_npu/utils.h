@@ -13,8 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef XLLM_CORE_KERNELS_NPU_ATB_UTILS_H
-#define XLLM_CORE_KERNELS_NPU_ATB_UTILS_H
+#pragma once
 
 #include <ATen/ATen.h>
 #include <acl/acl.h>
@@ -99,5 +98,3 @@ inline int get_op_mode(const MapType& mode_map,
 }
 }  // namespace utils
 }  // namespace atb
-
-#endif

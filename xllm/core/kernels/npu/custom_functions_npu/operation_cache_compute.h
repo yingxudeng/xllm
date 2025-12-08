@@ -13,8 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef XLLM_CORE_KERNELS_NPU_ATB_PARAM_OPERATION_CACHE_COMPUTE_H
-#define XLLM_CORE_KERNELS_NPU_ATB_PARAM_OPERATION_CACHE_COMPUTE_H
+#pragma once
 
 #include <torch_npu/csrc/framework/OpCommand.h>
 
@@ -144,5 +143,3 @@ uint64_t compute_hash(const std::string& name, Ts&... args) {
 }
 
 }  // namespace atb
-
-#endif  // XLLM_CORE_KERNELS_NPU_ATB_PARAM_OPERATION_CACHE_COMPUTE_H

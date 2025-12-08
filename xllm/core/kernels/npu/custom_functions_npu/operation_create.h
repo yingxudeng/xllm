@@ -13,8 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef XLLM_CORE_KERNELS_NPU_ATB_OPERATION_CREATE_H
-#define XLLM_CORE_KERNELS_NPU_ATB_OPERATION_CREATE_H
+#pragma once
 
 #include <torch_npu/csrc/core/npu/NPUGraphsUtils.h>
 #include <torch_npu/csrc/framework/OpCommand.h>
@@ -123,5 +122,3 @@ OpParamCache<ParamType>::~OpParamCache() {
 }
 
 }  // namespace atb
-
-#endif  // XLLM_CORE_KERNELS_NPU_ATB_OPERATION_CREATE_H

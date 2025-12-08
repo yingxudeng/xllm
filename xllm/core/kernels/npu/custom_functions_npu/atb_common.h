@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef XLLM_CORE_KERNELS_NPU_ATB_COMMON_H
-#define XLLM_CORE_KERNELS_NPU_ATB_COMMON_H
+#pragma once
+
 #include <dlfcn.h>
 #include <torch/library.h>
 #include <torch_npu/csrc/core/npu/NPUStream.h>
@@ -490,5 +490,3 @@ void run_atb_cmd(atb::Operation* op,
                  const std::string& name);
 
 }  // namespace atb
-
-#endif

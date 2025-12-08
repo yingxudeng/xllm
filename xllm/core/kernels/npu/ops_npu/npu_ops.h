@@ -12,8 +12,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#ifndef XLLM_NPU_OPS_H
-#define XLLM_NPU_OPS_H
+#pragma once
 
 #include "../custom_functions_npu/atb_common.h"
 
@@ -52,5 +51,3 @@ void _npu_flash_attention(const at::Tensor& query,
                           at::Tensor& out);
 
 }  // namespace atb
-
-#endif  // XLLM_NPU_OPS_H
