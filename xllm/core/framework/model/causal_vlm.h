@@ -63,16 +63,36 @@ class CausalVLMImpl : public CausalVLM {
 
   virtual void update_expert_weight(int32_t layer_id) { return; }
 
-  layer::LmHead get_lm_head() override { return model_->get_lm_head(); };
+  layer::LmHead get_lm_head() override {
+    if constexpr (detail::has_get_lm_head<Model>::value) {
+      return model_->get_lm_head();
+    } else {
+      return CausalLM::get_lm_head();
+    }
+  };
 
-  void set_lm_head(layer::LmHead& head) override { model_->set_lm_head(head); };
+  void set_lm_head(layer::LmHead& head) override {
+    if constexpr (detail::has_set_lm_head<Model>::value) {
+      model_->set_lm_head(head);
+    } else {
+      CausalLM::set_lm_head(head);
+    }
+  };
 
   layer::WordEmbedding get_word_embedding() override {
-    return model_->get_word_embedding();
+    if constexpr (detail::has_get_word_embedding<Model>::value) {
+      return model_->get_word_embedding();
+    } else {
+      return CausalLM::get_word_embedding();
+    }
   };
 
   void set_word_embedding(layer::WordEmbedding& embedding) override {
-    model_->set_word_embedding(embedding);
+    if constexpr (detail::has_set_word_embedding<Model>::value) {
+      model_->set_word_embedding(embedding);
+    } else {
+      CausalLM::set_word_embedding(embedding);
+    }
   };
 
   torch::Device device() const override { return options_.device(); }
