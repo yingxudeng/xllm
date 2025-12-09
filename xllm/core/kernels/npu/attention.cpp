@@ -22,7 +22,7 @@ void reshape_paged_cache(torch::Tensor& key,
                          torch::Tensor& k_cache,
                          std::optional<torch::Tensor>& v_cache,
                          const torch::Tensor& slot_mapping) {
-  atb::_npu_reshape_and_cache(
+  atb::npu_reshape_and_cache(
       key, value.value(), k_cache, v_cache.value(), slot_mapping);
 }
 
@@ -35,7 +35,7 @@ void batch_prefill(const torch::Tensor& query,
                    torch::Tensor& output) {
   int64_t num_heads = query.size(-2);
   int64_t num_kv_heads = key.size(-2);
-  atb::_npu_flash_attention(
+  atb::npu_flash_attention(
       query, key, value, mask, seq_len, scale, num_heads, num_kv_heads, output);
 }
 
@@ -51,15 +51,15 @@ void batch_decode(const torch::Tensor& query,
   int64_t num_kv_heads = k_cache.size(-2);
   auto q = query.view({-1, num_heads, head_size});
   auto o = output.view({-1, num_heads, head_size});
-  atb::_npu_paged_attention(q,
-                            k_cache,
-                            v_cache,
-                            num_kv_heads,
-                            num_heads,
-                            scale,
-                            block_table,
-                            seq_lens,
-                            o);
+  atb::npu_paged_attention(q,
+                           k_cache,
+                           v_cache,
+                           num_kv_heads,
+                           num_heads,
+                           scale,
+                           block_table,
+                           seq_lens,
+                           o);
 }
 
 }  // namespace xllm::kernel::npu
