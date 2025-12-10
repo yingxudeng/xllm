@@ -42,7 +42,7 @@ struct has_get_lm_head : std::false_type {};
 
 template <typename T>
 struct has_get_lm_head<T,
-                       std::void_t<decltype(std::declval<T>().get_lm_head())>>
+                       std::void_t<decltype(std::declval<T>()->get_lm_head())>>
     : std::true_type {};
 
 template <typename T, typename = void>
@@ -50,7 +50,7 @@ struct has_set_lm_head : std::false_type {};
 
 template <typename T>
 struct has_set_lm_head<T,
-                       std::void_t<decltype(std::declval<T>().set_lm_head(
+                       std::void_t<decltype(std::declval<T>()->set_lm_head(
                            std::declval<layer::LmHead&>()))>> : std::true_type {
 };
 
@@ -60,7 +60,7 @@ struct has_get_word_embedding : std::false_type {};
 template <typename T>
 struct has_get_word_embedding<
     T,
-    std::void_t<decltype(std::declval<T>().get_word_embedding())>>
+    std::void_t<decltype(std::declval<T>()->get_word_embedding())>>
     : std::true_type {};
 
 template <typename T, typename = void>
@@ -69,7 +69,7 @@ struct has_set_word_embedding : std::false_type {};
 template <typename T>
 struct has_set_word_embedding<
     T,
-    std::void_t<decltype(std::declval<T>().set_word_embedding(
+    std::void_t<decltype(std::declval<T>()->set_word_embedding(
         std::declval<layer::WordEmbedding&>()))>> : std::true_type {};
 }  // namespace detail
 
