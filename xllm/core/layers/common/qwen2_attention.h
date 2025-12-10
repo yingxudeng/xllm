@@ -19,6 +19,8 @@ limitations under the License.
 
 #if defined(USE_MLU)
 #include "../mlu/attention.h"
+#elif defined(USE_NPU)
+#include "../npu_torch/attention.h"
 #elif defined(USE_CUDA)
 #include "../cuda/attention.h"
 #elif defined(USE_ILU)
