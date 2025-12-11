@@ -42,11 +42,11 @@ limitations under the License.
 namespace xllm {
 namespace layer {
 
-class LmHeadImpl : public BaseLayer {
+class NpuLmHeadImpl : public BaseLayer {
  public:
-  explicit LmHeadImpl(const ModelContext& context);
+  explicit NpuLmHeadImpl(const ModelContext& context);
 
-  ~LmHeadImpl() {};
+  ~NpuLmHeadImpl() {};
 
   void merge_loaded_weights() override;
 
@@ -87,6 +87,14 @@ class LmHeadImpl : public BaseLayer {
   std::vector<std::shared_ptr<at::Tensor>> decode_tensor_storage_;
   atb::Tensor hidden_states_atb_;
   atb::Tensor seleted_idxes_atb_;
+};
+
+class NpuLmHead : public torch::nn::ModuleHolder<NpuLmHeadImpl> {
+ public:
+  using torch::nn::ModuleHolder<NpuLmHeadImpl>::ModuleHolder;
+  using Impl __attribute__((__unused__)) = NpuLmHeadImpl;
+  NpuLmHead(const ModelContext& context)
+      : ModuleHolder(std::make_shared<NpuLmHeadImpl>(context)) {}
 };
 
 }  // namespace layer

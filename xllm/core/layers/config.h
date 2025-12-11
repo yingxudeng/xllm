@@ -39,24 +39,24 @@ limitations under the License.
   }                                                                 \
   }
 
-#if defined(USE_NPU)
-#include "npu/npu_word_embedding_impl.h"
-#else
+// #if defined(USE_NPU)
+// #include "npu/npu_word_embedding_impl.h"
+// #else
 #include "common/word_embedding_impl.h"
-#endif
+// #endif
 
-#if defined(USE_NPU)
-#include "npu/npu_pos_embedding_impl.h"
-#else
+// #if defined(USE_NPU)
+// #include "npu/npu_pos_embedding_impl.h"
+// #else
 #include "common/rotary_embedding.h"
-#endif
+// #endif
 
-#if defined(USE_NPU)
-#include "npu/npu_lm_head_impl.h"
-#else
+// #if defined(USE_NPU)
+// #include "npu/npu_lm_head_impl.h"
+// #else
 #include "common/linear.h"
 UNIFY_CLASS_NAME(ColumnParallelLinearImpl, LmHeadImpl)
-#endif
+// #endif
 
 #if defined(USE_NPU)
 #include "npu/npu_deepseek_v2_decoder_layer_impl.h"
@@ -72,11 +72,11 @@ REGISTER_NOT_IMPLEMENTED_CLASS(DeepseekV2DecoderLayerImpl);
 REGISTER_NOT_IMPLEMENTED_CLASS(LlamaDecoderLayerImpl);
 #endif
 
-#if defined(USE_NPU)
-#include "npu/npu_qwen2_decoder_layer_impl.h"
-#else
+// #if defined(USE_NPU)
+// #include "npu/npu_qwen2_decoder_layer_impl.h"
+// #else
 #include "common/qwen2_decoder_layer.h"
-#endif
+// #endif
 
 #if defined(USE_NPU)
 #include "npu/npu_qwen2dot5_vision_encoder_layer_impl.h"
@@ -91,11 +91,11 @@ UNIFY_CLASS_NAME(Qwen2_5_VisionLayerImpl, Qwen2dot5VisionEncoderLayerImpl)
 #include "common/qwen2_decoder_layer.h"
 #endif
 
-#if defined(USE_NPU)
-#include "npu/npu_qwen3_moe_decoder_layer_impl.h"
-#else
+// #if defined(USE_NPU)
+// #include "npu/npu_qwen3_moe_decoder_layer_impl.h"
+// #else
 #include "common/qwen3_moe_decoder_layer.h"
-#endif
+// #endif
 
 #if defined(USE_NPU)
 #include "npu/npu_qwen3_vision_encoder_layer_impl.h"

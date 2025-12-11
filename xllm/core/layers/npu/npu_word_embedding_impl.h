@@ -41,11 +41,11 @@ limitations under the License.
 namespace xllm {
 namespace layer {
 
-class WordEmbeddingImpl : public BaseLayer {
+class NpuWordEmbeddingImpl : public BaseLayer {
  public:
-  explicit WordEmbeddingImpl(const ModelContext& context);
+  explicit NpuWordEmbeddingImpl(const ModelContext& context);
 
-  ~WordEmbeddingImpl() {};
+  ~NpuWordEmbeddingImpl() {};
 
   void merge_loaded_weights() override;
 
@@ -70,6 +70,14 @@ class WordEmbeddingImpl : public BaseLayer {
   // std::string name_;
   atb_speed::common::WordEmbeddingParam embedding_param_;
   atb::Tensor internalTensors;
+};
+
+class NpuWordEmbedding : public torch::nn::ModuleHolder<NpuWordEmbeddingImpl> {
+ public:
+  using torch::nn::ModuleHolder<NpuWordEmbeddingImpl>::ModuleHolder;
+  using Impl __attribute__((__unused__)) = NpuWordEmbeddingImpl;
+  NpuWordEmbedding(const ModelContext& context)
+      : ModuleHolder(std::make_shared<NpuWordEmbeddingImpl>(context)) {}
 };
 
 }  // namespace layer

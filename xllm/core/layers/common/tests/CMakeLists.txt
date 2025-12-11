@@ -19,6 +19,9 @@ cc_test(
     :model
     :model_context
     :state_dict
+    $<$<BOOL:${USE_NPU}>:atb>
+    $<$<BOOL:${USE_NPU}>:atb_customize>
+    $<$<BOOL:${USE_NPU}>:nnopbase>
     glog::glog
     torch
     GTest::gtest_main
@@ -39,6 +42,9 @@ cc_test(
     :model
     :model_context
     :state_dict
+    $<$<BOOL:${USE_NPU}>:atb>
+    $<$<BOOL:${USE_NPU}>:atb_customize>
+    $<$<BOOL:${USE_NPU}>:nnopbase>
     GTest::gtest_main
     torch
     glog::glog
