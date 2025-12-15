@@ -158,6 +158,21 @@ class Glm4vMoeForConditionalGenerationImpl : public torch::nn::Module {
     language_model_->set_word_embedding(word_embedding);
   }
 
+  layer::NpuLmHead get_npu_lm_head() {
+    return language_model_->get_npu_lm_head();
+  }
+  void set_npu_lm_head(layer::NpuLmHead& head) {
+    language_model_->set_npu_lm_head(head);
+  }
+
+  layer::NpuWordEmbedding get_npu_word_embedding() {
+    return language_model_->get_npu_word_embedding();
+  }
+
+  void set_npu_word_embedding(layer::NpuWordEmbedding& npu_word_embedding) {
+    language_model_->set_npu_word_embedding(npu_word_embedding);
+  }
+
  private:
   ModelArgs model_args_;
   torch::TensorOptions options_;

@@ -25,8 +25,8 @@ limitations under the License.
 #include "core/framework/kv_cache/kv_cache.h"
 #include "core/framework/model/model_input_params.h"
 #include "core/layers/lm_head.h"
+#include "core/layers/npu/npu_qwen3_vision_encoder_layer_impl.h"
 #include "core/layers/npu/npu_rms_norm_impl.h"
-#include "core/layers/qwen3_vision_encode_layer.h"
 #include "models/llm/npu/qwen3.h"
 #include "models/model_registry.h"
 #include "processors/input_processor.h"
@@ -98,8 +98,8 @@ class Qwen3_VisionBlockImpl : public torch::nn::Module {
  public:
   Qwen3_VisionBlockImpl(const ModelContext& context) {
     // register submodules
-    encoder_layer_ = register_module("encoder_layer",
-                                     layer::Qwen3VisionEncoderLayer(context));
+    encoder_layer_ = register_module(
+        "encoder_layer", layer::NpuQwen3VisionEncoderLayer(context));
   }
 
   torch::Tensor forward(torch::Tensor& x,
@@ -130,7 +130,7 @@ class Qwen3_VisionBlockImpl : public torch::nn::Module {
   void merge_loaded_weights() { encoder_layer_->merge_loaded_weights(); }
 
  private:
-  layer::Qwen3VisionEncoderLayer encoder_layer_{nullptr};
+  layer::NpuQwen3VisionEncoderLayer encoder_layer_{nullptr};
 };
 TORCH_MODULE(Qwen3_VisionBlock);
 
@@ -722,6 +722,21 @@ class Qwen3_VLForConditionalGenerationImpl : public torch::nn::Module {
 
   void set_word_embedding(layer::WordEmbedding& word_embedding) {
     language_model_->set_word_embedding(word_embedding);
+  }
+
+  layer::NpuLmHead get_npu_lm_head() {
+    return language_model_->get_npu_lm_head();
+  }
+  void set_npu_lm_head(layer::NpuLmHead& head) {
+    language_model_->set_npu_lm_head(head);
+  }
+
+  layer::NpuWordEmbedding get_npu_word_embedding() {
+    return language_model_->get_npu_word_embedding();
+  }
+
+  void set_npu_word_embedding(layer::NpuWordEmbedding& npu_word_embedding) {
+    language_model_->set_npu_word_embedding(npu_word_embedding);
   }
 
  private:

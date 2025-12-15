@@ -116,6 +116,7 @@ class NpuGlm4VisionEncoderLayerImpl : public BaseLayer {
   at::Tensor at_placeholder_;
   int device_id_;
 };
+TORCH_MODULE(NpuGlm4VisionEncoderLayer);
 
 }  // namespace layer
 }  // namespace xllm

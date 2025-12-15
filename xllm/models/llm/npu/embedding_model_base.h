@@ -84,6 +84,19 @@ class LlmForEmbeddingImplBase : public torch::nn::Module {
     model_->set_word_embedding(word_embedding);
   }
 
+  virtual layer::NpuLmHead get_npu_lm_head() { return npu_lm_head_; }
+
+  virtual void set_npu_lm_head(layer::NpuLmHead& head) { npu_lm_head_ = head; }
+
+  virtual layer::NpuWordEmbedding get_npu_word_embedding() {
+    return model_->get_npu_word_embedding();
+  }
+
+  virtual void set_npu_word_embedding(
+      layer::NpuWordEmbedding& npu_word_embedding) {
+    model_->set_npu_word_embedding(npu_word_embedding);
+  }
+
  protected:
   // parameter members, must be registered
   LlmModelType model_{nullptr};
@@ -91,6 +104,7 @@ class LlmForEmbeddingImplBase : public torch::nn::Module {
   bool tie_word_embeddings{false};
   // test
   layer::LmHead lm_head_{nullptr};
+  layer::NpuLmHead npu_lm_head_{nullptr};
 };
 
 }  // namespace xllm

@@ -31,6 +31,10 @@ limitations under the License.
 #include "core/framework/state_dict/state_dict.h"
 #include "layers/lm_head.h"
 #include "layers/word_embedding.h"
+#if defined(USE_NPU)
+#include "layers/npu/npu_lm_head_impl.h"
+#include "layers/npu/npu_word_embedding_impl.h"
+#endif
 #include "model_args.h"
 #include "model_input_params.h"
 
@@ -69,6 +73,13 @@ class CausalLM : public torch::nn::Module {
   virtual void set_lm_head(layer::LmHead& head) = 0;
   virtual layer::WordEmbedding get_word_embedding() = 0;
   virtual void set_word_embedding(layer::WordEmbedding& embedding) = 0;
+
+#if defined(USE_NPU)
+  virtual layer::NpuLmHead get_npu_lm_head() = 0;
+  virtual void set_npu_lm_head(layer::NpuLmHead& head) = 0;
+  virtual layer::NpuWordEmbedding get_npu_word_embedding() = 0;
+  virtual void set_npu_word_embedding(layer::NpuWordEmbedding& embedding) = 0;
+#endif
 };
 
 template <typename Model>
@@ -113,6 +124,24 @@ class CausalLMImpl : public CausalLM {
   void set_word_embedding(layer::WordEmbedding& embedding) override {
     model_->set_word_embedding(embedding);
   };
+
+#if defined(USE_NPU)
+  layer::NpuLmHead get_npu_lm_head() override {
+    return model_->get_npu_lm_head();
+  };
+
+  void set_npu_lm_head(layer::NpuLmHead& head) override {
+    model_->set_npu_lm_head(head);
+  };
+
+  layer::NpuWordEmbedding get_npu_word_embedding() override {
+    return model_->get_npu_word_embedding();
+  };
+
+  void set_npu_word_embedding(layer::NpuWordEmbedding& embedding) override {
+    model_->set_npu_word_embedding(embedding);
+  };
+#endif
 
   torch::Device device() const override { return options_.device(); }
 

@@ -30,16 +30,39 @@ limitations under the License.
 #include "framework/quant_args.h"
 #include "framework/state_dict/state_dict.h"
 
+#if defined(USE_NPU) &&         \
+    (TORCH_VERSION_MAJOR < 2 || \
+     (TORCH_VERSION_MAJOR == 2 && TORCH_VERSION_MINOR < 7))
+#include <torch_npu/csrc/distributed/ProcessGroupHCCL.hpp>
+using MockBackendBase = c10d_npu::ProcessGroupHCCL;
+#else
+using MockBackendBase = c10d::Backend;
+#endif
+
 namespace xllm {
 namespace layer {
 namespace test {
 
 // Mock Backend for testing - minimal implementation for tp=1 tests
-class MockBackend : public c10d::Backend {
+class MockBackend : public MockBackendBase {
  public:
+#if defined(USE_NPU) &&         \
+    (TORCH_VERSION_MAJOR < 2 || \
+     (TORCH_VERSION_MAJOR == 2 && TORCH_VERSION_MINOR < 7))
   MockBackend(int64_t rank, int64_t world_size)
-      : c10d::Backend(rank, world_size), rank_(rank), world_size_(world_size) {}
-
+      : MockBackendBase(c10::make_intrusive<c10d::TCPStore>("127.0.0.1",
+                                                            12345,
+                                                            rank == 0,
+                                                            true),
+                        rank,
+                        world_size,
+                        MockBackendBase::Options::create()) {}
+#else
+  MockBackend(int64_t rank, int64_t world_size)
+      : MockBackendBase(rank, world_size),
+        rank_(rank),
+        world_size_(world_size) {}
+#endif
   c10::intrusive_ptr<c10d::Work> allreduce(
       std::vector<torch::Tensor>& tensors,
       const c10d::AllreduceOptions& opts = c10d::AllreduceOptions()) override {

@@ -51,4 +51,6 @@ cc_library(
     :platform
 )
 
+if(NOT USE_NPU)
 add_subdirectory(tests)
+endif()

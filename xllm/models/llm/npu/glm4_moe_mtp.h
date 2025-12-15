@@ -15,14 +15,8 @@ limitations under the License.
 
 #pragma once
 
-#include <boost/algorithm/string.hpp>
-
-#include "core/framework/model/npu_dp_ep_padding.h"
-#include "core/framework/model_context.h"
 #include "core/layers/npu/npu_column_parallel_linear_impl.h"
-#include "core/layers/npu/npu_glm4_moe_decoder_layer.h"
 #include "glm4_moe.h"
-#include "llm_model_base.h"
 
 namespace xllm::hf {
 
@@ -42,8 +36,10 @@ class Glm4MoeMtpModelImpl : public torch::nn::Module {
     num_speculative_tokens_ = model_args.num_speculative_tokens();
     embed_tokens_ =
         register_module("embed_tokens", layer::WordEmbedding(context));
+    npu_embed_tokens_ =
+        register_module("npu_embed_tokens", layer::NpuWordEmbedding(context));
 
-    atb_pos_emb_ = layer::PosEmbedding(context);
+    atb_pos_emb_ = layer::NpuPosEmbedding(context);
     cos_sin_ = layer::rotary::get_concat_rotary_embedding(
         64,
         model_args.max_position_embeddings(),
@@ -61,10 +57,11 @@ class Glm4MoeMtpModelImpl : public torch::nn::Module {
       blocks_->push_back(block);
     }
 
-    eh_proj_ = register_module("eh_proj", layer::ColumnParallelLinear(context));
-    enorm_ = register_module("enorm", layer::RMSNorm(context));
-    hnorm_ = register_module("hnorm", layer::RMSNorm(context));
-    final_norm_ = register_module("final_norm", layer::RMSNorm(context));
+    eh_proj_ =
+        register_module("eh_proj", layer::NpuColumnParallelLinear(context));
+    enorm_ = register_module("enorm", layer::NpuRMSNorm(context));
+    hnorm_ = register_module("hnorm", layer::NpuRMSNorm(context));
+    final_norm_ = register_module("final_norm", layer::NpuRMSNorm(context));
 
     dp_size_ = parallel_args.dp_size();
     std::vector<int64_t> indices;
@@ -91,7 +88,7 @@ class Glm4MoeMtpModelImpl : public torch::nn::Module {
       }
     }
 
-    torch::Tensor h = embed_tokens_(tokens, 0);
+    torch::Tensor h = npu_embed_tokens_(tokens, 0);
     torch::Tensor enorm = enorm_(h, 0);
     torch::Tensor input_embedding = input_params.input_embedding;
     if (input_embedding.defined()) {
@@ -177,7 +174,7 @@ class Glm4MoeMtpModelImpl : public torch::nn::Module {
 
   // load the weight from the checkpoint
   void load_state_dict(const StateDict& state_dict) {
-    // embed_tokens_->load_state_dict(state_dict.get_dict_with_prefix("embed_tokens."));
+    // npu_embed_tokens_->load_state_dict(state_dict.get_dict_with_prefix("embed_tokens."));
     // call each layer's load_state_dict function
     for (int i = 0; i < layers_.size(); i++) {
       layers_[i]->load_state_dict(
@@ -191,7 +188,7 @@ class Glm4MoeMtpModelImpl : public torch::nn::Module {
   }
 
   void verify_loaded_weights(const std::string& prefix) const {
-    // embed_tokens_->verify_loaded_weights(prefix + "embed_tokens.");
+    // npu_embed_tokens_->verify_loaded_weights(prefix + "embed_tokens.");
     for (int i = 0; i < layers_.size(); i++) {
       layers_[i]->verify_loaded_weights(prefix + "layers." + std::to_string(i) +
                                         ".");
@@ -203,7 +200,7 @@ class Glm4MoeMtpModelImpl : public torch::nn::Module {
   }
 
   void merge_loaded_weights() {
-    // embed_tokens_->merge_loaded_weights();
+    // npu_embed_tokens_->merge_loaded_weights();
     for (int i = 0; i < layers_.size(); i++) {
       layers_[i]->merge_loaded_weights();
     }
@@ -211,6 +208,12 @@ class Glm4MoeMtpModelImpl : public torch::nn::Module {
     enorm_->merge_loaded_weights();
     hnorm_->merge_loaded_weights();
     final_norm_->merge_loaded_weights();
+  }
+
+  layer::NpuWordEmbedding get_npu_word_embedding() { return npu_embed_tokens_; }
+
+  void set_npu_word_embedding(layer::NpuWordEmbedding& npu_word_embedding) {
+    npu_embed_tokens_ = npu_word_embedding;
   }
 
   layer::WordEmbedding get_word_embedding() { return embed_tokens_; }
@@ -232,13 +235,14 @@ class Glm4MoeMtpModelImpl : public torch::nn::Module {
   at::Device device_;
   torch::Dtype dtype_;
   layer::WordEmbedding embed_tokens_{nullptr};
+  layer::NpuWordEmbedding npu_embed_tokens_{nullptr};
   layer::AttentionMask attn_mask_;
   torch::Tensor cos_sin_;
-  layer::PosEmbedding atb_pos_emb_{nullptr};
-  layer::ColumnParallelLinear eh_proj_{nullptr};
-  layer::RMSNorm enorm_{nullptr};
-  layer::RMSNorm hnorm_{nullptr};
-  layer::RMSNorm final_norm_{nullptr};
+  layer::NpuPosEmbedding atb_pos_emb_{nullptr};
+  layer::NpuColumnParallelLinear eh_proj_{nullptr};
+  layer::NpuRMSNorm enorm_{nullptr};
+  layer::NpuRMSNorm hnorm_{nullptr};
+  layer::NpuRMSNorm final_norm_{nullptr};
 };
 TORCH_MODULE(Glm4MoeMtpModel);
 
@@ -266,22 +270,22 @@ class Glm4MoeMtpForCausalLMImpl : public torch::nn::Module {
   torch::Tensor logits(const torch::Tensor& hidden_states,
                        const torch::Tensor& seleted_idxes) {
     // select tokens if provided
-    return lm_head_(hidden_states, seleted_idxes, 0);
+    return npu_lm_head_(hidden_states, seleted_idxes, 0);
   }
 
   // load model
   void load_model(std::unique_ptr<ModelLoader> loader) {
     for (const auto& state_dict : loader->get_state_dicts()) {
       model_->load_state_dict(state_dict->get_dict_with_prefix("model."));
-      // lm_head_->load_state_dict(state_dict.get_dict_with_prefix("model.shared_head.head."));
+      // npu_lm_head_->load_state_dict(state_dict.get_dict_with_prefix("model.shared_head.head."));
     }
 
     // verify
     model_->verify_loaded_weights("model.");
-    // lm_head_->verify_loaded_weights("model.shared_head.head.");
+    // npu_lm_head_->verify_loaded_weights("model.shared_head.head.");
 
     model_->merge_loaded_weights();
-    // lm_head_->merge_loaded_weights();
+    // npu_lm_head_->merge_loaded_weights();
   }
 
   void prepare_expert_weight(int32_t layer_id,
@@ -289,6 +293,19 @@ class Glm4MoeMtpForCausalLMImpl : public torch::nn::Module {
     return;
   }
   void update_expert_weight(int32_t layer_id) { return; }
+
+  layer::NpuLmHead get_npu_lm_head() { return npu_lm_head_; }
+
+  void set_npu_lm_head(layer::NpuLmHead& head) { npu_lm_head_ = head; }
+
+  layer::NpuWordEmbedding get_npu_word_embedding() {
+    return model_->get_npu_word_embedding();
+  }
+
+  void set_npu_word_embedding(layer::NpuWordEmbedding& npu_word_embedding) {
+    model_->set_npu_word_embedding(npu_word_embedding);
+  }
+
   layer::LmHead get_lm_head() { return lm_head_; }
 
   void set_lm_head(layer::LmHead& head) { lm_head_ = head; }
@@ -304,6 +321,7 @@ class Glm4MoeMtpForCausalLMImpl : public torch::nn::Module {
  private:
   Glm4MoeMtpModel model_{nullptr};
   layer::LmHead lm_head_{nullptr};
+  layer::NpuLmHead npu_lm_head_{nullptr};
 };
 TORCH_MODULE(Glm4MoeMtpForCausalLM);
 
