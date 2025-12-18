@@ -47,7 +47,7 @@ class NpuGlm4DecoderLayerImpl : public BaseLayer {
  public:
   explicit NpuGlm4DecoderLayerImpl(const ModelContext& context);
 
-  ~NpuGlm4DecoderLayerImpl() {};
+  ~NpuGlm4DecoderLayerImpl() override = default;
 
   virtual void load_state_dict(const StateDict& state_dict) override;
 

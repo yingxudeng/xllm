@@ -37,7 +37,7 @@ class NpuGlm4MoeDecoderImpl : public BaseLayer {
   explicit NpuGlm4MoeDecoderImpl(const ModelContext& context,
                                  const int32_t layer_id);
 
-  ~NpuGlm4MoeDecoderImpl() {};
+  ~NpuGlm4MoeDecoderImpl() override = default;
 
   void merge_loaded_weights();
 
