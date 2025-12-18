@@ -31,6 +31,7 @@ limitations under the License.
 #include "core/layers/common/attention_mask.h"
 #include "core/layers/npu/npu_block_copy_impl.h"
 #include "core/layers/npu/npu_lm_head_impl.h"
+#include "core/layers/npu/npu_pos_embedding_impl.h"
 #include "core/layers/npu/npu_rms_norm_impl.h"
 #include "core/layers/npu/npu_word_embedding_impl.h"
 #include "models/model_registry.h"

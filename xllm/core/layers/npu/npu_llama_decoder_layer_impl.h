@@ -47,7 +47,7 @@ class NpuLlamaDecoderLayerImpl : public BaseLayer {
  public:
   explicit NpuLlamaDecoderLayerImpl(const ModelContext& context);
 
-  ~NpuLlamaDecoderLayerImpl() {};
+  ~NpuLlamaDecoderLayerImpl() override = default;
 
   virtual void merge_loaded_weights() override;
 

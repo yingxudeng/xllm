@@ -32,7 +32,7 @@ class NpuSiglipEncoderLayerUpImpl : public BaseLayer {
   NpuSiglipEncoderLayerUpImpl(const ModelContext& context,
                               const std::string& prefix = "");
 
-  ~NpuSiglipEncoderLayerUpImpl() {};
+  ~NpuSiglipEncoderLayerUpImpl() override = default;
 
   virtual void load_state_dict(const StateDict& state_dict) override;
 
@@ -57,7 +57,7 @@ class NpuSiglipEncoderLayerDownImpl : public BaseLayer {
   NpuSiglipEncoderLayerDownImpl(const ModelContext& context,
                                 const std::string& prefix = "");
 
-  ~NpuSiglipEncoderLayerDownImpl() {};
+  ~NpuSiglipEncoderLayerDownImpl() override = default;
 
   virtual void load_state_dict(const StateDict& state_dict) override;
 
@@ -82,7 +82,7 @@ class NpuSiglipEncoderLayerImpl : public BaseLayer {
   NpuSiglipEncoderLayerImpl(const ModelContext& context,
                             const std::string& prefix = "");
 
-  ~NpuSiglipEncoderLayerImpl() {};
+  ~NpuSiglipEncoderLayerImpl() override = default;
 
   virtual void load_state_dict(const StateDict& state_dict) override;
 

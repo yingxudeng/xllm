@@ -47,7 +47,7 @@ class NpuGlm4VisionEncoderLayerImpl : public BaseLayer {
  public:
   explicit NpuGlm4VisionEncoderLayerImpl(const ModelContext& context);
 
-  ~NpuGlm4VisionEncoderLayerImpl() {};
+  ~NpuGlm4VisionEncoderLayerImpl() override = default;
 
   void load_state_dict(const StateDict& state_dict) override;
 

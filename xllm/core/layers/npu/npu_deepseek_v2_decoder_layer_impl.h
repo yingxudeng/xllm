@@ -109,7 +109,7 @@ class NpuDeepseekV2DecoderLayerImpl : public BaseLayer {
   explicit NpuDeepseekV2DecoderLayerImpl(const ModelContext& context,
                                          const int32_t layer_id);
 
-  ~NpuDeepseekV2DecoderLayerImpl() {};
+  ~NpuDeepseekV2DecoderLayerImpl() override = default;
 
   virtual void merge_loaded_weights() override;
 
