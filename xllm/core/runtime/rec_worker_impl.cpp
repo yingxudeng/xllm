@@ -76,13 +76,14 @@ void RecWorkerImpl::LlmRecWorkPipeline::prepare_work_before_execute(
         << "LLM_REC_INPUT_TOKENS is required when LLM_REC_INPUT_INDICES is "
            "set.";
 
-    layer::WordEmbedding word_embedding = worker_.get_word_embedding();
 #if defined(USE_NPU)
+    layer::NpuWordEmbedding npu_word_embedding =
+        worker_.get_npu_word_embedding();
     torch::Tensor input_tokens_embedding =
-        word_embedding(input_tokens_tensor, 0);
+        npu_word_embedding(input_tokens_tensor, 0);
 #else
-    torch::Tensor input_tokens_embedding =
-        word_embedding->forward(input_tokens_tensor);
+    layer::WordEmbedding word_embedding = worker_.get_word_embedding();
+    torch::Tensor input_tokens_embedding = word_embedding(input_tokens_tensor);
 #endif
 
     if (input_embedding.defined()) {

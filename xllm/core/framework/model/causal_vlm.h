@@ -66,19 +66,19 @@ class CausalVLMImpl : public CausalVLM {
 #if defined(USE_NPU)
   layer::NpuLmHead get_npu_lm_head() override {
     return model_->get_npu_lm_head();
-  };
+  }
 
   void set_npu_lm_head(layer::NpuLmHead& head) override {
     model_->set_npu_lm_head(head);
-  };
+  }
 
   layer::NpuWordEmbedding get_npu_word_embedding() override {
     return model_->get_npu_word_embedding();
-  };
+  }
 
   void set_npu_word_embedding(layer::NpuWordEmbedding& embedding) override {
     model_->set_npu_word_embedding(embedding);
-  };
+  }
 #else
   layer::LmHead get_lm_head() override {
     if constexpr (detail::has_get_lm_head<Model>::value) {
@@ -86,7 +86,7 @@ class CausalVLMImpl : public CausalVLM {
     } else {
       return CausalLM::get_lm_head();
     }
-  };
+  }
 
   void set_lm_head(layer::LmHead& head) override {
     if constexpr (detail::has_set_lm_head<Model>::value) {
@@ -94,7 +94,7 @@ class CausalVLMImpl : public CausalVLM {
     } else {
       CausalLM::set_lm_head(head);
     }
-  };
+  }
 
   layer::WordEmbedding get_word_embedding() override {
     if constexpr (detail::has_get_word_embedding<Model>::value) {
@@ -102,7 +102,7 @@ class CausalVLMImpl : public CausalVLM {
     } else {
       return CausalLM::get_word_embedding();
     }
-  };
+  }
 
   void set_word_embedding(layer::WordEmbedding& embedding) override {
     if constexpr (detail::has_set_word_embedding<Model>::value) {
@@ -110,7 +110,7 @@ class CausalVLMImpl : public CausalVLM {
     } else {
       CausalLM::set_word_embedding(embedding);
     }
-  };
+  }
 #endif
 
   torch::Device device() const override { return options_.device(); }

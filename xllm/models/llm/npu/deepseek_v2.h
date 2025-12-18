@@ -35,7 +35,6 @@ limitations under the License.
 #include "core/layers/npu/npu_rms_norm_impl.h"
 #include "core/layers/npu/npu_word_embedding_impl.h"
 #include "core/layers/npu/rotary_embedding.h"
-
 #include "models/model_registry.h"
 // DeepSeek v2 compatible with huggingface weights
 // ref to:

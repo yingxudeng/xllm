@@ -43,7 +43,7 @@ class NpuBlockCopyImpl : public BaseLayer {
  public:
   explicit NpuBlockCopyImpl(const ModelContext& context);
 
-  ~NpuBlockCopyImpl() {};
+  ~NpuBlockCopyImpl() override = default;
 
   void load_state_dict(const StateDict& state_dict) {};
 
