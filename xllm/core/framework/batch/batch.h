@@ -20,6 +20,8 @@ limitations under the License.
 #include <absl/time/time.h>
 #include <torch/torch.h>
 
+#include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <vector>
 
@@ -87,6 +89,9 @@ class Batch {
   // Convert Batch to pb type, which will be pass to remote worker.
   RawForwardInput prepare_forward_input(const ModelArgs& args,
                                         ThreadPool* thread_pool);
+  RawForwardInput prepare_multi_step_forward_input(
+      const ModelArgs& args,
+      ThreadPool* thread_pool = nullptr);
 
   // process output
   //
@@ -109,6 +114,10 @@ class Batch {
 
   // process the accepted output embedding
   void process_embedding_output(const torch::Tensor& embedding);
+  void process_decode_beam_search_output(const RawForwardOutput& raw_output,
+                                         bool replace_fake_token);
+
+  void process_beam_sequence_group(const RawForwardOutput& raw_output);
 
   const std::vector<uint32_t>& get_allowed_max_tokens() const {
     return allowed_max_tokens_;
@@ -118,6 +127,8 @@ class Batch {
       std::vector<uint32_t>& kv_cache_tokens_num) {
     return cal_seq_exchange_index(kv_cache_tokens_num);
   }
+
+  void finish();
 
  private:
   bool update_sequence_state(Sequence* seq, bool replace_fake_token);

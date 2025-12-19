@@ -62,12 +62,18 @@ class SequencesGroup {
     return sequences_[0]->is_chunked_prefill_stage();
   }
 
+  // finish all sequences in the group
+  void finish();
+
  private:
   void add();
 
   void generate_outputs_parallel(std::vector<SequenceOutput>& outputs,
                                  const Tokenizer& tokenizer,
                                  ThreadPool* thread_pool = nullptr);
+  void generate_multi_round_output(std::vector<SequenceOutput>& outputs,
+                                   const Tokenizer& tokenizer,
+                                   const Sequence& base);
 
  private:
   const std::string& prompt_;                  // ref from request

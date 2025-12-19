@@ -14,24 +14,24 @@ limitations under the License.
 ==============================================================================*/
 
 #pragma once
+#include <torch/torch.h>
+#include <torch_npu/csrc/libs/init_npu.h>
+#include <torch_npu/torch_npu.h>
 
-#include "runtime/xservice_client.h"
-#include "scheduler/continuous_scheduler.h"
-#include "scheduler/dit_scheduler.h"
-#include "scheduler/fixsteps_scheduler.h"
+#include <vector>
 
-namespace xllm {
+#include "acl/acl.h"
+#include "aclnn_select_unshared_kv.h"
+#include "acltensor_utils.h"
+#include "util/tensor_helper.h"
 
-std::unique_ptr<ContinuousScheduler> create_continuous_scheduler(
-    Engine* engine,
-    ContinuousScheduler::Options options);
-
-std::unique_ptr<FixStepsScheduler> create_fixsteps_scheduler(
-    Engine* engine,
-    ContinuousScheduler::Options options);
-
-std::unique_ptr<DiTScheduler> create_dit_scheduler(
-    DiTEngine* engine,
-    DiTScheduler::Options options);
-
-}  // namespace xllm
+namespace xllm_ops {
+void cache_select(const torch::Tensor& beam_index,
+                  std::vector<torch::Tensor> x_key_block,
+                  std::vector<torch::Tensor> x_value_block,
+                  const torch::Tensor& block_table,
+                  const torch::Tensor& group_offset,
+                  int64_t decode_step,
+                  int64_t beam_size,
+                  int64_t layer_num);
+}  // namespace xllm_ops

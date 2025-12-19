@@ -49,6 +49,11 @@ void Qwen3DecoderLayerImpl::param_from_args(
   param.isBF16 = args.dtype() == "bfloat16";
   param.enableSplitFuse = FLAGS_enable_chunked_prefill && isPrefill;
   param.loraEnableGMM = false;
+  // Only enable advanced decode KV cache optimizations in multi-round mode.
+  if (FLAGS_max_decode_rounds > 0) {
+    param.isEnableDecodeKvCache = true;
+    param.enablePrefillKeyValue = true;
+  }
 
   param.linearTransposeType = {1, -1, -1, 1, 1, -1, 1};
   param.quantGroupSize = 0;
@@ -171,7 +176,6 @@ int64_t Qwen3DecoderLayerImpl::init_layer() {
   model_name_ = "qwen3";
   CHECK_OPERATION_STATUS_RETURN(init_node(prefill_node_, prefill_param_));
   CHECK_OPERATION_STATUS_RETURN(init_node(decode_node_, decode_param_));
-
   return atb::NO_ERROR;
 }
 
@@ -225,7 +229,11 @@ torch::Tensor Qwen3DecoderLayerImpl::forward(torch::Tensor& x,
                                              std::atomic<bool>* event_flag,
                                              int node_id) {
   atb::Status st;
-  if (!input_params.batch_forward_type.is_decode()) {
+  // decide prefill vs decode; for multi-round mode, use explicit is_prefill.
+  bool is_prefill = (FLAGS_max_decode_rounds > 0)
+                        ? input_params.is_prefill
+                        : !input_params.batch_forward_type.is_decode();
+  if (is_prefill) {
     // if (input_params.empty_kv_cache) {
     // mstxRangeId id = mstxRangeStartA("prefill build variant", nullptr);
     build_node_variant_pack(prefill_node_,
@@ -235,7 +243,8 @@ torch::Tensor Qwen3DecoderLayerImpl::forward(torch::Tensor& x,
                             attn_mask,
                             kv_cache,
                             input_params,
-                            true);
+                            /*is_prefill=*/true,
+                            node_id);
     // mstxRangeEnd(id);
     st = execute_node(prefill_node_, node_id, event, event_flag);
     LOG_IF(FATAL, st != 0) << model_name_
@@ -248,7 +257,8 @@ torch::Tensor Qwen3DecoderLayerImpl::forward(torch::Tensor& x,
                             decode_attn_mask_,
                             kv_cache,
                             input_params,
-                            false);
+                            /*is_prefill=*/false,
+                            node_id);
     st = execute_node(decode_node_, node_id + 1000, event, event_flag);
     LOG_IF(FATAL, st != 0) << model_name_
                            << "excute decode layer fail, error code: " << st;
@@ -265,7 +275,8 @@ void Qwen3DecoderLayerImpl::build_node_variant_pack(
     at::Tensor& attn_mask,
     KVCache& kv_cache,
     ModelInputParams& input_params,
-    bool is_prefill) {
+    bool is_prefill,
+    int node_id) {
   internal_tensors_ = atb_speed::Utils::AtTensor2Tensor(x);
   // std::cout<<"node.variantPack.inTensors.size:"<<node.variantPack.inTensors.size()<<std::endl;
   node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER) = internal_tensors_;
@@ -289,14 +300,33 @@ void Qwen3DecoderLayerImpl::build_node_variant_pack(
   node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 8) = placeholder_;
   node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 9) =
       atb_speed::Utils::AtTensor2Tensor(input_params.block_tables);
-  node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 10) =
-      atb_speed::Utils::AtTensor2Tensor(input_params.new_cache_slots);
+  if (FLAGS_max_decode_rounds > 0) {
+    node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 10) = placeholder_;
+  } else {
+    node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 10) =
+        atb_speed::Utils::AtTensor2Tensor(input_params.new_cache_slots);
+  }
   if (is_prefill &&
       (FLAGS_enable_chunked_prefill || FLAGS_enable_prefix_cache)) {
     node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 11) =
         atb_speed::Utils::AtTensor2Tensor(input_params.q_seq_lens);
     node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 11).hostData =
         input_params.q_seq_lens_vec.data();
+  }
+  // Step-level decode metadata and shared KV caches are only meaningful in
+  // multi-round mode. Avoid touching these slots in legacy single-round mode
+  // to keep the original ATB graph argument layout.
+  if (FLAGS_max_decode_rounds > 0) {
+    node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 11) =
+        atb_speed::Utils::AtTensor2Tensor(
+            input_params.shared_k_caches[node_id]);
+    node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 12) =
+        atb_speed::Utils::AtTensor2Tensor(
+            input_params.shared_v_caches[node_id]);
+    node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 13) =
+        atb_speed::Utils::AtTensor2Tensor(input_params.beam_width_tensor);
+    node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 14) =
+        atb_speed::Utils::AtTensor2Tensor(input_params.current_round_tensor);
   }
 
   for (size_t i = 0; i < WEIGHT_COUNT_PER_LAYER; ++i) {

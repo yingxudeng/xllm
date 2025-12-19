@@ -258,6 +258,10 @@ class Sequence final {
     return sequence_params_.sampling_param->beam_width > 1;
   }
 
+  // mark whether we are in engine's step-level decode rounds
+  void set_in_step_decode_round(bool v) { in_step_decode_round_ = v; }
+  bool in_step_decode_round() const { return in_step_decode_round_; }
+
   LogprobState* logprob_state() { return logprob_state_.get(); }
 
   // set sequence id
@@ -265,6 +269,31 @@ class Sequence final {
 
   // get sequence id
   int32_t seq_id() const { return seq_id_; }
+
+  void set_beam_result(int32_t bw,
+                       int32_t total_rounds,
+                       const std::vector<std::vector<int32_t>>& flat,
+                       const std::vector<float>& last_logprobs) {
+    beam_width_cached_ = bw;
+    total_rounds_cached_ = total_rounds;
+    beam_seq_group_flat_ = flat;
+    beam_last_logprobs_ = last_logprobs;
+  }
+  bool has_beam_result() const {
+    return beam_width_cached_ > 0 && total_rounds_cached_ > 0 &&
+           !beam_seq_group_flat_.empty();
+  }
+  const std::vector<std::vector<int32_t>>& beam_seq_group_flat() const {
+    return beam_seq_group_flat_;
+  }
+  const std::vector<float>& beam_last_logprobs() const {
+    return beam_last_logprobs_;
+  }
+  int32_t beam_width_cached() const { return beam_width_cached_; }
+  int32_t total_rounds_cached() const { return total_rounds_cached_; }
+
+  // finish the sequence by setting finished status and reason
+  void finish();
 
   void set_cancel() { cancelled_.store(true, std::memory_order_relaxed); }
 
@@ -362,10 +391,18 @@ class Sequence final {
   std::atomic<bool> cancelled_{false};
 
   // kvcache store copy async result
+  std::optional<std::vector<folly::SemiFuture<uint32_t>>> futures_;
   std::shared_ptr<std::atomic<bool>> termination_flag_;
   std::vector<std::shared_ptr<std::atomic<uint32_t>>> prefetch_results_;
 
   Timer timer_;
+
+  bool in_step_decode_round_ = false;
+
+  int32_t beam_width_cached_ = 0;
+  int32_t total_rounds_cached_ = 0;
+  std::vector<std::vector<int32_t>> beam_seq_group_flat_;
+  std::vector<float> beam_last_logprobs_;
   bool is_timeout_set_ = false;
 };
 

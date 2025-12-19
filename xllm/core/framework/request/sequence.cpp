@@ -27,6 +27,7 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#include "core/common/global_flags.h"
 #include "core/common/metrics.h"
 #include "core/framework/tokenizer/tokenizer.h"
 #include "core/util/slice.h"
@@ -487,6 +488,14 @@ bool Sequence::update_prefetch_result(uint32_t timeout) {
   }
   prefetch_results_.clear();
   return true;
+}
+
+void Sequence::finish() {
+  finished_ = true;
+  finish_status_invalidated_ = false;
+  if (finish_reason_ == FinishReason::NONE) {
+    finish_reason_ = FinishReason::STOP;
+  }
 }
 
 }  // namespace xllm

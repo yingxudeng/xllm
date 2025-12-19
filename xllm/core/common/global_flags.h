@@ -199,6 +199,10 @@ DECLARE_int32(max_global_tpot_ms);
 
 DECLARE_int32(max_requests_per_batch);
 
+DECLARE_int32(max_decode_rounds);
+
+DECLARE_int32(beam_width);
+
 DECLARE_bool(enable_continuous_kvcache);
 
 DECLARE_int64(phy_page_granularity_size);
@@ -238,3 +242,4 @@ DECLARE_bool(enable_constrained_decoding);
 #if defined(USE_NPU)
 DECLARE_string(npu_kernel_backend);
 #endif
+DECLARE_int64(max_token_per_req);
