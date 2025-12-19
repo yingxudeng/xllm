@@ -57,13 +57,12 @@ inline Allow operator~(Allow a) {
   return static_cast<Allow>(~static_cast<int>(a));
 }
 
-std::string _find_common_prefix(const std::string& s1, const std::string& s2);
+std::string find_common_prefix(const std::string& s1, const std::string& s2);
 
-std::tuple<nlohmann::json, int> _partial_json_loads(
-    const std::string& input_str,
-    Allow flags);
+std::tuple<nlohmann::json, int> partial_json_loads(const std::string& input_str,
+                                                   Allow flags);
 
-bool _is_complete_json(const std::string& input_str);
+bool is_complete_json(const std::string& input_str);
 
 }  // namespace function_call
 }  // namespace xllm

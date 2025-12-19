@@ -39,7 +39,7 @@ class BaseFormatDetector {
   BaseFormatDetector& operator=(const BaseFormatDetector&) = delete;
 
   std::unordered_map<std::string, int> get_tool_indices(
-      const std::vector<JsonTool>& tools);
+      const std::vector<JsonTool>& tools) const;
 
   std::vector<ToolCallItem> parse_base_json(const nlohmann::json& json_obj,
                                             const std::vector<JsonTool>& tools);
@@ -69,8 +69,8 @@ class BaseFormatDetector {
   std::string eot_token_;
   std::string tool_call_separator_;
 
-  int _ends_with_partial_token(const std::string& buffer,
-                               const std::string& bot_token) const;
+  int ends_with_partial_token(const std::string& buffer,
+                              const std::string& bot_token) const;
 
   std::unordered_map<std::string, int> tool_indices_;
 };

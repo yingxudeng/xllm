@@ -48,14 +48,14 @@ struct StreamingParseResult {
 
   StreamingParseResult() = default;
 
-  StreamingParseResult(const std::string& text) : normal_text(text) {}
+  explicit StreamingParseResult(std::string text)
+      : normal_text(std::move(text)) {}
 
-  StreamingParseResult(const std::vector<ToolCallItem>& tool_calls)
-      : calls(tool_calls) {}
+  explicit StreamingParseResult(std::vector<ToolCallItem> tool_calls)
+      : calls(std::move(tool_calls)) {}
 
-  StreamingParseResult(const std::string& text,
-                       const std::vector<ToolCallItem>& tool_calls)
-      : normal_text(text), calls(tool_calls) {}
+  StreamingParseResult(std::string text, std::vector<ToolCallItem> tool_calls)
+      : normal_text(std::move(text)), calls(std::move(tool_calls)) {}
 
   bool has_calls() const { return !calls.empty(); }
 

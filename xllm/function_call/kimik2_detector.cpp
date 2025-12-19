@@ -39,25 +39,14 @@ KimiK2Detector::KimiK2Detector() : BaseFormatDetector() {
   std::string pattern =
       R"(<\|tool_call_begin\|>\s*([\w\.]+:\d+)\s*<\|tool_call_argument_begin\|>\s*(\{.*?\})\s*<\|tool_call_end\|>)";
 
-  try {
-    tool_call_regex_ = std::regex(pattern, std::regex_constants::ECMAScript);
-  } catch (const std::regex_error& e) {
-    LOG(ERROR) << "Failed to compile KimiK2 regex pattern: " << e.what();
-    throw;
-  }
+  tool_call_regex_ = std::regex(pattern, std::regex_constants::ECMAScript);
 
   // Regex pattern for streaming parsing (partial tool calls)
   std::string stream_pattern =
       R"(<\|tool_call_begin\|>\s*([\w\.]+:\d+)\s*<\|tool_call_argument_begin\|>\s*(\{.*))";
 
-  try {
-    stream_tool_call_portion_regex_ =
-        std::regex(stream_pattern, std::regex_constants::ECMAScript);
-  } catch (const std::regex_error& e) {
-    LOG(ERROR) << "Failed to compile KimiK2 streaming regex pattern: "
-               << e.what();
-    throw;
-  }
+  stream_tool_call_portion_regex_ =
+      std::regex(stream_pattern, std::regex_constants::ECMAScript);
 
   last_arguments_ = "";
 }
@@ -262,7 +251,7 @@ StreamingParseResult KimiK2Detector::parse_streaming_increment(
           parsed_args = parsed_args.substr(0, end_pos);
         }
 
-        if (_is_complete_json(parsed_args)) {
+        if (is_complete_json(parsed_args)) {
           try {
             auto parsed_json = nlohmann::json::parse(parsed_args);
             prev_tool_call_arr_[current_tool_id_]["arguments"] =

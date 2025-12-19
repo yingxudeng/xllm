@@ -31,7 +31,7 @@ BaseFormatDetector::BaseFormatDetector()
       tool_call_separator_(", ") {}
 
 std::unordered_map<std::string, int> BaseFormatDetector::get_tool_indices(
-    const std::vector<JsonTool>& tools) {
+    const std::vector<JsonTool>& tools) const {
   std::unordered_map<std::string, int> indices;
   for (size_t i = 0; i < tools.size(); ++i) {
     if (!tools[i].function.name.empty()) {
@@ -111,7 +111,7 @@ std::vector<ToolCallItem> BaseFormatDetector::parse_base_json(
   return results;
 }
 
-int BaseFormatDetector::_ends_with_partial_token(
+int BaseFormatDetector::ends_with_partial_token(
     const std::string& buffer,
     const std::string& bot_token) const {
   // Check if buffer ends with a partial bot_token.
@@ -157,7 +157,7 @@ StreamingParseResult BaseFormatDetector::parse_streaming_increment(
   if (!(has_tool_call(current_text) ||
         (current_tool_id_ > 0 &&
          current_text.find(tool_call_separator_) == 0))) {
-    if (_ends_with_partial_token(buffer_, bot_token_) == 0) {
+    if (ends_with_partial_token(buffer_, bot_token_) == 0) {
       std::string normal_text = buffer_;
       buffer_.clear();
 
@@ -198,9 +198,9 @@ StreamingParseResult BaseFormatDetector::parse_streaming_increment(
     }
 
     std::string json_part = current_text.substr(start_idx);
-    auto [obj, end_idx] = _partial_json_loads(json_part, flags);
+    auto [obj, end_idx] = partial_json_loads(json_part, flags);
 
-    bool is_current_complete = _is_complete_json(json_part.substr(0, end_idx));
+    bool is_current_complete = is_complete_json(json_part.substr(0, end_idx));
 
     if (obj.contains("name") && obj["name"].is_string()) {
       std::string tool_name = obj["name"].get<std::string>();
@@ -299,7 +299,7 @@ StreamingParseResult BaseFormatDetector::parse_streaming_increment(
             std::string prev_args_json = prev_args_it->second;
             if (cur_args_json != prev_args_json) {
               std::string prefix =
-                  _find_common_prefix(prev_args_json, cur_args_json);
+                  find_common_prefix(prev_args_json, cur_args_json);
               argument_diff = prefix.substr(sent);
             }
           }

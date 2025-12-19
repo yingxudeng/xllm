@@ -275,7 +275,7 @@ StreamingParseResult DeepSeekV3Detector::parse_streaming_increment(
           streamed_args_for_tool_[current_tool_id_] += argument_diff;
         }
 
-        if (_is_complete_json(func_args_raw)) {
+        if (is_complete_json(func_args_raw)) {
           try {
             nlohmann::json parsed_args = nlohmann::json::parse(func_args_raw);
             prev_tool_call_arr_[current_tool_id_]["arguments"] =
