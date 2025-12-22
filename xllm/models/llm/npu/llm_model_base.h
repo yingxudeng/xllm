@@ -341,7 +341,11 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
 
     // verify
     model_->verify_loaded_weights(prefix);
-    npu_lm_head_->verify_loaded_weights("lm_head.");
+    if (tie_word_embeddings) {
+      npu_lm_head_->verify_loaded_weights(prefix + "embed_tokens.");
+    } else {
+      npu_lm_head_->verify_loaded_weights("lm_head.");
+    }
 
     model_->merge_loaded_weights();
     // test
