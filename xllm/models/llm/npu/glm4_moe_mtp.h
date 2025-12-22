@@ -236,67 +236,23 @@ class Glm4MoeMtpModelImpl : public torch::nn::Module {
 };
 TORCH_MODULE(Glm4MoeMtpModel);
 
-class Glm4MoeMtpForCausalLMImpl : public torch::nn::Module {
+class Glm4MoeMtpForCausalLMImpl
+    : public LlmForCausalLMImplBase<Glm4MoeMtpModel> {
  public:
-  Glm4MoeMtpForCausalLMImpl(const ModelContext& context) {
-    model_ = register_module("model", Glm4MoeMtpModel(context));
-  }
+  Glm4MoeMtpForCausalLMImpl(const ModelContext& context)
+      : LlmForCausalLMImplBase<Glm4MoeMtpModel>(context) {}
 
-  // tokens: [num_tokens]
-  // positions: [num_tokens] token pos in the sequence
-  // returns: [num_tokens, hidden_size]
-  torch::Tensor forward(const torch::Tensor& tokens,
-                        const torch::Tensor& positions,
-                        std::vector<KVCache>& kv_caches,
-                        const ModelInputParams& input_params) {
-    return model_(tokens, positions, kv_caches, input_params);
-  }
-
-  // hidden_states: [num_tokens, hidden_size]
-  // seleted_idxes: [num_tokens]
-  // returns: [num_tokens, vocab_size]
-  torch::Tensor logits(const torch::Tensor& hidden_states,
-                       const torch::Tensor& seleted_idxes) {
-    // select tokens if provided
-    return npu_lm_head_(hidden_states, seleted_idxes, 0);
-  }
-
-  // load model
-  void load_model(std::unique_ptr<ModelLoader> loader) {
+  void load_model(std::unique_ptr<ModelLoader> loader,
+                  std::string prefix = "model.") override {
     for (const auto& state_dict : loader->get_state_dicts()) {
-      model_->load_state_dict(state_dict->get_dict_with_prefix("model."));
-      // npu_lm_head_->load_state_dict(state_dict.get_dict_with_prefix("model.shared_head.head."));
+      model_->load_state_dict(state_dict->get_dict_with_prefix(prefix));
     }
 
     // verify
-    model_->verify_loaded_weights("model.");
-    // npu_lm_head_->verify_loaded_weights("model.shared_head.head.");
+    model_->verify_loaded_weights(prefix);
 
     model_->merge_loaded_weights();
-    // npu_lm_head_->merge_loaded_weights();
   }
-
-  void prepare_expert_weight(int32_t layer_id,
-                             const std::vector<int32_t>& expert_ids) {
-    return;
-  }
-  void update_expert_weight(int32_t layer_id) { return; }
-
-  layer::NpuLmHead get_npu_lm_head() { return npu_lm_head_; }
-
-  void set_npu_lm_head(layer::NpuLmHead& head) { npu_lm_head_ = head; }
-
-  layer::NpuWordEmbedding get_npu_word_embedding() {
-    return model_->get_npu_word_embedding();
-  }
-
-  void set_npu_word_embedding(layer::NpuWordEmbedding& npu_word_embedding) {
-    model_->set_npu_word_embedding(npu_word_embedding);
-  }
-
- private:
-  Glm4MoeMtpModel model_{nullptr};
-  layer::NpuLmHead npu_lm_head_{nullptr};
 };
 TORCH_MODULE(Glm4MoeMtpForCausalLM);
 

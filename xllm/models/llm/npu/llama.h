@@ -30,6 +30,7 @@ limitations under the License.
 #include "core/layers/npu/npu_llama_decoder_layer_impl.h"
 #include "core/layers/npu/npu_rms_norm_impl.h"
 #include "core/util/tensor_helper.h"
+#include "llm_model_base.h"
 #include "models/model_registry.h"
 #include "xllm_kernels/core/include/atb_speed/log.h"
 
@@ -234,72 +235,10 @@ class LlamaModelImpl : public torch::nn::Module {
 };
 TORCH_MODULE(LlamaModel);
 
-class LlamaForCausalLMImpl : public torch::nn::Module {
+class LlamaForCausalLMImpl : public LlmForCausalLMImplBase<LlamaModel> {
  public:
-  LlamaForCausalLMImpl(const ModelContext& context) {
-    auto options = context.get_tensor_options();
-
-    // register submodules
-    model_ = register_module("model", LlamaModel(context));
-    device_id_ = options.device().index();
-    npu_lm_head_ = register_module("lm_head", layer::NpuLmHead(context));
-  }
-  // tokens: [num_tokens]
-  // positions: [num_tokens] token pos in the sequence
-  // returns: [num_tokens, hidden_size]
-  torch::Tensor forward(const torch::Tensor& tokens,
-                        const torch::Tensor& positions,
-                        std::vector<KVCache>& kv_caches,
-                        const ModelInputParams& input_params) {
-    return model_(tokens, positions, kv_caches, input_params);
-  }
-
-  // hidden_states: [num_tokens, hidden_size]
-  // seleted_idxes: [num_tokens]
-  // returns: [num_tokens, vocab_size]
-  torch::Tensor logits(const torch::Tensor& hidden_states,
-                       const torch::Tensor& seleted_idxes) {
-    return npu_lm_head_(hidden_states, seleted_idxes, 0);
-  }
-
-  void load_model(std::unique_ptr<ModelLoader> loader) {
-    for (const auto& state_dict : loader->get_state_dicts()) {
-      model_->load_state_dict(state_dict->get_dict_with_prefix("model."));
-      npu_lm_head_->load_state_dict(
-          state_dict->get_dict_with_prefix("lm_head."));
-    }
-
-    // verify
-    model_->verify_loaded_weights("model.");
-    npu_lm_head_->verify_loaded_weights("lm_head.");
-
-    model_->merge_loaded_weights();
-    npu_lm_head_->merge_loaded_weights();
-  }
-
-  void prepare_expert_weight(int32_t layer_id,
-                             const std::vector<int32_t>& expert_ids) {
-    return;
-  }
-  void update_expert_weight(int32_t layer_id) { return; }
-
-  layer::NpuLmHead get_npu_lm_head() { return npu_lm_head_; }
-
-  void set_npu_lm_head(layer::NpuLmHead& head) { npu_lm_head_ = head; }
-
-  layer::NpuWordEmbedding get_npu_word_embedding() {
-    return model_->get_npu_word_embedding();
-  }
-
-  void set_npu_word_embedding(layer::NpuWordEmbedding& npu_word_embedding) {
-    model_->set_npu_word_embedding(npu_word_embedding);
-  }
-
- private:
-  // parameter members, must be registered
-  LlamaModel model_{nullptr};
-  int device_id_ = 0;
-  layer::NpuLmHead npu_lm_head_{nullptr};
+  LlamaForCausalLMImpl(const ModelContext& context)
+      : LlmForCausalLMImplBase<LlamaModel>(context) {}
 };
 TORCH_MODULE(LlamaForCausalLM);
 
