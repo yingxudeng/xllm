@@ -37,8 +37,8 @@ RotaryEmbeddingImpl::RotaryEmbeddingImpl(int64_t rotary_dim,
   cos_sin_cache_ = register_buffer("cos_sin_cache", cos_sin);
 
   auto cos_sin_vec = cos_sin_cache_.chunk(2, /*dim=*/-1);
-  cos_ = cos_sin_vec[0].view({-1, rotary_dim});
-  sin_ = cos_sin_vec[1].view({-1, rotary_dim});
+  cos_ = cos_sin_vec[0].reshape({-1, rotary_dim});
+  sin_ = cos_sin_vec[1].reshape({-1, rotary_dim});
 }
 
 void RotaryEmbeddingImpl::forward(torch::Tensor& q,

@@ -35,45 +35,9 @@ limitations under the License.
 #include "layers/word_embedding.h"
 #include "model_args.h"
 #include "model_input_params.h"
+#include "model_traits.h"
 
 namespace xllm {
-
-namespace detail {
-template <typename T, typename = void>
-struct has_get_lm_head : std::false_type {};
-
-template <typename T>
-struct has_get_lm_head<T,
-                       std::void_t<decltype(std::declval<T>()->get_lm_head())>>
-    : std::true_type {};
-
-template <typename T, typename = void>
-struct has_set_lm_head : std::false_type {};
-
-template <typename T>
-struct has_set_lm_head<T,
-                       std::void_t<decltype(std::declval<T>()->set_lm_head(
-                           std::declval<layer::LmHead&>()))>> : std::true_type {
-};
-
-template <typename T, typename = void>
-struct has_get_word_embedding : std::false_type {};
-
-template <typename T>
-struct has_get_word_embedding<
-    T,
-    std::void_t<decltype(std::declval<T>()->get_word_embedding())>>
-    : std::true_type {};
-
-template <typename T, typename = void>
-struct has_set_word_embedding : std::false_type {};
-
-template <typename T>
-struct has_set_word_embedding<
-    T,
-    std::void_t<decltype(std::declval<T>()->set_word_embedding(
-        std::declval<layer::WordEmbedding&>()))>> : std::true_type {};
-}  // namespace detail
 
 class CausalLM : public torch::nn::Module {
  public:
@@ -106,10 +70,22 @@ class CausalLM : public torch::nn::Module {
 
   // MTP-specific interface.
 #if defined(USE_NPU)
-  virtual layer::NpuLmHead get_npu_lm_head() = 0;
-  virtual void set_npu_lm_head(layer::NpuLmHead& head) = 0;
-  virtual layer::NpuWordEmbedding get_npu_word_embedding() = 0;
-  virtual void set_npu_word_embedding(layer::NpuWordEmbedding& embedding) = 0;
+  virtual layer::NpuLmHead get_npu_lm_head() {
+    LOG(FATAL) << "Method 'get_npu_lm_head' is not implemented/supported by "
+                  "this model.";
+  }
+  virtual void set_npu_lm_head(layer::NpuLmHead& head) {
+    LOG(FATAL) << "Method 'set_npu_lm_head' is not implemented/supported by "
+                  "this model.";
+  }
+  virtual layer::NpuWordEmbedding get_npu_word_embedding() {
+    LOG(FATAL) << "Method 'get_word_embedding' is not implemented/supported by "
+                  "this model.";
+  }
+  virtual void set_npu_word_embedding(layer::NpuWordEmbedding& embedding) {
+    LOG(FATAL) << "Method 'set_word_embedding' is not implemented/supported by "
+                  "this model.";
+  }
 #endif
   virtual layer::LmHead get_lm_head() {
     LOG(FATAL)
@@ -162,19 +138,35 @@ class CausalLMImpl : public CausalLM {
 
 #if defined(USE_NPU)
   layer::NpuLmHead get_npu_lm_head() override {
-    return model_->get_npu_lm_head();
+    if constexpr (detail::has_get_npu_lm_head<Model>::value) {
+      return model_->get_npu_lm_head();
+    } else {
+      return CausalLM::get_npu_lm_head();
+    }
   }
 
   void set_npu_lm_head(layer::NpuLmHead& head) override {
-    model_->set_npu_lm_head(head);
+    if constexpr (detail::has_set_npu_lm_head<Model>::value) {
+      model_->set_npu_lm_head(head);
+    } else {
+      CausalLM::set_npu_lm_head(head);
+    }
   }
 
   layer::NpuWordEmbedding get_npu_word_embedding() override {
-    return model_->get_npu_word_embedding();
+    if constexpr (detail::has_get_npu_word_embedding<Model>::value) {
+      return model_->get_npu_word_embedding();
+    } else {
+      return CausalLM::get_npu_word_embedding();
+    }
   }
 
   void set_npu_word_embedding(layer::NpuWordEmbedding& embedding) override {
-    model_->set_npu_word_embedding(embedding);
+    if constexpr (detail::has_set_npu_word_embedding<Model>::value) {
+      model_->set_npu_word_embedding(embedding);
+    } else {
+      CausalLM::set_npu_word_embedding(embedding);
+    }
   }
 #endif
   layer::LmHead get_lm_head() override {

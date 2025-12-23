@@ -15,6 +15,9 @@ limitations under the License.
 
 #pragma once
 
+#if defined(USE_NPU_TORCH)
+#include "core/layers/common/attention_mask.h"
+#endif
 #include "core/layers/qwen3_decoder_layer.h"
 #include "llm_model_base.h"
 
@@ -53,6 +56,10 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
         options);
     int32_t mask_value = FLAGS_enable_chunked_prefill ? -9984 : 1;
 
+#if defined(USE_NPU_TORCH)
+    attn_mask_ = layer::AttentionMask(
+        options.device(), options.dtype().toScalarType(), mask_value);
+#endif
     for (int32_t i = 0; i < model_args.n_layers(); i++) {
       auto block = QWen3DecoderLayer(context);
       layers_.push_back(block);
@@ -122,12 +129,10 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
     }
 
     torch::Tensor max_of_seq = torch::max(input_params.kv_seq_lens);
-    max_seq_len_ = FLAGS_enable_chunked_prefill
-                       ? std::max(max_of_seq.item<int>(), max_seq_len_)
-                       : 128;
 
     layer::update_dummy_run_input(dp_rank_, positions, input_params_new);
-    auto attn_metadata = layer::AttentionMetadata::build(input_params_new);
+    auto attn_metadata =
+        get_attention_metadata(input_params_new, h, max_of_seq.item<int32_t>());
     if (positions.dim() == 2) {
       attn_metadata.mrope_cos = std::move(cos_pos);
       attn_metadata.mrope_sin = std::move(sin_pos);
@@ -154,7 +159,44 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
   }
 
  private:
+  layer::AttentionMetadata get_attention_metadata(
+      const ModelInputParams& params,
+      const torch::Tensor& h,
+      const int32_t max_seq_len_batch) {
+#if defined(USE_NPU_TORCH)
+    max_seq_len_ = std::max(max_seq_len_batch, max_seq_len_);
+    auto attn_mask = attn_mask_.get_attn_mask(
+        max_seq_len_, h.dtype().toScalarType(), h.device());
+    if (FLAGS_enable_chunked_prefill) {
+      const size_t batch_size = params.q_seq_lens_vec.size();
+      if (batch_size > 0) {
+        std::vector<torch::Tensor> req_mask_vec;
+        req_mask_vec.reserve(batch_size);
+
+        for (size_t j = 0; j < batch_size; ++j) {
+          const int64_t start =
+              params.kv_seq_lens_vec[j] - params.q_seq_lens_vec[j];
+          const int64_t end = params.kv_seq_lens_vec[j];
+
+          auto req_mask_slice = attn_mask.slice(0, start, end);
+          req_mask_vec.emplace_back(req_mask_slice);
+        }
+        attn_mask = torch::cat(req_mask_vec, 0);
+      }
+    }
+    return layer::AttentionMetadata::build(params, attn_mask);
+#else
+    max_seq_len_ = FLAGS_enable_chunked_prefill
+                       ? std::max(max_seq_len_batch, max_seq_len_)
+                       : 128;
+    return layer::AttentionMetadata::build(params);
+#endif
+  }
+
   torch::Tensor viusal_pos_mask_;
+#if defined(USE_NPU_TORCH)
+  layer::AttentionMask attn_mask_;
+#endif
 };
 TORCH_MODULE(QWen3Model);
 
