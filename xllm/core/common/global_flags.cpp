@@ -479,8 +479,17 @@ DEFINE_bool(enable_constrained_decoding,
             "through pre-defined rules.");
 
 #if defined(USE_NPU)
-DEFINE_string(
-    npu_kernel_backend,
-    "ATB",
-    "NPU kernel backend. Supported options: ATB, TORCH. Default is ATB.");
+
+// USE_NPU_TORCH: Temporary flag used for debugging qwen3 torch NPU graph
+// capture. This variable may be removed in the future.
+#if defined(USE_NPU_TORCH)
+constexpr const char* kNpuBackendDefault = "TORCH";
+#else
+constexpr const char* kNpuBackendDefault = "ATB";
+#endif
+
+DEFINE_string(npu_kernel_backend,
+              kNpuBackendDefault,
+              "NPU kernel backend. Supported options: ATB, TORCH.");
+
 #endif
