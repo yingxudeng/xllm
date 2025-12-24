@@ -17,6 +17,7 @@ limitations under the License.
 
 #include "core/layers/qwen3_decoder_layer.h"
 #include "llm_model_base.h"
+#include "core/common/global_flags.h"
 
 namespace xllm {
 
@@ -132,9 +133,26 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
       attn_metadata.mrope_cos = std::move(cos_pos);
       attn_metadata.mrope_sin = std::move(sin_pos);
     }
+    if (FLAGS_max_decode_rounds) {
+      LOG(INFO) << "input_params_new.shared_k_caches.size(): "
+                << input_params_new.shared_k_caches.size();
+      LOG(INFO) << "input_params_new.shared_k_caches[0].shape: "
+                << input_params_new.shared_k_caches[0].sizes();
+      LOG(INFO) << "input_params_new.current_round: "
+                << input_params_new.current_round;
+      attn_metadata.step = input_params_new.current_round;
+    }
+    
 
     std::optional<torch::Tensor> residual;
     for (size_t i = 0; i < layers_.size(); i++) {
+      if (FLAGS_max_decode_rounds) {
+        auto target_layer_shared_k_cache = input_params_new.shared_k_caches[i];
+        auto target_layer_shared_v_cache = input_params_new.shared_v_caches[i];
+
+        attn_metadata.shared_k_cache = target_layer_shared_k_cache;
+        attn_metadata.shared_v_cache = target_layer_shared_v_cache;
+      }
       auto& layer = layers_[i];
       h = layer(h,
                 residual,

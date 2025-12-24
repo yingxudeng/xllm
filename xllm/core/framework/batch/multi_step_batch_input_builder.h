@@ -49,6 +49,7 @@ class MultiStepBatchInputBuilder {
       std::vector<BlockTransferInfo>* swap_block_transfer_infos,
       const uint64_t batch_id,
       const ModelArgs* args,
+      BatchForwardType batch_forward_type,
       ThreadPool* thread_pool = nullptr);
 
   ~MultiStepBatchInputBuilder() = default;
@@ -74,13 +75,14 @@ class MultiStepBatchInputBuilder {
     std::vector<int32_t> unique_token_lens_vec;
 
     // Sequence metadata
+    BatchForwardType batch_forward_type;
     bool empty_kv_cache = true;
     uint32_t max_seq_len = 0;
     uint32_t q_max_seq_len = 0;
 #if defined(USE_NPU)
     std::vector<int32_t> seq_lens;
     std::vector<int32_t> q_seq_lens;
-#elif defined(USE_MLU)
+#elif defined(USE_MLU) || defined(USE_CUDA) || defined(USE_ILU)
     std::vector<int32_t> seq_lens = {0};    // cu_seq_lens
     std::vector<int32_t> q_seq_lens = {0};  // q_cu_seq_len
 #endif
@@ -101,6 +103,11 @@ class MultiStepBatchInputBuilder {
     // for continuous kvcache
     std::vector<int64_t> new_cache_slot_offsets;  //[n_tokens]
     std::vector<int64_t> kv_cache_start_offsets;  //[n_seq]
+
+    // for flashinfer
+    std::vector<int32_t> paged_kv_indptr = {0};
+    std::vector<int32_t> paged_kv_indices;
+    std::vector<int32_t> paged_kv_last_page_len;
   };
 
  protected:
@@ -132,7 +139,7 @@ class MultiStepBatchInputBuilder {
     std::vector<std::vector<int32_t>> decode_unique_token_counts_vec;
     std::vector<int32_t> decode_unique_token_lens_vec;
     std::vector<int32_t> decode_sample_idxes;
-#if defined(USE_NPU)
+#if defined(USE_NPU) || defined(USE_CUDA)
     std::vector<int32_t> decode_seq_lens;
     std::vector<int32_t> decode_q_seq_lens;
 #elif defined(USE_MLU)
@@ -184,11 +191,15 @@ class MultiStepBatchInputBuilder {
   bool use_mrope_ = false;
 
   // swap blocks between device/host/global memory (optional)
+  std::unordered_set<int32_t> write_block_ids_;
   std::vector<BlockTransferInfo>* swap_block_transfer_infos_ = nullptr;
 
   // thread pool for potential future multithreaded processing, not owned
   ThreadPool* thread_pool_ = nullptr;
   uint64_t batch_id_ = 0;
+
+  // whether prepare draft input for MTP(EAGLE) at Decode phase.
+  bool is_mtp_decode_ = false;
 };
 
 }  // namespace xllm

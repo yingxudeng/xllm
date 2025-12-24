@@ -56,6 +56,7 @@ BatchInputBuilder::BatchInputBuilder(
       num_sequences_(sequences.size()),
       swap_block_transfer_infos_(swap_block_transfer_infos),
       batch_id_(batch_id) {
+  LOG(INFO) << "batch_forward_type: " << batch_forward_type.to_string();
   // Reserve space for better performance
   state_.flatten_tokens_vec.reserve(1000);
   state_.flatten_positions_vec.reserve(1000);
@@ -105,6 +106,7 @@ void BatchInputBuilder::process_sequences() {
 }
 
 void BatchInputBuilder::process_sequences_multithreaded() {
+  LOG(INFO) << "inner process_sequences_multithreaded.";
   const size_t threads_num = thread_pool_->size();
   const size_t sequences_per_thread =
       (num_sequences_ + threads_num - 1) / threads_num;
@@ -262,6 +264,7 @@ void BatchInputBuilder::process_single_sequence(
     int32_t seq_index,
     BuilderState* state_ptr,
     std::unordered_set<int32_t>* write_block_ids_ptr) {
+  LOG(INFO) << "inner process_single_sequence.";
   BuilderState& state = state_ptr ? *state_ptr : state_;
 
   auto* sequence = sequences_[seq_index];

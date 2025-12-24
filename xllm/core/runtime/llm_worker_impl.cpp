@@ -82,6 +82,7 @@ bool LLMWorkerImpl::init_model(ModelContext& context) {
 }
 
 std::optional<ForwardOutput> LLMWorkerImpl::step(const ForwardInput& input) {
+  LOG(INFO) << "input.input_params.batch_forward_type: " << input.input_params.batch_forward_type.to_string();
   Timer timer;
   // Only enter multi-round decode when explicitly enabled via global flag.
   if (FLAGS_max_decode_rounds > 0 && input.total_round > 0) {
@@ -217,23 +218,9 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
     ForwardInput input) {
   device_.set_device();
   Timer timer;
-  // std::vector<torch::Tensor> flatten_tokens_micro_batches;
-  // std::vector<torch::Tensor> flatten_positions_micro_batches;
-  // std::vector<ModelInputParams> input_params_micro_batches;
-  // std::vector<folly::SemiFuture<bool>> futures;
-
-  // for (auto i = 0; i < inputs.micro_inputs.size(); ++i) {
-  //   flatten_tokens_micro_batches.push_back(
-  //       std::move(inputs.micro_inputs[i].token_ids));
-  //   flatten_positions_micro_batches.push_back(
-  //       std::move(inputs.micro_inputs[i].positions));
-  //   input_params_micro_batches.push_back(
-  //       std::move(inputs.micro_inputs[i].input_params));
-  // }
 
   int32_t total_rounds = input.total_round;
-  ForwardOutput output;
-
+  
   std::vector<torch::Tensor> unshared_k_cache;
   std::vector<torch::Tensor> unshared_v_cache;
   auto args = context_.get_model_args();
@@ -243,19 +230,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
     unshared_v_cache.push_back(kv_caches_[i].get_v_cache());
   }
   int32_t batch = input.input_params.num_sequences;
-  // NOTE:
-  // - beam_width for multi-round decode is carried in ForwardInput::beam_width,
-  //   which is filled from proto (see proto_to_forward_input).
-  // - ModelInputParams::beam_width is not populated by the multi-step builders
-  //   on host side.
-  // Before rebase, the implementation used inputs.micro_inputs[0].beam_width
-  // (i.e. the top-level ForwardInput field). After rebase it was changed to
-  // read from input.input_params.beam_width, which stayed at the default and
-  // caused mismatches when FLAGS_beam_width > 1.
-  //
-  // To restore the original behavior, read beam_width from ForwardInput and
-  // also propagate it into input_params so that downstream layers can consume
-  // a consistent value.
+
   int32_t beam_width_init = input.beam_width;
   input.input_params.beam_width = beam_width_init;
   auto int_options =
@@ -264,6 +239,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
       torch::TensorOptions().dtype(torch::kFloat32).device(device_);
   torch::Tensor sequence_group =
       torch::zeros({batch, beam_width_init, total_rounds}, int_options);
+
   // preallocate outputs and cached inputs
   int64_t num_seq = batch * beam_width_init;
   torch::Tensor acc_logprob = torch::empty({num_seq, 1}, fp32_options);
@@ -273,28 +249,23 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
   torch::Tensor out_beam_count_prefix_sums =
       torch::empty({num_seq, 1}, int_options);
   auto out_seqgroup = sequence_group.clone();
+
+  ForwardOutput output;
+
   for (int32_t round = 0; round < total_rounds; ++round) {
+
     const auto& sampling_params =
         round > 0 ? input.decoder_sampling_params : input.sampling_params;
     input.input_params.is_prefill = round == 0;
+
     if (!input.input_params.current_round_tensor_list.empty() && round >= 0 &&
         round < static_cast<int32_t>(
                     input.input_params.current_round_tensor_list.size())) {
       input.input_params.current_round_tensor =
           input.input_params.current_round_tensor_list[round];
-      input.input_params.current_round = round;
+      input.input_params.current_round = round - 1;
     }
-    // for (auto i = 0; i < input_params_micro_batches.size(); ++i) {
-    //   auto& mip = input_params_micro_batches[i];
-    //   mip.is_prefill = round == 0;
-    //   if (!mip.current_round_tensor_list.empty() && round >= 0 &&
-    //       round < static_cast<int32_t>(mip.current_round_tensor_list.size()))
-    //       {
-    //     mip.current_round_tensor = mip.current_round_tensor_list[round];
-    //     mip.current_round = round;
-    //   }
-    //   mip.beam_width = inputs.micro_inputs[0].beam_width;
-    // }
+
     auto hidden_states = model_executor_->forward(
         input.token_ids, input.positions, kv_caches_, input.input_params);
     if (!hidden_states.defined()) {
@@ -302,11 +273,11 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
     }
 
     torch::Tensor logits;
-
     if (sampling_params.selected_token_idxes.defined()) {
       logits =
           model_->logits(hidden_states, sampling_params.selected_token_idxes);
     }
+
     if (sampling_params.selected_token_idxes.defined()) {
       auto sample_output = sampler_->forward(logits, sampling_params);
       torch::Tensor top_tokens;
@@ -316,12 +287,30 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
       if (round == 0) {
         top_tokens =
             sample_output.top_tokens.to(torch::kInt32).reshape({-1, 1});
+        LOG(INFO) << "top_tokens.shape: " << top_tokens.sizes();
         top_logprobs = sample_output.top_logprobs.reshape({-1, 1});
+
+        input.input_params.batch_forward_type = BatchForwardType(2);
+
+        input.token_ids =
+            sample_output.top_tokens.to(torch::kInt32).reshape({-1});
+        LOG(INFO) << "input.input_params.decode_positions_tensor_list.empty(): " 
+                  << input.input_params.decode_positions_tensor_list.empty();
+        if (!input.input_params.decode_positions_tensor_list.empty() &&
+            round >= 0 &&
+            round < static_cast<int32_t>(
+                        input.input_params.decode_positions_tensor_list.size())) {
+          input.positions =
+              input.input_params.decode_positions_tensor_list[round];
+        }
+        LOG(INFO) << "input.positions.shape: " << input.positions.sizes();
+        
       } else {
         top_tokens = sample_output.top_tokens.to(torch::kInt32)
                          .reshape({-1, beam_width});
         top_logprobs = sample_output.top_logprobs.reshape({-1, beam_width});
       }
+      #if defined(USE_NPU)
       xllm_ops::beam_search(acc_logprob,
                             top_tokens,
                             top_logprobs,
@@ -351,16 +340,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
         input.positions =
             input.input_params.decode_positions_tensor_list[round];
       }
-      // for (auto i = 0; i < inputs.micro_inputs.size(); ++i) {
-      //   auto& mip = input_params_micro_batches[i];
-      //   if (!mip.decode_positions_tensor_list.empty() && round >= 0 &&
-      //       round <
-      //           static_cast<int32_t>(mip.decode_positions_tensor_list.size()))
-      //           {
-      //     flatten_positions_micro_batches.push_back(
-      //         mip.decode_positions_tensor_list[round]);
-      //   }
-      // }
+
       // update output at the last round.
       if (round == total_rounds - 1) {
         output.logits = logits;
@@ -375,6 +355,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
             out_beam_count_prefix_sums.reshape({-1});
         output.beam_sequence_group = sequence_group;
       }
+      #endif
 
 #if defined(USE_NPU)
       if (beam_width > 1 && round > 0) {

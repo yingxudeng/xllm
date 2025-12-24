@@ -83,6 +83,7 @@ void Batch::update_forward_type(Sequence* sequence) {
     case BatchForwardType::MIXED:
       break;
     case BatchForwardType::EMPTY:
+      LOG(INFO) << "inner BatchForwardType::EMPTY. ";
       batch_forward_type_ = BatchForwardType(static_cast<int32_t>(stage));
       break;
   }
@@ -223,6 +224,7 @@ RawForwardInput Batch::prepare_multi_step_forward_input(
                                      swap_block_transfer_infos_,
                                      batch_id_,
                                      &args,
+                                     batch_forward_type_,
                                      thread_pool);
   return builder.build_raw_forward_input();
 }

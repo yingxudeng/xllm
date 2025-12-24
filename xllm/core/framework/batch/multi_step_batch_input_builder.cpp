@@ -49,6 +49,7 @@ MultiStepBatchInputBuilder::MultiStepBatchInputBuilder(
     std::vector<BlockTransferInfo>* swap_block_transfer_infos,
     const uint64_t batch_id,
     const ModelArgs* args,
+    BatchForwardType batch_forward_type,
     ThreadPool* thread_pool)
     : sequences_(sequences),
       allowed_max_tokens_(allowed_max_tokens),
@@ -59,6 +60,7 @@ MultiStepBatchInputBuilder::MultiStepBatchInputBuilder(
       swap_block_transfer_infos_(swap_block_transfer_infos),
       thread_pool_(thread_pool),
       batch_id_(batch_id) {
+  // LOG(INFO) << "batch_forward_type: " << batch_forward_type.to_string();
   if (args_ != nullptr) {
     use_mrope_ = (args_->rope_scaling_rope_type() == "mrope");
   }
@@ -67,6 +69,8 @@ MultiStepBatchInputBuilder::MultiStepBatchInputBuilder(
   // multi_step_state_.step_tokens_vec.reserve(1000);
   // multi_step_state_.step_positions_vec.reserve(1000);
   // TODO: Add multi-step specific initialization
+  multi_step_state_.base_state.batch_forward_type = batch_forward_type;
+  LOG(INFO) << "multi_step_state_.base_state.batch_forward_type: " << multi_step_state_.base_state.batch_forward_type.to_string();
 }
 
 void MultiStepBatchInputBuilder::process_single_sequence(
@@ -102,7 +106,7 @@ void MultiStepBatchInputBuilder::process_single_sequence(
                          << allowed_max_tokens_[seq_index];
 
   // Update state
-  // int32_t offset = is_mtp_decode_ ? -1 : 0;
+  int32_t offset = is_mtp_decode_ ? -1 : 0;
   base_state.empty_kv_cache = true;
   base_state.max_seq_len = std::max(base_state.max_seq_len, seq_len);
   base_state.q_max_seq_len = std::max(base_state.q_max_seq_len, q_seq_len);
@@ -114,8 +118,12 @@ void MultiStepBatchInputBuilder::process_single_sequence(
     state.decode_q_seq_lens.push_back(decode_q_seq_len);
   }
 #elif defined(USE_MLU) || defined(USE_CUDA) || defined(USE_ILU)
-  state.seq_lens.push_back(state.seq_lens.back() + seq_len);
-  state.q_seq_lens.push_back(state.q_seq_lens.back() + q_seq_len);
+  base_state.seq_lens.push_back(base_state.seq_lens.back() + seq_len);
+  base_state.q_seq_lens.push_back(base_state.q_seq_lens.back() + q_seq_len);
+  if (FLAGS_max_decode_rounds > 0) {
+    state.decode_seq_lens.push_back(decode_seq_len);
+    state.decode_q_seq_lens.push_back(decode_q_seq_len);
+  }
 #endif
 
   // Call our enhanced method to process tokens and positions
@@ -156,14 +164,16 @@ void MultiStepBatchInputBuilder::process_single_sequence(
 
 RawForwardInput MultiStepBatchInputBuilder::build_raw_forward_input() {
   // Reset multi-step state for this build
-  multi_step_state_ = MultiStepBuilderState{};
+  // multi_step_state_ = MultiStepBuilderState{};
   multi_step_state_.total_steps = FLAGS_max_decode_rounds;
+
+  is_mtp_decode_ = false;
 
   // Single-threaded processing for now; can be extended to use thread_pool_
   for (int32_t i = 0; i < static_cast<int32_t>(sequences_.size()); ++i) {
     process_single_sequence(i, &multi_step_state_.base_state, nullptr);
   }
-
+  LOG(INFO) << "multi_step_state_.base_state.batch_forward_type: " << multi_step_state_.base_state.batch_forward_type.to_string();
   return state_to_raw_forward_input(&multi_step_state_.base_state);
 }
 
@@ -308,6 +318,7 @@ void MultiStepBatchInputBuilder::setup_kv_cache_info(
     uint32_t q_seq_len,
     BuilderState* state_ptr,
     std::unordered_set<int32_t>* write_block_ids_ptr) {
+#if defined(USE_NPU)
   (void)write_block_ids_ptr;
   BuilderState& state = *state_ptr;
   const auto blocks = sequence->kv_state().kv_blocks();
@@ -317,6 +328,57 @@ void MultiStepBatchInputBuilder::setup_kv_cache_info(
     block_ids.push_back(block.id());
   }
   state.block_tables_vec.emplace_back(std::move(block_ids));
+#elif defined(USE_CUDA)
+  MultiStepBuilderState& state = multi_step_state_;
+  BuilderState& base_state = state.base_state;
+
+  std::unordered_set<int32_t>& write_block_ids =
+      write_block_ids_ptr ? *write_block_ids_ptr : write_block_ids_;
+
+  // update kv cache tokens num
+  sequence->kv_state().incr_kv_cache_tokens_num(/*size=*/q_seq_len);
+
+  int32_t offset = is_mtp_decode_ ? -1 : 0;
+  seq_len += offset;
+  n_kv_cache_tokens += offset;
+  const auto blocks = sequence->kv_state().kv_blocks();
+  const auto slot_ids =
+      sequence->kv_state().kv_cache_slots(n_kv_cache_tokens, seq_len);
+  base_state.new_token_slot_ids.insert(
+      base_state.new_token_slot_ids.end(), slot_ids.begin(), slot_ids.end());
+
+  std::vector<int32_t> block_ids;
+  std::vector<uint64_t> u_block_ids;
+  block_ids.reserve(blocks.size());
+  int32_t block_size = 0;
+  for (const auto& block : blocks) {
+    block_size = block.size();
+    block_ids.push_back(block.id());
+    u_block_ids.emplace_back(block.id());
+    base_state.paged_kv_indices.push_back(block.id());
+  }
+  base_state.paged_kv_indptr.push_back(base_state.paged_kv_indptr.back() + blocks.size());
+  int32_t last_page_len =
+      (seq_len % block_size == 0) ? block_size : seq_len % block_size;
+  base_state.paged_kv_last_page_len.push_back(last_page_len);
+
+  // calculate the block ids that need to be written
+  int32_t kv_cache_block_idx = n_kv_cache_tokens / block_size;
+  for (auto iter = block_ids.begin() + kv_cache_block_idx;
+       iter != block_ids.end();
+       ++iter) {
+    write_block_ids.insert(*iter);
+  }
+
+  auto& transfer_kv_info = sequence->kv_state().transfer_kv_info();
+  if (transfer_kv_info.has_value()) {
+    base_state.transfer_kv_infos.emplace_back(transfer_kv_info.value());
+    base_state.transfer_kv_infos.back().local_blocks_ids = std::move(u_block_ids);
+  }
+
+  base_state.block_tables_vec.emplace_back(std::move(block_ids));
+#endif
+
 }
 
 void MultiStepBatchInputBuilder::setup_continuous_kv_cache_info(
@@ -389,6 +451,7 @@ RawForwardInput MultiStepBatchInputBuilder::state_to_raw_forward_input(
   if (src.flatten_tokens_vec.empty()) {
     return {};
   }
+  LOG(INFO) << "multi_step_state_.base_state.batch_forward_type: " << multi_step_state_.base_state.batch_forward_type.to_string();
   RawForwardInput raw_forward_input;
   VLOG(1) << "[SEL/RAW] selected_token_idxes.size(before move)="
           << src.selected_token_idxes.size();
@@ -404,6 +467,8 @@ RawForwardInput MultiStepBatchInputBuilder::state_to_raw_forward_input(
   raw_forward_input.unique_token_lens_vec =
       std::move(src.unique_token_lens_vec);
   raw_forward_input.empty_kv_cache = src.empty_kv_cache;
+  LOG(INFO) << "src.batch_forward_type: " << src.batch_forward_type.to_string();
+  raw_forward_input.batch_forward_type = src.batch_forward_type;
   raw_forward_input.max_seq_len = src.max_seq_len;
   raw_forward_input.q_max_seq_len = src.q_max_seq_len;
   raw_forward_input.seq_lens = std::move(src.seq_lens);
@@ -412,6 +477,12 @@ RawForwardInput MultiStepBatchInputBuilder::state_to_raw_forward_input(
   raw_forward_input.block_tables_vec = std::move(src.block_tables_vec);
   raw_forward_input.num_sequences = num_sequences_;
   raw_forward_input.transfer_kv_infos = std::move(src.transfer_kv_infos);
+
+  // for flashinfer
+  raw_forward_input.paged_kv_indptr = std::move(src.paged_kv_indptr);
+  raw_forward_input.paged_kv_indices = std::move(src.paged_kv_indices);
+  raw_forward_input.paged_kv_last_page_len =
+      std::move(src.paged_kv_last_page_len);
 
   raw_forward_input.embedding_ids = std::move(src.embedding_ids);
   raw_forward_input.extra_token_ids = std::move(src.extra_token_ids);

@@ -35,7 +35,7 @@ limitations under the License.
 #include "sequence_logprob_state.h"
 #include "stopping_checker.h"
 #include "util/timer.h"
-
+#include "common/global_flags.h"
 namespace xllm {
 
 enum class SequenceStage : int8_t {
@@ -110,6 +110,9 @@ class Sequence final {
 
   // get the sequence stage
   SequenceStage stage() const {
+    if (FLAGS_max_decode_rounds > 0) {
+      return SequenceStage::PREFILL;
+    }
     if (kv_state_.kv_cache_tokens_num() <
         std::max(volatile_num_prompt_tokens_, num_prompt_tokens())) {
       if (kv_state_.kv_cache_tokens_num() > 0) {

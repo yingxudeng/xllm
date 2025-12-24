@@ -50,10 +50,10 @@ void Qwen3DecoderLayerImpl::param_from_args(
   param.enableSplitFuse = FLAGS_enable_chunked_prefill && isPrefill;
   param.loraEnableGMM = false;
   // Only enable advanced decode KV cache optimizations in multi-round mode.
-  if (FLAGS_max_decode_rounds > 0) {
-    param.isEnableDecodeKvCache = true;
-    param.enablePrefillKeyValue = true;
-  }
+  // if (FLAGS_max_decode_rounds > 0) {
+  //   param.isEnableDecodeKvCache = true;
+  //   param.enablePrefillKeyValue = true;
+  // }
 
   param.linearTransposeType = {1, -1, -1, 1, 1, -1, 1};
   param.quantGroupSize = 0;

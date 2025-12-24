@@ -78,7 +78,7 @@ class BatchInputBuilder {
     std::vector<int32_t> unique_token_lens_vec;
 
     // Sequence metadata
-    BatchForwardType batch_forward_type;
+    BatchForwardType batch_forward_type; // TODO
     bool empty_kv_cache = true;
     uint32_t max_seq_len = 0;
     uint32_t q_max_seq_len = 0;
@@ -107,9 +107,9 @@ class BatchInputBuilder {
     std::vector<int64_t> kv_cache_start_offsets;  //[n_seq]
 
     // for flashinfer
-    std::vector<int32_t> paged_kv_indptr = {0};
-    std::vector<int32_t> paged_kv_indices;
-    std::vector<int32_t> paged_kv_last_page_len;
+    std::vector<int32_t> paged_kv_indptr = {0}; // TODO
+    std::vector<int32_t> paged_kv_indices; // TODO
+    std::vector<int32_t> paged_kv_last_page_len; // TODO
   };
 
   // Helper methods for sequence processing

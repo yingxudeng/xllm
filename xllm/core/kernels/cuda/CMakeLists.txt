@@ -10,6 +10,8 @@ file(GLOB_RECURSE CUDA_SOURCE_FILES
   "${CMAKE_CURRENT_LIST_DIR}/*.cu"
 )
 
+add_subdirectory(triton)
+
 cc_library(
   NAME
     cuda_kernels
@@ -22,4 +24,5 @@ cc_library(
     torch
     :util
     :platform
+    :rec_triton
 )

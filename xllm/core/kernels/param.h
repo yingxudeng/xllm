@@ -283,6 +283,160 @@ struct AttentionParams {
   // Supported values: -1 (no quant), 4 (int4), 8 (int8).
   // If 4, k_cache and v_cache shapes are adjusted for int4 packing.
   int64_t kv_cache_quant_bit_size = -1;
+
+  void print() const {
+    LOG(INFO) << "========== AttentionParams ==========";
+    
+    // ========== Common parameters ==========
+    LOG(INFO) << "--- Common Parameters ---";
+    LOG(INFO) << "query shape: " << tensor_shape_str(query);
+    LOG(INFO) << "output shape: " << tensor_shape_str(output);
+    
+    if (output_lse.has_value()) {
+      LOG(INFO) << "output_lse shape: " << tensor_shape_str(output_lse.value());
+    } else {
+      LOG(INFO) << "output_lse: None";
+    }
+    
+    if (alibi_slope.has_value()) {
+      LOG(INFO) << "alibi_slope shape: " << tensor_shape_str(alibi_slope.value());
+    } else {
+      LOG(INFO) << "alibi_slope: None";
+    }
+    
+    if (q_quant_scale.has_value()) {
+      LOG(INFO) << "q_quant_scale shape: " << tensor_shape_str(q_quant_scale.value());
+    } else {
+      LOG(INFO) << "q_quant_scale: None";
+    }
+    
+    if (out_quant_scale.has_value()) {
+      LOG(INFO) << "out_quant_scale shape: " << tensor_shape_str(out_quant_scale.value());
+    } else {
+      LOG(INFO) << "out_quant_scale: None";
+    }
+    
+    if (block_table.has_value()) {
+      LOG(INFO) << "block_table shape: " << tensor_shape_str(block_table.value());
+    } else {
+      LOG(INFO) << "block_table: None";
+    }
+    
+    LOG(INFO) << "compute_dtype: " << compute_dtype;
+    LOG(INFO) << "max_seq_len: " << max_seq_len;
+    LOG(INFO) << "window_size_left: " << window_size_left;
+    LOG(INFO) << "window_size_right: " << window_size_right;
+    LOG(INFO) << "scale: " << scale;
+    LOG(INFO) << "return_lse: " << (return_lse ? "true" : "false");
+    
+    // ========== Torch NPU related parameters ==========
+    LOG(INFO) << "--- Torch NPU Parameters ---";
+    LOG(INFO) << "seq_lens shape: " << tensor_shape_str(seq_lens);
+    LOG(INFO) << "attn_mask shape: " << tensor_shape_str(attn_mask);
+    
+    // ========== FlashInfer related parameters ==========
+    LOG(INFO) << "--- FlashInfer Parameters ---";
+    LOG(INFO) << "paged_kv_indptr shape: " << tensor_shape_str(paged_kv_indptr);
+    LOG(INFO) << "paged_kv_indices shape: " << tensor_shape_str(paged_kv_indices);
+    LOG(INFO) << "paged_kv_last_page_len shape: " << tensor_shape_str(paged_kv_last_page_len);
+    LOG(INFO) << "float_workspace_buffer shape: " << tensor_shape_str(float_workspace_buffer);
+    LOG(INFO) << "int_workspace_buffer shape: " << tensor_shape_str(int_workspace_buffer);
+    LOG(INFO) << "page_locked_int_workspace_buffer shape: " << tensor_shape_str(page_locked_int_workspace_buffer);
+    LOG(INFO) << "enable_cuda_graph: " << (enable_cuda_graph ? "true" : "false");
+    
+    // ========== Prefill-specific parameters ==========
+    LOG(INFO) << "--- Prefill Parameters ---";
+    LOG(INFO) << "key shape: " << tensor_shape_str(key);
+    LOG(INFO) << "value shape: " << tensor_shape_str(value);
+    
+    if (q_cu_seq_lens.has_value()) {
+      LOG(INFO) << "q_cu_seq_lens shape: " << tensor_shape_str(q_cu_seq_lens.value());
+    } else {
+      LOG(INFO) << "q_cu_seq_lens: None";
+    }
+    
+    if (kv_cu_seq_lens.has_value()) {
+      LOG(INFO) << "kv_cu_seq_lens shape: " << tensor_shape_str(kv_cu_seq_lens.value());
+    } else {
+      LOG(INFO) << "kv_cu_seq_lens: None";
+    }
+    
+    LOG(INFO) << "q_seq_lens shape: " << tensor_shape_str(q_seq_lens);
+    LOG(INFO) << "kv_seq_lens shape: " << tensor_shape_str(kv_seq_lens);
+    
+    if (attn_bias.has_value()) {
+      LOG(INFO) << "attn_bias shape: " << tensor_shape_str(attn_bias.value());
+    } else {
+      LOG(INFO) << "attn_bias: None";
+    }
+    
+    if (k_quant_scale.has_value()) {
+      LOG(INFO) << "k_quant_scale shape: " << tensor_shape_str(k_quant_scale.value());
+    } else {
+      LOG(INFO) << "k_quant_scale: None";
+    }
+    
+    if (v_quant_scale.has_value()) {
+      LOG(INFO) << "v_quant_scale shape: " << tensor_shape_str(v_quant_scale.value());
+    } else {
+      LOG(INFO) << "v_quant_scale: None";
+    }
+    
+    LOG(INFO) << "max_query_len: " << max_query_len;
+    LOG(INFO) << "is_causal: " << (is_causal ? "true" : "false");
+    
+    // ========== Decode-specific parameters ==========
+    LOG(INFO) << "--- Decode Parameters ---";
+    LOG(INFO) << "k_cache shape: " << tensor_shape_str(k_cache);
+    
+    if (v_cache.has_value()) {
+      LOG(INFO) << "v_cache shape: " << tensor_shape_str(v_cache.value());
+    } else {
+      LOG(INFO) << "v_cache: None";
+    }
+    
+    if (k_cache_quant_scale.has_value()) {
+      LOG(INFO) << "k_cache_quant_scale shape: " << tensor_shape_str(k_cache_quant_scale.value());
+    } else {
+      LOG(INFO) << "k_cache_quant_scale: None";
+    }
+    
+    if (v_cache_quant_scale.has_value()) {
+      LOG(INFO) << "v_cache_quant_scale shape: " << tensor_shape_str(v_cache_quant_scale.value());
+    } else {
+      LOG(INFO) << "v_cache_quant_scale: None";
+    }
+    
+    if (mask.has_value()) {
+      LOG(INFO) << "mask shape: " << tensor_shape_str(mask.value());
+    } else {
+      LOG(INFO) << "mask: None";
+    }
+    
+    LOG(INFO) << "kv_cache_quant_bit_size: " << kv_cache_quant_bit_size;
+    LOG(INFO) << "=====================================";
+  }
+private:
+  // 辅助函数：将 tensor 形状转换为字符串
+  std::string tensor_shape_str(const torch::Tensor& tensor) const {
+    if (!tensor.defined()) {
+      return "undefined";
+    }
+    
+    std::string shape_str = "[";
+    auto sizes = tensor.sizes();
+    for (int i = 0; i < sizes.size(); ++i) {
+      if (i > 0) shape_str += ", ";
+      shape_str += std::to_string(sizes[i]);
+    }
+    shape_str += "]";
+    
+    // 添加数据类型和设备信息
+    // shape_str += " dtype=" + torch::toString(tensor.scalar_type());
+    // shape_str += " device=" + tensor.device().str();
+    
+    return shape_str;
+  }
 };
 
 // Fused layer norm parameters
@@ -345,6 +499,83 @@ struct FusedLayerNormParams {
   // When true, uses per-token quantization scheme; otherwise uses per-channel
   // if quant_scale provided.
   bool dynamic_quant = false;
+
+  void print() const {
+    LOG(INFO) << "========== FusedLayerNormParams ==========";
+    
+    LOG(INFO) << "input shape: " << tensor_shape_str(input);
+    LOG(INFO) << "output shape: " << tensor_shape_str(output);
+    
+    if (residual.has_value()) {
+      LOG(INFO) << "residual shape: " << tensor_shape_str(residual.value());
+    } else {
+      LOG(INFO) << "residual: None";
+    }
+    
+    LOG(INFO) << "weight shape: " << tensor_shape_str(weight);
+    
+    if (beta.has_value()) {
+      LOG(INFO) << "beta shape: " << tensor_shape_str(beta.value());
+    } else {
+      LOG(INFO) << "beta: None";
+    }
+    
+    if (bias.has_value()) {
+      LOG(INFO) << "bias shape: " << tensor_shape_str(bias.value());
+    } else {
+      LOG(INFO) << "bias: None";
+    }
+    
+    if (quant_scale.has_value()) {
+      LOG(INFO) << "quant_scale shape: " << tensor_shape_str(quant_scale.value());
+    } else {
+      LOG(INFO) << "quant_scale: None";
+    }
+    
+    if (residual_out.has_value()) {
+      LOG(INFO) << "residual_out shape: " << tensor_shape_str(residual_out.value());
+    } else {
+      LOG(INFO) << "residual_out: None";
+    }
+    
+    if (smooth_quant_scale.has_value()) {
+      LOG(INFO) << "smooth_quant_scale shape: " << tensor_shape_str(smooth_quant_scale.value());
+    } else {
+      LOG(INFO) << "smooth_quant_scale: None";
+    }
+    
+    if (normed_out.has_value()) {
+      LOG(INFO) << "normed_out shape: " << tensor_shape_str(normed_out.value());
+    } else {
+      LOG(INFO) << "normed_out: None";
+    }
+    
+    LOG(INFO) << "mode: " << mode;
+    LOG(INFO) << "eps: " << eps;
+    LOG(INFO) << "store_output_before_norm: " << (store_output_before_norm? "true" : "false");
+    LOG(INFO) << "store_output_after_norm: " << (store_output_after_norm? "true" : "false");
+    LOG(INFO) << "dynamic_quant: " << (dynamic_quant? "true" : "false");
+    
+    LOG(INFO) << "=====================================";
+  }
+private:
+  // 辅助函数：将 tensor 形状转换为字符串
+  std::string tensor_shape_str(const torch::Tensor& tensor) const {
+    if (!tensor.defined()) {
+      return "undefined";
+    }
+    
+    std::string shape_str = "[";
+    auto sizes = tensor.sizes();
+    for (int i = 0; i < sizes.size(); ++i) {
+      if (i > 0) shape_str += ", ";
+      shape_str += std::to_string(sizes[i]);
+    }
+    // shape_str += "] dtype=" + torch::toString(tensor.scalar_type());
+    // shape_str += " device=" + tensor.device().str();
+    
+    return shape_str;
+  }
 };
 
 // Matmul parameters

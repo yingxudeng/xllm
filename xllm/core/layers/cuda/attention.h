@@ -23,11 +23,16 @@ limitations under the License.
 #include "framework/model/model_input_params.h"
 #include "layers/common/attention_metadata.h"
 
+#include "xllm/core/kernels/cuda/triton/rec/rec.h"
+#include "xllm/core/kernels/cuda/triton/rec/rec_torch.h"
+
 namespace xllm {
 namespace layer {
 class AttentionImpl : public torch::nn::Module {
  public:
-  AttentionImpl() = default;
+  AttentionImpl() {
+    rec_kernel_ = std::make_unique<kernel::cuda::triton::RecTorchKernel>();
+  }
 
   AttentionImpl(int num_heads,
                 int head_size,
@@ -48,6 +53,9 @@ class AttentionImpl : public torch::nn::Module {
   float scale_;
   int num_kv_heads_;
   int sliding_window_;
+
+  std::unique_ptr<kernel::cuda::triton::RecKernel> rec_kernel_;
+
 };
 TORCH_MODULE(Attention);
 

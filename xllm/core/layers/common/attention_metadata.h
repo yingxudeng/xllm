@@ -50,6 +50,12 @@ struct AttentionMetadata {
   torch::Tensor paged_kv_indptr;
   torch::Tensor paged_kv_indices;
   torch::Tensor paged_kv_last_page_len;
+
+  // for xattention
+  torch::Tensor shared_k_cache;
+  torch::Tensor shared_v_cache;
+  uint32_t step;
+  
 };
 
 }  // namespace layer

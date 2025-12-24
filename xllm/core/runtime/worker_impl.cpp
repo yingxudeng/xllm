@@ -397,7 +397,7 @@ void WorkerImpl::prepare_work_before_execute(const ForwardInput& input,
   }
 #endif
 
-#if defined(USE_NPU)
+#if defined(USE_NPU) || defined(USE_CUDA)
   // step-level decode shared cache: allocate/attach by step_uid metadata
   if (FLAGS_max_decode_rounds > 0) {
     bool is_prefill =
@@ -585,7 +585,7 @@ bool WorkerImpl::init_model(const std::string& model_weights_path,
   auto args = model_loader->model_args();
   auto quant_args = model_loader->quant_args();
   torch::ScalarType dtype = util::parse_dtype(args.dtype(), device_);
-
+  LOG(INFO) << "model dtype: " << dtype;
   if (tokenizer->vocab_size() != args.vocab_size()) {
     // use tokenizer vocab size if model vocab size is not set
     if (args.vocab_size() <= 0) {
