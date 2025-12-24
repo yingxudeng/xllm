@@ -87,9 +87,9 @@ void RecTorchKernel::prefill_reshape_and_cache(torch::Tensor proj_k,          //
 
 void RecTorchKernel::decoder_reshape_and_cache(torch::Tensor proj_k,          // [batch_size, beam_size, kv_heads, head_dim]
                                                torch::Tensor proj_v,          // [batch_size, beam_size, kv_heads, head_dim]
-                                               torch::Tensor unshared_k_cache,  // [max_num_request, beam_size, kv_heads, max_decode_step, head_dim]
-                                               torch::Tensor unshared_v_cache,   // [max_num_request, beam_size, kv_heads, max_decode_step, head_dim]
-                                               torch::Tensor block_table,     // [batch_size]
+                                               torch::Tensor unshared_k_cache,  // [max_num_request, beam_size, max_decode_step, kv_heads, head_dim]
+                                               torch::Tensor unshared_v_cache,   // [max_num_request, beam_size, max_decode_step, kv_heads, head_dim]
+                                               torch::Tensor block_table,     // [batch_size, 1]
                                                uint32_t step) {
   // 维度检查
   TORCH_CHECK(proj_k.dim() == 4, "proj_k must be 4-dimensional");
@@ -103,7 +103,7 @@ void RecTorchKernel::decoder_reshape_and_cache(torch::Tensor proj_k,          //
   int64_t beam_size = proj_k.size(1);
   int64_t kv_heads = proj_k.size(2);
   int64_t head_dim = proj_k.size(3);
-  int64_t max_decode_step = unshared_k_cache.size(3);
+  int64_t max_decode_step = unshared_k_cache.size(2);
   
   // 形状兼容性检查
   TORCH_CHECK(proj_v.sizes() == proj_k.sizes(), "proj_v and proj_k must have same shape");
@@ -118,15 +118,23 @@ void RecTorchKernel::decoder_reshape_and_cache(torch::Tensor proj_k,          //
       torch::Tensor target_batch_proj_v = proj_v.select(0, batch_id);  // [beam_size, kv_heads, head_dim]
       
       // 获取对应的block索引
-      int64_t batch_index = block_table[batch_id][0].item<int64_t>();
+      int64_t block_id = block_table[batch_id][0].item<int64_t>();
       
       // 边界检查
-      TORCH_CHECK(batch_index >= 0 && batch_index < unshared_k_cache.size(0), 
-                  "batch_index out of range");
+      TORCH_CHECK(block_id >= 0 && block_id < unshared_k_cache.size(0), 
+                  "block_id out of range");
       
       // 将数据复制到缓存中
-      unshared_k_cache.select(0, batch_index).select(2, step).copy_(target_batch_proj_k);
-      unshared_v_cache.select(0, batch_index).select(2, step).copy_(target_batch_proj_v);
+      torch::Tensor target_block_unshared_k_cache = 
+        unshared_k_cache.select(0, block_id);     // [beam_size, max_decode_step, kv_heads, head_dim
+      torch::Tensor target_block_unshared_v_cache = 
+        unshared_v_cache.select(0, block_id);     // [beam_size, max_decode_step, kv_heads, head_dim
+
+      target_block_unshared_k_cache.select(1, step).copy_(target_batch_proj_k);
+      target_block_unshared_v_cache.select(1, step).copy_(target_batch_proj_v);
+      
+      // unshared_k_cache.select(0, block_id).select(2, step).copy_(target_batch_proj_k);
+      // unshared_v_cache.select(0, block_id).select(2, step).copy_(target_batch_proj_v);
   }
 }
 

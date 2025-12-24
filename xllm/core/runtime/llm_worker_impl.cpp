@@ -289,7 +289,8 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
             sample_output.top_tokens.to(torch::kInt32).reshape({-1, 1});
         LOG(INFO) << "top_tokens.shape: " << top_tokens.sizes();
         top_logprobs = sample_output.top_logprobs.reshape({-1, 1});
-
+        
+        // 强制改为decode模式
         input.input_params.batch_forward_type = BatchForwardType(2);
 
         input.token_ids =
@@ -304,6 +305,10 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
               input.input_params.decode_positions_tensor_list[round];
         }
         LOG(INFO) << "input.positions.shape: " << input.positions.sizes();
+
+        // 更新q_seq_len，原来保留的是prefill的seq_len，需要改成decode的
+        LOG(INFO) << "num_seq: " << num_seq;
+        input.input_params.q_seq_lens = torch::arange(batch + 1, int_options) * beam_width;  
         
       } else {
         top_tokens = sample_output.top_tokens.to(torch::kInt32)
