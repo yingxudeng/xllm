@@ -59,7 +59,7 @@ void RecTorchKernel::prefill_reshape_and_cache(torch::Tensor proj_k,          //
                                                torch::Tensor shared_k_cache,  // [num_shared_kv_seq_len, kv_heads, head_dim]
                                                torch::Tensor shared_v_cache   // [num_shared_kv_seq_len, kv_heads, head_dim]
                                                ) {
-  LOG(INFO) << "inner RecTorchKernel::prefill_reshape_and_cache";
+  // LOG(INFO) << "inner RecTorchKernel::prefill_reshape_and_cache";
   // 获取维度信息
   int64_t shared_len = proj_k.size(0);
   int64_t kv_heads = proj_k.size(1);
@@ -77,12 +77,12 @@ void RecTorchKernel::prefill_reshape_and_cache(torch::Tensor proj_k,          //
               "proj_v and proj_k must have same shape";
   CHECK_EQ(shared_v_cache.sizes(), shared_k_cache.sizes()) << 
               "shared_v_cache and shared_k_cache must have same shape";
-  LOG(INFO) << "before copy_.";
+  // LOG(INFO) << "before copy_.";
   // 将 proj_k 和 proj_v 复制到 cache 的前 shared_len 位置
   // 方法1: 使用 slice 和 copy_
   shared_k_cache.slice(0, 0, shared_len).copy_(proj_k);
   shared_v_cache.slice(0, 0, shared_len).copy_(proj_v);
-  LOG(INFO) << "after copy_.";
+  // LOG(INFO) << "after copy_.";
 }
 
 void RecTorchKernel::decoder_reshape_and_cache(torch::Tensor proj_k,          // [batch_size, beam_size, kv_heads, head_dim]
@@ -328,6 +328,97 @@ void RecTorchKernel::combine(torch::Tensor shared_o,
   
   // 步骤6: 重新归一化并写入final_o
   final_o.copy_(acc_merged / l_merged.unsqueeze(-1));
+}
+
+
+// log_probs_ptr,       # [B*BEAM_SIZE, 1] - 当前beam的对数概率
+      // in_sequence_ptr,     # [B, BEAM_SIZE, MAX_DECODE_STEP] - 输入序列（只读）
+      // top_tokens_ptr,      # [B*BEAM_SIZE, TOP_K] - 每个beam的top K个token
+      // top_probs_ptr,       # [B*BEAM_SIZE, TOP_K] - 每个beam的top K个概率
+
+      // out_log_probs_ptr,   # [B*BEAM_SIZE, 1] - 输出对数概率
+      // out_token_ids_ptr,   # [B*BEAM_SIZE, 1] - 输出token ID
+      // out_token_index_ptr, # [B*BEAM_SIZE, 1] - 输出token在top K中的索引
+      // out_beam_count_prefix_sums_ptr,  # [B*BEAM_SIZE, 1] - beam计数前缀和（未使用）
+      // out_sequence_ptr,    # [B, BEAM_SIZE, MAX_DECODE_STEP] - 输出序列（写入）
+void RecTorchKernel::beam_search(torch::Tensor acc_logprob, 
+                                 torch::Tensor in_sequence_group, 
+                                 torch::Tensor top_tokens, 
+                                 torch::Tensor top_logprobs, 
+                                 torch::Tensor out_acc_logprob, 
+                                 torch::Tensor out_token_ids, 
+                                 torch::Tensor out_token_index, 
+                                 torch::Tensor out_beam_count_prefix_sums, 
+                                 torch::Tensor out_sequence_group, 
+                                 uint32_t batch_size,
+                                 uint32_t current_step) {
+
+  torch::Device device = acc_logprob.device();
+  
+  uint32_t beam_size = in_sequence_group.size(1);
+
+  uint32_t top_k = top_tokens.size(1);
+  uint32_t total_rounds = in_sequence_group.size(2);
+  
+  CHECK_EQ(beam_size, top_k) << "beam_size must be equal with top_k.";
+  
+  if (current_step == 0) {
+
+    // [batch_size, beam_size]
+    auto tokens = top_tokens.view({batch_size * 1, top_k}).slice(1, 0, beam_size);
+    // [batch_size * beam_size]
+
+    tokens = tokens.reshape({batch_size * beam_size, 1});
+    // [batch_size, beam_size]
+
+    auto init_probs = top_logprobs.view({batch_size * 1, top_k}).slice(1, 0, beam_size);
+    // [batch_size * beam_size]
+
+    init_probs = init_probs.reshape({batch_size * beam_size, 1});
+
+    out_acc_logprob.copy_(init_probs);
+    out_token_ids.copy_(tokens);
+
+    auto indices = torch::arange(beam_size, torch::kInt32).to(device); // [beam_size]
+    indices = indices.unsqueeze(0).expand({batch_size, -1}).reshape({-1, 1}); // [batch * beam, 1]
+    out_token_index.copy_(indices);
+
+    auto sequence_view = out_sequence_group.view({batch_size * beam_size, total_rounds});
+
+    sequence_view.select(1, 0).copy_(tokens.squeeze(1));
+
+  } else {
+
+    auto combined_probs = acc_logprob + top_logprobs;
+
+    combined_probs = combined_probs.view({batch_size, beam_size * top_k});
+
+    auto topk_result = torch::topk(combined_probs, beam_size, -1);
+    auto new_probs = std::get<0>(topk_result);    // [batch_size, beam_size]
+    auto new_indices = std::get<1>(topk_result);  // [batch_size, beam_size]
+
+    auto parent_beam = (new_indices / top_k).to(torch::kLong);      // [batch_size, beam_size]
+    auto token_in_beam = (new_indices % top_k).to(torch::kLong);    // [batch_size, beam_size]
+
+    // [batch_size, 1]
+    auto batch_idx = torch::arange(batch_size, torch::kLong).to(device).unsqueeze(1);
+    // [batch_size, beam_size, top_k]
+    auto top_tokens_reshaped = top_tokens.view({batch_size, beam_size, top_k});
+
+    auto new_tokens = top_tokens_reshaped.index({batch_idx, parent_beam, token_in_beam});
+
+    out_acc_logprob.copy_(new_probs.reshape({-1, 1}));
+    out_token_index.copy_(new_indices.reshape({-1, 1}));
+    out_token_ids.copy_(new_tokens.reshape({-1, 1}));
+
+    auto batch_range = torch::arange(batch_size, torch::kInt32).to(device).unsqueeze(1).expand({-1, beam_size});
+    auto beam_range = torch::arange(beam_size, torch::kInt32).to(device).unsqueeze(0).expand({batch_size, -1});
+
+    out_sequence_group.slice(2, 0, current_step) = 
+        in_sequence_group.index({batch_range, parent_beam, torch::indexing::Slice(0, current_step)});
+
+    out_sequence_group.slice(2, current_step, current_step + 1) = new_tokens.unsqueeze(2);
+  }
 }
 
 } // namespace xllm::kernel::cuda::triton

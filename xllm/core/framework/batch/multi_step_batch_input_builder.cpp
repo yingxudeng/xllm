@@ -70,7 +70,7 @@ MultiStepBatchInputBuilder::MultiStepBatchInputBuilder(
   // multi_step_state_.step_positions_vec.reserve(1000);
   // TODO: Add multi-step specific initialization
   multi_step_state_.base_state.batch_forward_type = batch_forward_type;
-  LOG(INFO) << "multi_step_state_.base_state.batch_forward_type: " << multi_step_state_.base_state.batch_forward_type.to_string();
+  // LOG(INFO) << "multi_step_state_.base_state.batch_forward_type: " << multi_step_state_.base_state.batch_forward_type.to_string();
 }
 
 void MultiStepBatchInputBuilder::process_single_sequence(
@@ -173,7 +173,7 @@ RawForwardInput MultiStepBatchInputBuilder::build_raw_forward_input() {
   for (int32_t i = 0; i < static_cast<int32_t>(sequences_.size()); ++i) {
     process_single_sequence(i, &multi_step_state_.base_state, nullptr);
   }
-  LOG(INFO) << "multi_step_state_.base_state.batch_forward_type: " << multi_step_state_.base_state.batch_forward_type.to_string();
+  // LOG(INFO) << "multi_step_state_.base_state.batch_forward_type: " << multi_step_state_.base_state.batch_forward_type.to_string();
   return state_to_raw_forward_input(&multi_step_state_.base_state);
 }
 
@@ -451,7 +451,7 @@ RawForwardInput MultiStepBatchInputBuilder::state_to_raw_forward_input(
   if (src.flatten_tokens_vec.empty()) {
     return {};
   }
-  LOG(INFO) << "multi_step_state_.base_state.batch_forward_type: " << multi_step_state_.base_state.batch_forward_type.to_string();
+  // LOG(INFO) << "multi_step_state_.base_state.batch_forward_type: " << multi_step_state_.base_state.batch_forward_type.to_string();
   RawForwardInput raw_forward_input;
   VLOG(1) << "[SEL/RAW] selected_token_idxes.size(before move)="
           << src.selected_token_idxes.size();
@@ -467,7 +467,7 @@ RawForwardInput MultiStepBatchInputBuilder::state_to_raw_forward_input(
   raw_forward_input.unique_token_lens_vec =
       std::move(src.unique_token_lens_vec);
   raw_forward_input.empty_kv_cache = src.empty_kv_cache;
-  LOG(INFO) << "src.batch_forward_type: " << src.batch_forward_type.to_string();
+  // LOG(INFO) << "src.batch_forward_type: " << src.batch_forward_type.to_string();
   raw_forward_input.batch_forward_type = src.batch_forward_type;
   raw_forward_input.max_seq_len = src.max_seq_len;
   raw_forward_input.q_max_seq_len = src.q_max_seq_len;

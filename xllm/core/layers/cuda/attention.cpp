@@ -24,9 +24,9 @@ namespace {
 torch::Tensor select_target_kv_cache(torch::Tensor kv_cache, 
                                      torch::Tensor block_table) {
   torch::Tensor indices = block_table.flatten().to(torch::kLong);
-  LOG(INFO) << "indices: " << indices;
+  // LOG(INFO) << "indices: " << indices;
   torch::Tensor selected_cache = kv_cache.index_select(0, indices);
-  LOG(INFO) << "selected_cache.shape: " << selected_cache.sizes();
+  // LOG(INFO) << "selected_cache.shape: " << selected_cache.sizes();
   return selected_cache;
 }
 
@@ -35,28 +35,28 @@ torch::Tensor lse_combine(torch::Tensor shared_o,
                           torch::Tensor unshared_o, 
                           torch::Tensor unshared_lse) {
   // 1. 计算 element-wise 最大 LSE
-    // [batch, num_heads, 1]
-    torch::Tensor li_max = torch::max(shared_lse, unshared_lse);
+  // [batch, num_heads, 1]
+  torch::Tensor li_max = torch::max(shared_lse, unshared_lse);
 
-    // 2. 计算以 2 为底的指数差
-    // [batch, num_heads, 1]
-    torch::Tensor exp_li = torch::exp2(shared_lse - li_max);
-    torch::Tensor exp_lij = torch::exp2(unshared_lse - li_max);
+  // 2. 计算以 2 为底的指数差
+  // [batch, num_heads, 1]
+  torch::Tensor exp_li = torch::exp2(shared_lse - li_max);
+  torch::Tensor exp_lij = torch::exp2(unshared_lse - li_max);
 
-    // 3. 计算合并后的新 LSE
-    // [batch, num_heads, 1]
-    torch::Tensor li_new = li_max + torch::log2(exp_li + exp_lij);
+  // 3. 计算合并后的新 LSE
+  // [batch, num_heads, 1]
+  torch::Tensor li_new = li_max + torch::log2(exp_li + exp_lij);
 
-    // 4. 计算归一化权重
-    // 此时 lse 和 li_new 都是 [B, H, 1]，相减也是 [B, H, 1]
-    // 这里的形状可以直接与 o [B, H, D] 进行广播，无需 unsqueeze
-    torch::Tensor wi = torch::exp2(shared_lse - li_new);
-    torch::Tensor wij = torch::exp2(unshared_lse - li_new);
+  // 4. 计算归一化权重
+  // 此时 lse 和 li_new 都是 [B, H, 1]，相减也是 [B, H, 1]
+  // 这里的形状可以直接与 o [B, H, D] 进行广播，无需 unsqueeze
+  torch::Tensor wi = torch::exp2(shared_lse - li_new);
+  torch::Tensor wij = torch::exp2(unshared_lse - li_new);
 
-    // 5. 加权合并输出 (自动广播: [B,H,1] * [B,H,D] -> [B,H,D])
-    torch::Tensor o_online = wi * shared_o + wij * unshared_o;
+  // 5. 加权合并输出 (自动广播: [B,H,1] * [B,H,D] -> [B,H,D])
+  torch::Tensor o_online = wi * shared_o + wij * unshared_o;
 
-  return o_online;
+  return o_online.to(shared_o.dtype());
 }
 } // namespace
 
@@ -81,7 +81,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
     torch::Tensor& key,
     torch::Tensor& value,
     KVCache& kv_cache) {
-  LOG(INFO) << "inner AttentionImpl::forward.";
+  // LOG(INFO) << "inner AttentionImpl::forward.";
   auto output = torch::empty_like(query);
   auto output_lse = std::nullopt;
   if (attn_metadata.max_seq_len == 0) {
@@ -108,6 +108,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
                                              value, 
                                              attn_metadata.shared_k_cache, 
                                              attn_metadata.shared_v_cache);
+      LOG(INFO) << "after prefill_reshape_and_cache.";
       // LOG(INFO) << "after prefill_reshape_and_cache.";
       // LOG(INFO) << "attn_metadata.shared_k_cache[0]: " << attn_metadata.shared_k_cache[0];
     }
@@ -138,15 +139,15 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
           .get_page_locked_int_workspace_buffer();
   attention_params.kv_cu_seq_lens = attn_metadata.kv_cu_seq_lens;
   attention_params.q_cu_seq_lens = attn_metadata.q_cu_seq_lens;
-  LOG(INFO) << "attn_metadata.is_prefill: " << attn_metadata.is_prefill;
+  // LOG(INFO) << "attn_metadata.is_prefill: " << attn_metadata.is_prefill;
   // TODO: support chunked prefill
   CHECK(!attn_metadata.is_chunked_prefill)
       << "chunked prefill is not supported";
   if (attn_metadata.is_prefill) {
     attention_params.key = key;
     attention_params.value = value;
-    LOG(INFO) << "key.shape: " << key.sizes();
-    LOG(INFO) << "value.shape: " << value.sizes();
+    // LOG(INFO) << "key.shape: " << key.sizes();
+    // LOG(INFO) << "value.shape: " << value.sizes();
     xllm::kernel::batch_prefill(attention_params);
     
   } else {
@@ -155,25 +156,37 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
       auto fp32_options =
         torch::TensorOptions().dtype(torch::kFloat32).device(query.device());
       // query: [total_beam, num_heads, head_dim]
-      LOG(INFO) << "query.shape: " << query.sizes();
-      LOG(INFO) << "output.shape: " << output.sizes();
+      // LOG(INFO) << "query.shape: " << query.sizes();
+      // output: [total_beam, num_heads, head_dim]
+      // LOG(INFO) << "output.shape: " << output.sizes();
 
       uint32_t batch_size = attn_metadata.kv_cu_seq_lens.size(0) - 1;
-      LOG(INFO) << "batch_size: " << batch_size;
+      // LOG(INFO) << "batch_size: " << batch_size;
       uint32_t total_beam = query.size(0);
       uint32_t beam_size = total_beam / batch_size;
-      LOG(INFO) << "beam_size: " << beam_size;
+      // LOG(INFO) << "beam_size: " << beam_size;
 
-      query = query.view({batch_size, beam_size, num_heads_, head_size_});
+      
+      // query = query.view({batch_size, beam_size, num_heads_, head_size_});
+      // int32_t group_size = num_heads_ / num_kv_heads_;
+      // query = query.view({batch_size, beam_size, num_kv_heads_, group_size, head_size_});
+      // // [batch_size, num_kv_heads_, beam_size, group_size, head_size_]
+      // query = query.permute({0, 2, 1, 3, 4}).contiguous();
+
+      // // 相当于q_seq_len从1变成了beam_size，并且确保了显存布局正确
+      // // [batch_size, beam_size * num_heads, head_dim]
+      // query = query.view({batch_size, num_kv_heads_ * beam_size * group_size, head_size_});
+      auto shared_q = query.clone();
+      shared_q = shared_q.view({batch_size, beam_size, num_heads_, head_size_});
       int32_t group_size = num_heads_ / num_kv_heads_;
-      query = query.view({batch_size, beam_size, num_kv_heads_, group_size, head_size_});
+      shared_q = shared_q.view({batch_size, beam_size, num_kv_heads_, group_size, head_size_});
       // [batch_size, num_kv_heads_, beam_size, group_size, head_size_]
-      query = query.permute({0, 2, 1, 3, 4}).contiguous();
+      shared_q = shared_q.permute({0, 2, 1, 3, 4}).contiguous();
 
       // 相当于q_seq_len从1变成了beam_size，并且确保了显存布局正确
       // [batch_size, beam_size * num_heads, head_dim]
-      query = query.view({batch_size, num_kv_heads_ * beam_size * group_size, head_size_});
-
+      shared_q = shared_q.view({batch_size, num_kv_heads_ * beam_size * group_size, head_size_});
+      
       // 此时qk变成了 [beam_size * num_heads, head_dim] * [kv_seq_len, head_dim]
       // 防止了kv被load beam_size次，这里只需要load一次
 
@@ -183,14 +196,17 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
 
       // shared
       // auto shared_lse = std::nullopt;
+      // 这个地方，因为q的排布发生了变化，所以o和lse的值可能会受影响
+      // 因此后续要做permute和显存重整
       torch::Tensor shared_lse = 
-        torch::zeros({query.size(0), query.size(1), 1}, fp32_options);
+        torch::zeros({shared_q.size(0), shared_q.size(1), 1}, fp32_options);
       torch::Tensor shared_o = 
-        torch::zeros_like(output);
-      LOG(INFO) << "shared_lse.shape: " << shared_lse.sizes();
+        torch::zeros_like(shared_q);
+
+      // LOG(INFO) << "shared_lse.shape: " << shared_lse.sizes();
       xllm::kernel::AttentionParams shared_attention_params;
       shared_attention_params.return_lse = true;
-      shared_attention_params.query = query;
+      shared_attention_params.query = shared_q;
       shared_attention_params.output = shared_o;
       shared_attention_params.output_lse = shared_lse;
 
@@ -229,7 +245,17 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
                 << attn_metadata.shared_v_cache.sizes();
 
       xllm::kernel::batch_prefill(shared_attention_params);
-      LOG(INFO) << "shared_lse: " << shared_lse;
+      LOG(INFO) << "after kernel::batch_prefill.";
+      // LOG(INFO) << "shared_lse: " << shared_lse;
+      // LOG(INFO) << "shared_o.shape: " << shared_o.sizes();
+      shared_o = shared_o.view({batch_size, num_kv_heads_, beam_size, group_size, head_size_});
+      shared_o = shared_o.permute({0, 2, 1, 3, 4}).contiguous();
+      shared_o = shared_o.view({query.size(0), query.size(1), query.size(2)});
+      // LOG(INFO) << "shared_o.shape: " << shared_o.sizes();
+      shared_lse = shared_lse.view({batch_size, num_kv_heads_, beam_size, group_size});
+      shared_lse = shared_lse.permute({0, 2, 1, 3}).contiguous();
+      shared_lse = shared_lse.view({query.size(0), query.size(1), 1});
+      // LOG(INFO) << "shared_lse: " << shared_lse;
       // LOG(FATAL) << "after xllm::kernel::batch_prefill(shared_attention_params).";
       // unshared
 
@@ -237,18 +263,19 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
 
       key = key.view({batch_size, beam_size, num_kv_heads_, head_size_});
       value = value.view({batch_size, beam_size, num_kv_heads_, head_size_});
-      LOG(INFO) << "key.shape: " << key.sizes();
-      LOG(INFO) << "value.shape: " << value.sizes();
+      // LOG(INFO) << "key.shape: " << key.sizes();
+      // LOG(INFO) << "value.shape: " << value.sizes();
       
-      LOG(INFO) << "attn_metadata.block_table: " << attn_metadata.block_table;
-      // LOG(INFO) << "attn_metadata.kv_seq_lens: " << attn_metadata.kv_seq_lens;
-      LOG(INFO) << "attn_metadata.step: " << attn_metadata.step;
+      // LOG(INFO) << "attn_metadata.block_table: " << attn_metadata.block_table;
+      // // LOG(INFO) << "attn_metadata.kv_seq_lens: " << attn_metadata.kv_seq_lens;
+      // LOG(INFO) << "attn_metadata.step: " << attn_metadata.step;
 
       // LOG(INFO) << "k_cache.shape: " << k_cache.sizes();
       // LOG(INFO) << "v_cache.shape: " << v_cache.sizes();
 
-      LOG(INFO) << "query.shape: " << query.sizes();
-      LOG(INFO) << "shared_o.shape: " << shared_o.sizes();
+      // [total_beam, num_heads, head_dim]
+      // LOG(INFO) << "query.shape: " << query.sizes();
+      
       
       
       rec_kernel_->decoder_reshape_and_cache(key, 
@@ -257,10 +284,12 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
                                              v_cache, 
                                              attn_metadata.block_table, 
                                              attn_metadata.step);
-      LOG(INFO) << "begin prepare for unshared.";
+      LOG(INFO) << "after decoder_reshape_and_cache.";
+      // LOG(INFO) << "begin prepare for unshared.";
+      // q_seq_len一般为1，因为unshared,beam不算seq
       torch::Tensor unshared_lse = 
         torch::zeros({query.size(0), query.size(1), 1}, fp32_options);
-      LOG(INFO) << "unshared_lse.shape: " << shared_lse.sizes();
+      // LOG(INFO) << "unshared_lse.shape: " << unshared_lse.sizes();
       torch::Tensor unshared_o = 
         torch::zeros_like(output);
       xllm::kernel::AttentionParams unshared_attention_params;
@@ -284,7 +313,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
       // decode可能不需要cu_seq_lens
       // unshared_attention_params.kv_cu_seq_lens = attn_metadata.kv_cu_seq_lens;
       // unshared_attention_params.q_cu_seq_lens = attn_metadata.q_cu_seq_lens;
-      LOG(INFO) << "attn_metadata.is_prefill: " << attn_metadata.is_prefill;
+      // LOG(INFO) << "attn_metadata.is_prefill: " << attn_metadata.is_prefill;
       // TODO: support chunked prefill
       CHECK(!attn_metadata.is_chunked_prefill)
           << "chunked prefill is not supported";
@@ -292,7 +321,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
       // total_beams = batch_size * beam_size
       query = query.view({-1, 1, num_heads_, head_size_});
       unshared_o = unshared_o.view({-1, 1, num_heads_, head_size_});
-      LOG(INFO) << "query.shape: " << query.sizes();
+      // LOG(INFO) << "query.shape: " << query.sizes();
       unshared_attention_params.query = query;
       unshared_attention_params.output = unshared_o;
       // k_cache: [max_num_request, beam_size, max_decode_step, kv_heads, head_dim]
@@ -301,20 +330,23 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
 
       unshared_attention_params.k_cache = 
         select_target_kv_cache(k_cache, attn_metadata.block_table);
+      LOG(INFO) << "after select_target_kv_cache k.";
       unshared_attention_params.v_cache = 
         select_target_kv_cache(v_cache, attn_metadata.block_table);
+      LOG(INFO) << "after select_target_kv_cache v.";
       // [batch_size, beam_size, max_decode_step, kv_heads, head_dim]
       
       int64_t max_decode_step = unshared_attention_params.k_cache.size(2);
-
+      
+      // 转为total_beam
       unshared_attention_params.k_cache = 
         unshared_attention_params.k_cache.view({-1, max_decode_step, num_kv_heads_, head_size_});
       unshared_attention_params.v_cache = 
         (*(unshared_attention_params.v_cache)).view({-1, max_decode_step, num_kv_heads_, head_size_});
-      LOG(INFO) << "unshared_attention_params.k_cache.shape: "
-                << unshared_attention_params.k_cache.sizes();
-      LOG(INFO) << "unshared_attention_params.v_cache.shape: "
-                << (*(unshared_attention_params.v_cache)).sizes();
+      // LOG(INFO) << "unshared_attention_params.k_cache.shape: "
+      //           << unshared_attention_params.k_cache.sizes();
+      // LOG(INFO) << "unshared_attention_params.v_cache.shape: "
+      //           << (*(unshared_attention_params.v_cache)).sizes();
       
       // 这个应该是batch_size * beam_size粒度的，当作并行轴来处理
       // 实际的计算是NHD，既[1, num_heads, head_dim] * [max_decode_step, kv_heads, head_dim]
@@ -331,29 +363,30 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
       //     attn_metadata.paged_kv_last_page_len;
       unshared_attention_params.paged_kv_last_page_len =
           torch::full({total_beam}, attn_metadata.step + 1, attn_metadata.paged_kv_last_page_len.options());
-      LOG(INFO) << "unshared_attention_params.paged_kv_indptr: " 
-                << unshared_attention_params.paged_kv_indptr;
-      LOG(INFO) << "unshared_attention_params.paged_kv_indices: " 
-                << unshared_attention_params.paged_kv_indices;
-      LOG(INFO) << "unshared_attention_params.paged_kv_last_page_len: " 
-                << unshared_attention_params.paged_kv_last_page_len;
+      // LOG(INFO) << "unshared_attention_params.paged_kv_indptr: " 
+      //           << unshared_attention_params.paged_kv_indptr;
+      // LOG(INFO) << "unshared_attention_params.paged_kv_indices: " 
+      //           << unshared_attention_params.paged_kv_indices;
+      // LOG(INFO) << "unshared_attention_params.paged_kv_last_page_len: " 
+      //           << unshared_attention_params.paged_kv_last_page_len;
       // LOG(FATAL) << "before batch_decode.";
       xllm::kernel::batch_decode(unshared_attention_params);
+      LOG(INFO) << "after kernel::batch_decode.";
       // combine
       unshared_o = unshared_o.view({-1, num_heads_, head_size_});
-      LOG(INFO) << "unshared_o.shape: " << unshared_o.sizes();
+      // LOG(INFO) << "unshared_o.shape: " << unshared_o.sizes();
       
-      auto final_out = lse_combine(shared_o, shared_lse, 
+      output = lse_combine(shared_o, shared_lse, 
                                    unshared_o, unshared_lse);
-
+      // LOG(INFO) << "output.dtype(): " << output.dtype();
       // LOG(INFO) << "output: " << output;
-      LOG(INFO) << "unshared_lse: " << unshared_lse;
-      LOG(INFO) << "final_out: " << final_out;
-      LOG(FATAL) << "after xattention.";
+      // LOG(INFO) << "unshared_lse: " << unshared_lse;
+      // LOG(INFO) << "output: " << output;
+      // LOG(FATAL) << "after xattention.";
 
     } else {
-      LOG(INFO) << "key: " << key;
-      LOG(INFO) << "value: " << value;
+      // LOG(INFO) << "key: " << key;
+      // LOG(INFO) << "value: " << value;
       query = query.view({-1, 1, num_heads_, head_size_});
       output = output.view({-1, 1, num_heads_, head_size_});
 
@@ -375,30 +408,30 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
       attention_params.paged_kv_indices = attn_metadata.paged_kv_indices;
       attention_params.paged_kv_last_page_len =
           attn_metadata.paged_kv_last_page_len;
-      LOG(INFO) << "attention_params.paged_kv_indptr: " 
-                << attention_params.paged_kv_indptr;
-      LOG(INFO) << "attention_params.paged_kv_indices: " 
-                << attention_params.paged_kv_indices;
-      LOG(INFO) << "attention_params.paged_kv_last_page_len: " 
-                << attention_params.paged_kv_last_page_len;
-      LOG(INFO) << "attention_params.kv_cu_seq_lens: "
-                << *(attention_params.kv_cu_seq_lens);
-      LOG(INFO) << "attention_params.q_cu_seq_lens: "
-                << *(attention_params.q_cu_seq_lens);
-      LOG(INFO) << "before batch_decode.";
+      // LOG(INFO) << "attention_params.paged_kv_indptr: " 
+      //           << attention_params.paged_kv_indptr;
+      // LOG(INFO) << "attention_params.paged_kv_indices: " 
+      //           << attention_params.paged_kv_indices;
+      // LOG(INFO) << "attention_params.paged_kv_last_page_len: " 
+      //           << attention_params.paged_kv_last_page_len;
+      // LOG(INFO) << "attention_params.kv_cu_seq_lens: "
+      //           << *(attention_params.kv_cu_seq_lens);
+      // LOG(INFO) << "attention_params.q_cu_seq_lens: "
+      //           << *(attention_params.q_cu_seq_lens);
+      // LOG(INFO) << "before batch_decode.";
       
-      attention_params.print();
+      // attention_params.print();
       // LOG(INFO) << "query: " << query;
       xllm::kernel::batch_decode(attention_params);
       
-      // LOG(INFO) << "output: " << output;
-      LOG(FATAL) << "after batch_decode.";
+      
+      // LOG(FATAL) << "after batch_decode.";
     }
     
     
     
   }
-
+  // LOG(INFO) << "output: " << output;
   output = output.view({-1, num_heads_ * head_size_});
   return {output, output_lse};
 }

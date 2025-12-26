@@ -57,6 +57,8 @@ LLMWorkerImpl::LLMWorkerImpl(const ParallelArgs& parallel_args,
 #if defined(USE_CUDA)
   // initialize flashinfer workspace
   layer::FlashinferWorkspace::get_instance().initialize(device_);
+
+  rec_kernel_ = std::make_unique<kernel::cuda::triton::RecTorchKernel>();
 #endif
 }
 
@@ -82,7 +84,7 @@ bool LLMWorkerImpl::init_model(ModelContext& context) {
 }
 
 std::optional<ForwardOutput> LLMWorkerImpl::step(const ForwardInput& input) {
-  LOG(INFO) << "input.input_params.batch_forward_type: " << input.input_params.batch_forward_type.to_string();
+  // LOG(INFO) << "input.input_params.batch_forward_type: " << input.input_params.batch_forward_type.to_string();
   Timer timer;
   // Only enter multi-round decode when explicitly enabled via global flag.
   if (FLAGS_max_decode_rounds > 0 && input.total_round > 0) {
@@ -115,17 +117,25 @@ std::optional<ForwardOutput> LLMWorkerImpl::step(const ForwardInput& input) {
 
   // temporarily use [0], will be adapted in next pr
   // call model executor forward to get hidden states
+  // LOG(INFO) << "before model_executor_->forward.";
+  // LOG(INFO) << "input.token_ids: " << input.token_ids;
+  // LOG(INFO) << "input.positions: " << input.positions;
   auto hidden_states = model_executor_->forward(
       input.token_ids, input.positions, kv_caches_, input.input_params);
+  // LOG(INFO) << "hidden_states: " << hidden_states;
   if (!hidden_states.defined()) {
     return std::nullopt;
   }
+
+  // sampling_params.print();
 
   torch::Tensor logits;
   if (sampling_params.selected_token_idxes.defined()) {
     logits =
         model_->logits(hidden_states, sampling_params.selected_token_idxes);
   }
+
+  // LOG(INFO) << "logits.shape: " << logits.sizes();
 
   ForwardOutput output;
   if (FLAGS_enable_eplb) {
@@ -162,6 +172,9 @@ std::optional<ForwardOutput> LLMWorkerImpl::step(const ForwardInput& input) {
   SampleOutput sample_output;
   if (sampling_params.selected_token_idxes.defined()) {
     sample_output = sampler_->forward(logits, sampling_params);
+
+    // sample_output.print();
+
     output.logits = logits;
 
     // beam search kernel
@@ -220,7 +233,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
   Timer timer;
 
   int32_t total_rounds = input.total_round;
-  
+  // LOG(INFO) << "total_rounds: " << total_rounds;
   std::vector<torch::Tensor> unshared_k_cache;
   std::vector<torch::Tensor> unshared_v_cache;
   auto args = context_.get_model_args();
@@ -237,17 +250,25 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
       torch::TensorOptions().dtype(torch::kInt32).device(device_);
   auto fp32_options =
       torch::TensorOptions().dtype(torch::kFloat32).device(device_);
+
+  // 相当于用显存维护起sequence token ids
   torch::Tensor sequence_group =
       torch::zeros({batch, beam_width_init, total_rounds}, int_options);
 
   // preallocate outputs and cached inputs
   int64_t num_seq = batch * beam_width_init;
-  torch::Tensor acc_logprob = torch::empty({num_seq, 1}, fp32_options);
-  torch::Tensor out_log_probs = torch::empty({num_seq, 1}, fp32_options);
-  torch::Tensor out_token_ids = torch::empty({num_seq, 1}, int_options);
-  torch::Tensor out_token_index = torch::empty({num_seq, 1}, int_options);
+  // 每个sequence的历史得分
+  torch::Tensor acc_logprob = torch::zeros({num_seq, 1}, fp32_options);
+  // 新的sequence的历史得分
+  torch::Tensor out_log_probs = torch::zeros({num_seq, 1}, fp32_options);
+  // 实际选出的token_id?
+  torch::Tensor out_token_ids = torch::zeros({num_seq, 1}, int_options);
+  // 实际选出的token_id对应的sequence_id?
+  torch::Tensor out_token_index = torch::zeros({num_seq, 1}, int_options);
+  // 不知道
   torch::Tensor out_beam_count_prefix_sums =
-      torch::empty({num_seq, 1}, int_options);
+      torch::zeros({num_seq, 1}, int_options);
+  // 维护beam_serch后的sequence token ids
   auto out_seqgroup = sequence_group.clone();
 
   ForwardOutput output;
@@ -266,56 +287,112 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
       input.input_params.current_round = round - 1;
     }
 
+    // input.token_ids为下一轮的token_ids
+    // LOG(INFO) << "before model_executor_->forward.";
+    // LOG(INFO) << "input.token_ids: " << input.token_ids;
+    // LOG(INFO) << "input.positions: " << input.positions;
+    // 进模型的token_ids一般是拍平的，也就是说，它不区分batch和beam的概念
+    // 在他看来，有多少个待计算的sequence是它关注的
+    // 可以从cu_seq_len或者paged_kv_indices这类，拿到多少个sequence的信息量
     auto hidden_states = model_executor_->forward(
         input.token_ids, input.positions, kv_caches_, input.input_params);
+    // LOG(INFO) << "hidden_states.shape: " << hidden_states.sizes();
+    // LOG(INFO) << "hidden_states: " << hidden_states;
+    // 出的这个hidden_states也是如此，是拍平的，不区分batch和beam
     if (!hidden_states.defined()) {
       return std::nullopt;
     }
 
+    // sampling_params.print();
+
     torch::Tensor logits;
     if (sampling_params.selected_token_idxes.defined()) {
+      // 根据selected_token_idxes，可以区分有多少个待计算的sequence
+      // 一般为batch * beam
       logits =
           model_->logits(hidden_states, sampling_params.selected_token_idxes);
     }
 
+    // LOG(INFO) << "logits.shape: " << logits.sizes(); // [selected_token_idxes.dim(), 151936]
+    // selected_token_idxes.dim()一般为model的output的第0维度
     if (sampling_params.selected_token_idxes.defined()) {
       auto sample_output = sampler_->forward(logits, sampling_params);
+      // 这个一般又对上述的sequence做了top_k的取值，因此为[batch * beam, top_k]
+      // sample_output.print();
+
       torch::Tensor top_tokens;
       torch::Tensor top_logprobs;
       int32_t beam_width = beam_width_init;
-
+      // LOG(INFO) << "beam_width: " << beam_width;
+      
       if (round == 0) {
-        top_tokens =
-            sample_output.top_tokens.to(torch::kInt32).reshape({-1, 1});
-        LOG(INFO) << "top_tokens.shape: " << top_tokens.sizes();
-        top_logprobs = sample_output.top_logprobs.reshape({-1, 1});
-        
-        // 强制改为decode模式
-        input.input_params.batch_forward_type = BatchForwardType(2);
+        // 以下两个带top的，都是[batch * beam, top_k]
+        // 代表id
+        // top_tokens =
+        //     sample_output.top_tokens.to(torch::kInt32).reshape({-1, 1}); 
+        // LOG(INFO) << "top_tokens.shape: " << top_tokens.sizes();
+        // // 代表得分
+        // top_logprobs = sample_output.top_logprobs.reshape({-1, 1});
 
-        input.token_ids =
-            sample_output.top_tokens.to(torch::kInt32).reshape({-1});
-        LOG(INFO) << "input.input_params.decode_positions_tensor_list.empty(): " 
-                  << input.input_params.decode_positions_tensor_list.empty();
-        if (!input.input_params.decode_positions_tensor_list.empty() &&
-            round >= 0 &&
-            round < static_cast<int32_t>(
-                        input.input_params.decode_positions_tensor_list.size())) {
-          input.positions =
-              input.input_params.decode_positions_tensor_list[round];
-        }
-        LOG(INFO) << "input.positions.shape: " << input.positions.sizes();
+        // 下面这些应该不是step=0才做的，应该是所有都要做
+        
 
         // 更新q_seq_len，原来保留的是prefill的seq_len，需要改成decode的
-        LOG(INFO) << "num_seq: " << num_seq;
+        // 其次，因为shared对beam_size和num_heads做了合轴，因此seq_len实际变成了beam_size
+        // LOG(INFO) << "num_seq: " << num_seq;
         input.input_params.q_seq_lens = torch::arange(batch + 1, int_options) * beam_width;  
+        // input.input_params.q_seq_lens = torch::arange(batch + 1, int_options) * beam_width;  
         
-      } else {
-        top_tokens = sample_output.top_tokens.to(torch::kInt32)
+      } 
+      // else {
+        
+        
+      // }
+      top_tokens = sample_output.top_tokens.to(torch::kInt32)
                          .reshape({-1, beam_width});
-        top_logprobs = sample_output.top_logprobs.reshape({-1, beam_width});
-      }
-      #if defined(USE_NPU)
+      top_logprobs = sample_output.top_logprobs.reshape({-1, beam_width});
+      // LOG(INFO) << "top_tokens.shape: " << top_tokens.sizes();
+      // log_probs_ptr,       # [B*BEAM_SIZE, 1] - 当前beam的对数概率
+      // in_sequence_ptr,     # [B, BEAM_SIZE, total_rounds] - 输入序列（只读）
+      // top_tokens_ptr,      # [B*BEAM_SIZE, TOP_K] - 每个beam的top K个token
+      // top_probs_ptr,       # [B*BEAM_SIZE, TOP_K] - 每个beam的top K个概率
+
+      // out_log_probs_ptr,   # [B*BEAM_SIZE, 1] - 输出对数概率
+      // out_token_ids_ptr,   # [B*BEAM_SIZE, 1] - 输出token ID
+      // out_token_index_ptr, # [B*BEAM_SIZE, 1] - 输出token在top K中的索引
+      // out_beam_count_prefix_sums_ptr,  # [B*BEAM_SIZE, 1] - beam计数前缀和（未使用）
+      // out_sequence_ptr,    # [B, BEAM_SIZE, total_rounds] - 输出序列（写入）
+
+      
+      #if defined(USE_CUDA)
+      // LOG(INFO) << "acc_logprob: " << acc_logprob;
+      // LOG(INFO) << "sequence_group: " << sequence_group;
+      // LOG(INFO) << "top_tokens: " << top_tokens;
+      // LOG(INFO) << "top_logprobs: " << top_logprobs;
+      // LOG(INFO) << "out_log_probs: " << out_log_probs;
+      // LOG(INFO) << "out_token_ids: " << out_token_ids;
+      // LOG(INFO) << "out_token_index: " << out_token_index;
+      // LOG(INFO) << "out_beam_count_prefix_sums: " << out_beam_count_prefix_sums;
+      // LOG(INFO) << "out_seqgroup: " << out_seqgroup;
+      rec_kernel_->beam_search(acc_logprob, 
+                               sequence_group, 
+                               top_tokens, 
+                               top_logprobs, 
+                               out_log_probs,
+                               out_token_ids,
+                               out_token_index, 
+                               out_beam_count_prefix_sums, 
+                               out_seqgroup, 
+                               batch, 
+                               round
+                               );
+      LOG(INFO) << "after beam_search.";
+      // LOG(INFO) << "out_log_probs: " << out_log_probs;
+      // LOG(INFO) << "out_token_ids: " << out_token_ids;
+      // LOG(INFO) << "out_token_index: " << out_token_index;
+      // LOG(INFO) << "out_beam_count_prefix_sums: " << out_beam_count_prefix_sums;
+      // LOG(INFO) << "out_seqgroup: " << out_seqgroup;
+      #elif defined(USE_NPU)
       xllm_ops::beam_search(acc_logprob,
                             top_tokens,
                             top_logprobs,
@@ -326,10 +403,13 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
                             out_log_probs,
                             out_beam_count_prefix_sums,
                             out_seqgroup);
+      #endif
       sequence_group.copy_(out_seqgroup);
       acc_logprob.copy_(out_log_probs);
       // keep group offset contiguous across rounds (already in out_* tensors)
       // update next round tokens.
+
+      // 这里这么写应该是考虑到，第0步的out_token_ids本身确实等于sample_output.top_tokens
       if (round == 0) {
         input.token_ids =
             sample_output.top_tokens.to(torch::kInt32).reshape({-1});
@@ -346,8 +426,14 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
             input.input_params.decode_positions_tensor_list[round];
       }
 
+      // LOG(INFO) << "input.positions: " << input.positions;
+
+      // 强制改为decode模式
+      input.input_params.batch_forward_type = BatchForwardType(2);
+
       // update output at the last round.
       if (round == total_rounds - 1) {
+        // LOG(INFO) << "inner round == total_rounds - 1.";
         output.logits = logits;
         output.sample_output = sample_output;
         output.do_sample = sampling_params.do_sample;
@@ -360,7 +446,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
             out_beam_count_prefix_sums.reshape({-1});
         output.beam_sequence_group = sequence_group;
       }
-      #endif
+      
 
 #if defined(USE_NPU)
       if (beam_width > 1 && round > 0) {

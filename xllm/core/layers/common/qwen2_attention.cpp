@@ -131,16 +131,16 @@ torch::Tensor Qwen2AttentionImpl::forward(
     // 3. k-norm
     k = std::get<0>(k_norm_->forward(k));
   }
-  LOG(INFO) << "before rotary_emb_.";
-  LOG(INFO) << "q.shape: " << q.sizes();
-  LOG(INFO) << "k.shape: " << k.sizes();
-  LOG(INFO) << "positions.shape: " << positions.sizes();
+  // LOG(INFO) << "before rotary_emb_.";
+  // LOG(INFO) << "q.shape: " << q.sizes();
+  // LOG(INFO) << "k.shape: " << k.sizes();
+  // LOG(INFO) << "positions.shape: " << positions.sizes();
   // 4. rope
   rotary_emb_->forward(q, k, positions, attn_metadata);
   q = q.view({T, q_size_});
   k = k.view({T, kv_size_});
-  LOG(INFO) << "inner qwen2_attention, k.shape: " << k.sizes();
-  LOG(INFO) << "v.shape: " << v.sizes();
+  // LOG(INFO) << "inner qwen2_attention, k.shape: " << k.sizes();
+  // LOG(INFO) << "v.shape: " << v.sizes();
   // 5. store k/v cache and do attention
   auto out = std::get<0>(attn_->forward(attn_metadata, q, k, v, kv_cache));
 

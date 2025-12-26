@@ -134,12 +134,12 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
       attn_metadata.mrope_sin = std::move(sin_pos);
     }
     if (FLAGS_max_decode_rounds) {
-      LOG(INFO) << "input_params_new.shared_k_caches.size(): "
-                << input_params_new.shared_k_caches.size();
-      LOG(INFO) << "input_params_new.shared_k_caches[0].shape: "
-                << input_params_new.shared_k_caches[0].sizes();
-      LOG(INFO) << "input_params_new.current_round: "
-                << input_params_new.current_round;
+      // LOG(INFO) << "input_params_new.shared_k_caches.size(): "
+      //           << input_params_new.shared_k_caches.size();
+      // LOG(INFO) << "input_params_new.shared_k_caches[0].shape: "
+      //           << input_params_new.shared_k_caches[0].sizes();
+      // LOG(INFO) << "input_params_new.current_round: "
+      //           << input_params_new.current_round;
       attn_metadata.step = input_params_new.current_round;
     }
     

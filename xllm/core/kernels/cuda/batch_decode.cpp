@@ -49,8 +49,8 @@ void batch_decode(torch::Tensor float_workspace_buffer,
       torch::empty({0}, torch::TensorOptions().dtype(query.scalar_type()));
   torch::Tensor empty_kv_data =
       torch::empty({0}, torch::TensorOptions().dtype(k_cache.scalar_type()));
-  LOG(INFO) << "k_cache.shape: " << k_cache.sizes();
-  LOG(INFO) << "v_cache.shape: " << v_cache.sizes();
+//   LOG(INFO) << "k_cache.shape: " << k_cache.sizes();
+//   LOG(INFO) << "v_cache.shape: " << v_cache.sizes();
   auto plan_info = FunctionFactory::get_instance().decode_plan_func(uri).call(
       float_workspace_buffer,
       int_workspace_buffer,

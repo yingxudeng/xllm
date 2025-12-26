@@ -28,6 +28,18 @@ class RecKernel {
                                          torch::Tensor unshared_v_cache,  // [max_num_request, beam_size, kv_heads, max_decode_step, head_dim]
                                          torch::Tensor block_table, 
                                          uint32_t step) = 0;
+  
+  virtual void beam_search(torch::Tensor acc_logprob, 
+                           torch::Tensor in_sequence_group, 
+                           torch::Tensor top_tokens, 
+                           torch::Tensor top_logprobs, 
+                           torch::Tensor out_acc_logprob, 
+                           torch::Tensor out_token_ids, 
+                           torch::Tensor out_token_index, 
+                           torch::Tensor out_beam_count_prefix_sums, 
+                           torch::Tensor out_sequence_group, 
+                           uint32_t batch_size,
+                           uint32_t current_step) = 0;
  private:
 
 };

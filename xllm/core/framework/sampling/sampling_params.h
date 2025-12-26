@@ -140,6 +140,105 @@ struct SamplingParameters {
 
   // for beam search
   bool use_beam_search = false;
+
+  void print() const {
+    LOG(INFO) << "SamplingParameters {";
+    
+    // Tensor Helper Logic (inline expansion for safety)
+    if (selected_token_idxes.defined()) {
+      LOG(INFO) << "  selected_token_idxes: " << selected_token_idxes
+                << " " << selected_token_idxes.scalar_type();
+    } else {
+      LOG(INFO) << "  selected_token_idxes: (undefined)";
+    }
+
+    if (frequency_penalties.defined()) {
+      LOG(INFO) << "  frequency_penalties: " << frequency_penalties
+                << " " << frequency_penalties.scalar_type();
+    } else {
+      LOG(INFO) << "  frequency_penalties: (undefined)";
+    }
+
+    if (presence_penalties.defined()) {
+      LOG(INFO) << "  presence_penalties: " << presence_penalties
+                << " " << presence_penalties.scalar_type();
+    } else {
+      LOG(INFO) << "  presence_penalties: (undefined)";
+    }
+
+    if (repetition_penalties.defined()) {
+      LOG(INFO) << "  repetition_penalties: " << repetition_penalties
+                << " " << repetition_penalties.scalar_type();
+    } else {
+      LOG(INFO) << "  repetition_penalties: (undefined)";
+    }
+
+    if (temperatures.defined()) {
+      LOG(INFO) << "  temperatures: " << temperatures
+                << " " << temperatures.scalar_type();
+    } else {
+      LOG(INFO) << "  temperatures: (undefined)";
+    }
+
+    if (top_p.defined()) {
+      LOG(INFO) << "  top_p: " << top_p
+                << " " << top_p.scalar_type();
+    } else {
+      LOG(INFO) << "  top_p: (undefined)";
+    }
+
+    if (top_k.defined()) {
+      LOG(INFO) << "  top_k: " << top_k
+                << " " << top_k.scalar_type();
+    } else {
+      LOG(INFO) << "  top_k: (undefined)";
+    }
+
+    if (unique_token_ids.defined()) {
+      LOG(INFO) << "  unique_token_ids: " << unique_token_ids
+                << " " << unique_token_ids.scalar_type();
+    } else {
+      LOG(INFO) << "  unique_token_ids: (undefined)";
+    }
+
+    if (unique_token_counts.defined()) {
+      LOG(INFO) << "  unique_token_counts: " << unique_token_counts
+                << " " << unique_token_counts.scalar_type();
+    } else {
+      LOG(INFO) << "  unique_token_counts: (undefined)";
+    }
+
+    if (unique_token_ids_lens.defined()) {
+      LOG(INFO) << "  unique_token_ids_lens: " << unique_token_ids_lens
+                << " " << unique_token_ids_lens.scalar_type();
+    } else {
+      LOG(INFO) << "  unique_token_ids_lens: (undefined)";
+    }
+
+    if (sample_idxes.defined()) {
+      LOG(INFO) << "  sample_idxes: " << sample_idxes
+                << " " << sample_idxes.scalar_type();
+    } else {
+      LOG(INFO) << "  sample_idxes: (undefined)";
+    }
+
+    if (do_sample.defined()) {
+      LOG(INFO) << "  do_sample: " << do_sample
+                << " " << do_sample.scalar_type();
+    } else {
+      LOG(INFO) << "  do_sample: (undefined)";
+    }
+
+    // Scalar values
+    LOG(INFO) << "  all_random_sample: " << (all_random_sample ? "true" : "false");
+    LOG(INFO) << "  all_greedy_sample: " << (all_greedy_sample ? "true" : "false");
+    LOG(INFO) << "  logprobs: " << (logprobs ? "true" : "false");
+    LOG(INFO) << "  is_embeddings: " << (is_embeddings ? "true" : "false");
+    LOG(INFO) << "  max_top_logprobs: " << max_top_logprobs;
+    LOG(INFO) << "  use_beam_search: " << (use_beam_search ? "true" : "false");
+
+    LOG(INFO) << "}";
+  }
 };
 
 struct SampleOutput {
@@ -159,6 +258,52 @@ struct SampleOutput {
 
   // [num_seq, ..., embed_dim] FloatTensor
   torch::Tensor embeddings;
+
+  void print() const {
+    LOG(INFO) << "SampleOutput {";
+    if (next_tokens.defined()) {
+      LOG(INFO) << "  next_tokens: " << next_tokens
+                << " " << next_tokens.scalar_type();
+    } else {
+      LOG(INFO) << "  next_tokens: (undefined)";
+    }
+
+    if (probs.defined()) {
+      LOG(INFO) << "  probs: " << probs.sizes()
+                << " " << probs.scalar_type();
+    } else {
+      LOG(INFO) << "  probs: (undefined)";
+    }
+
+    if (logprobs.defined()) {
+      LOG(INFO) << "  logprobs: " << logprobs
+                << " " << logprobs.scalar_type();
+    } else {
+      LOG(INFO) << "  logprobs: (undefined)";
+    }
+
+    if (top_logprobs.defined()) {
+      LOG(INFO) << "  top_logprobs: " << top_logprobs
+                << " " << top_logprobs.scalar_type();
+    } else {
+      LOG(INFO) << "  top_logprobs: (undefined)";
+    }
+
+    if (top_tokens.defined()) {
+      LOG(INFO) << "  top_tokens: " << top_tokens
+                << " " << top_tokens.scalar_type();
+    } else {
+      LOG(INFO) << "  top_tokens: (undefined)";
+    }
+
+    if (embeddings.defined()) {
+      LOG(INFO) << "  embeddings: " << embeddings
+                << " " << embeddings.scalar_type();
+    } else {
+      LOG(INFO) << "  embeddings: (undefined)";
+    }
+    LOG(INFO) << "}";
+  }
 };
 
 }  // namespace xllm

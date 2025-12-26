@@ -29,6 +29,46 @@ struct BeamSearchOutput {
   torch::Tensor out_logprobs;   // [num_seq]
   torch::Tensor group_offset;   // [num_seq]
   torch::Tensor out_sequence;   // [num_seq, total_rounds]
+  void print() const {
+    LOG(INFO) << "BeamSearchOutput {";
+    
+    if (src_seq_idxes.defined()) {
+      LOG(INFO) << "  src_seq_idxes: " << src_seq_idxes.sizes() 
+                << " " << src_seq_idxes.scalar_type();
+    } else {
+      LOG(INFO) << "  src_seq_idxes: (undefined)";
+    }
+
+    if (out_tokens.defined()) {
+      LOG(INFO) << "  out_tokens: " << out_tokens.sizes() 
+                << " " << out_tokens.scalar_type();
+    } else {
+      LOG(INFO) << "  out_tokens: (undefined)";
+    }
+
+    if (out_logprobs.defined()) {
+      LOG(INFO) << "  out_logprobs: " << out_logprobs.sizes() 
+                << " " << out_logprobs.scalar_type();
+    } else {
+      LOG(INFO) << "  out_logprobs: (undefined)";
+    }
+
+    if (group_offset.defined()) {
+      LOG(INFO) << "  group_offset: " << group_offset.sizes() 
+                << " " << group_offset.scalar_type();
+    } else {
+      LOG(INFO) << "  group_offset: (undefined)";
+    }
+
+    if (out_sequence.defined()) {
+      LOG(INFO) << "  out_sequence: " << out_sequence.sizes() 
+                << " " << out_sequence.scalar_type();
+    } else {
+      LOG(INFO) << "  out_sequence: (undefined)";
+    }
+
+    LOG(INFO) << "}";
+  }
 };
 
 class BeamSearcher {

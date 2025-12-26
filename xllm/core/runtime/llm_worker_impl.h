@@ -59,6 +59,9 @@ class LLMWorkerImpl : public WorkerImpl {
  private:
   std::unique_ptr<BeamSearcher> beam_searcher_;
   std::optional<ForwardOutput> step_multi_round(ForwardInput input);
+  #if defined(USE_CUDA)
+  std::unique_ptr<kernel::cuda::triton::RecKernel> rec_kernel_;
+  #endif
 };
 
 }  // namespace xllm

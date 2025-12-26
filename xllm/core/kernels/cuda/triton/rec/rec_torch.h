@@ -35,6 +35,18 @@ class RecTorchKernel : public RecKernel {
                                  torch::Tensor block_table, 
                                  uint32_t step) override;
   
+  void beam_search(torch::Tensor acc_logprob, 
+                   torch::Tensor in_sequence_group, 
+                   torch::Tensor top_tokens, 
+                   torch::Tensor top_logprobs, 
+                   torch::Tensor out_acc_logprob, 
+                   torch::Tensor out_token_ids, 
+                   torch::Tensor out_token_index, 
+                   torch::Tensor out_beam_count_prefix_sums, 
+                   torch::Tensor out_sequence_group, 
+                   uint32_t batch_size,
+                   uint32_t current_step) override;
+
   void cache_select();
 
  private:
