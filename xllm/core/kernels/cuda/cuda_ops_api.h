@@ -88,4 +88,10 @@ torch::Tensor matmul(torch::Tensor a,
                      torch::Tensor b,
                      std::optional<torch::Tensor> bias);
 
+void lse_combine(torch::Tensor output,
+                 torch::Tensor shared_o,
+                 torch::Tensor shared_lse,
+                 torch::Tensor unshared_o,
+                 torch::Tensor unshared_lse);
+
 }  // namespace xllm::kernel::cuda

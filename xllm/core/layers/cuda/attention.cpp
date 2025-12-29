@@ -17,38 +17,18 @@ limitations under the License.
 
 #include "flashinfer_workspace.h"
 #include "kernels/ops_api.h"
+#include "kernels/cuda/cuda_ops_api.h"
 
 DECLARE_bool(enable_chunked_prefill);
 
 namespace {
 
-torch::Tensor lse_combine(torch::Tensor shared_o, 
-                          torch::Tensor shared_lse, 
-                          torch::Tensor unshared_o, 
-                          torch::Tensor unshared_lse) {
-  // 1. 计算 element-wise 最大 LSE
-  // [batch, num_heads, 1]
-  torch::Tensor li_max = torch::max(shared_lse, unshared_lse);
-
-  // 2. 计算以 2 为底的指数差
-  // [batch, num_heads, 1]
-  torch::Tensor exp_li = torch::exp2(shared_lse - li_max);
-  torch::Tensor exp_lij = torch::exp2(unshared_lse - li_max);
-
-  // 3. 计算合并后的新 LSE
-  // [batch, num_heads, 1]
-  torch::Tensor li_new = li_max + torch::log2(exp_li + exp_lij);
-
-  // 4. 计算归一化权重
-  // 此时 lse 和 li_new 都是 [B, H, 1]，相减也是 [B, H, 1]
-  // 这里的形状可以直接与 o [B, H, D] 进行广播，无需 unsqueeze
-  torch::Tensor wi = torch::exp2(shared_lse - li_new);
-  torch::Tensor wij = torch::exp2(unshared_lse - li_new);
-
-  // 5. 加权合并输出 (自动广播: [B,H,1] * [B,H,D] -> [B,H,D])
-  torch::Tensor o_online = wi * shared_o + wij * unshared_o;
-
-  return o_online.to(shared_o.dtype());
+void lse_combine(torch::Tensor shared_o, 
+                 torch::Tensor shared_lse, 
+                 torch::Tensor unshared_o, 
+                 torch::Tensor unshared_lse, 
+                 torch::Tensor output) {
+  xllm::kernel::cuda::lse_combine(output, shared_o, shared_lse, unshared_o, unshared_lse);
 }
 } // namespace
 
@@ -216,8 +196,6 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
       shared_lse = shared_lse.view({batch_size * beam_size, num_heads_, 1});
       // unshared
 
-      
-
       key = key.view({batch_size, beam_size, num_kv_heads_, head_size_});
       value = value.view({batch_size, beam_size, num_kv_heads_, head_size_});
       
@@ -228,14 +206,6 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
                                               v_cache, 
                                               attn_metadata.block_table, 
                                               attn_metadata.step);
-      // LOG(INFO) << "after decoder_reshape_and_cache.";
-      // LOG(INFO) << "begin prepare for unshared.";
-      // q_seq_len一般为1，因为unshared,beam不算seq
-      // torch::Tensor unshared_lse = 
-      //   torch::zeros({query.size(0), query.size(1), 1}, fp32_options);
-      // // LOG(INFO) << "unshared_lse.shape: " << unshared_lse.sizes();
-      // torch::Tensor unshared_o = 
-      //   torch::zeros_like(output);
       torch::Tensor unshared_lse = attn_metadata.unshared_lse;
       torch::Tensor unshared_o = attn_metadata.unshared_o;
       
@@ -285,9 +255,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
       // combine
       unshared_o = unshared_o.view({-1, num_heads_, head_size_});
       // LOG(INFO) << "unshared_o.shape: " << unshared_o.sizes();
-      
-      output = lse_combine(shared_o, shared_lse, 
-                                    unshared_o, unshared_lse);
+      xllm::kernel::cuda::lse_combine(output, shared_o, shared_lse, unshared_o, unshared_lse);
       // LOG(INFO) << "output: " << output;
       // LOG(FATAL) << "after batch_decode.";
     } else {
