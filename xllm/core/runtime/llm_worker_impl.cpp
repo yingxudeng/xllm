@@ -340,7 +340,8 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
         // 更新q_seq_len，原来保留的是prefill的seq_len，需要改成decode的
         // 其次，因为shared对beam_size和num_heads做了合轴，因此seq_len实际变成了beam_size
         // LOG(INFO) << "num_seq: " << num_seq;
-        input.input_params.q_seq_lens = torch::arange(batch + 1, int_options) * beam_width;  
+        // input.input_params.q_seq_lens = torch::arange(batch + 1, int_options) * beam_width;
+        input.input_params.q_seq_lens = torch::arange(batch + 1, int_options);  
         // input.input_params.q_seq_lens = torch::arange(batch + 1, int_options) * beam_width;  
         
       } 
@@ -386,7 +387,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
                                batch, 
                                round
                                );
-      LOG(INFO) << "after beam_search.";
+      // LOG(INFO) << "after beam_search.";
       // LOG(INFO) << "out_log_probs: " << out_log_probs;
       // LOG(INFO) << "out_token_ids: " << out_token_ids;
       // LOG(INFO) << "out_token_index: " << out_token_index;
