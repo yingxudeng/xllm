@@ -343,8 +343,20 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
         // input.input_params.q_seq_lens = torch::arange(batch + 1, int_options) * beam_width;
         input.input_params.q_seq_lens = torch::arange(batch + 1, int_options);  
         // input.input_params.q_seq_lens = torch::arange(batch + 1, int_options) * beam_width;  
-        
+        // 当batch和beam都确认下来的时候，就可以决定paged的indptr和indices了，且值是固定的，也不会随着step变化
+        auto batch_offsets = input.input_params.paged_kv_indices;
+        batch_offsets = batch_offsets.unsqueeze(1).expand({-1, beam_width_init});
+        auto beam_offsets = torch::arange(beam_width_init, input.input_params.paged_kv_indices.options());
+        auto batch_beam_offsets = batch_offsets * beam_width_init + beam_offsets;
+
+        input.input_params.paged_kv_indices = 
+          batch_beam_offsets.flatten();
+        input.input_params.paged_kv_indptr = 
+          torch::arange(batch * beam_width_init + 1, input.input_params.paged_kv_indptr.options());
+        // 至于last_page_len，应该就是beam_width个step + 1，所以这三个参数都可以放在layer外面设置，非layer内
       } 
+      input.input_params.paged_kv_last_page_len = 
+        torch::full({batch * beam_width_init}, round + 1, input.input_params.paged_kv_last_page_len.options());
       // else {
         
         

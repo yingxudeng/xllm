@@ -21,14 +21,6 @@ limitations under the License.
 DECLARE_bool(enable_chunked_prefill);
 
 namespace {
-torch::Tensor select_target_kv_cache(torch::Tensor kv_cache, 
-                                     torch::Tensor block_table) {
-  torch::Tensor indices = block_table.flatten().to(torch::kLong);
-  // LOG(INFO) << "indices: " << indices;
-  torch::Tensor selected_cache = kv_cache.index_select(0, indices);
-  // LOG(INFO) << "selected_cache.shape: " << selected_cache.sizes();
-  return selected_cache;
-}
 
 torch::Tensor lse_combine(torch::Tensor shared_o, 
                           torch::Tensor shared_lse, 
@@ -272,48 +264,19 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
       // LOG(INFO) << "query.shape: " << query.sizes();
       unshared_attention_params.query = query;
       unshared_attention_params.output = unshared_o;
-      // k_cache: [max_num_request, beam_size, max_decode_step, kv_heads, head_dim]
-      // 需要把kv_cache的第0维度变成batch_size，先用block_table过滤一遍
-      
-      // [max_request , beam_size, max_decode_step, kv_heads, head_dim]
-      // -> [batch_size, beam_size, max_decode_step, kv_heads, head_dim]
-      unshared_attention_params.k_cache = 
-        select_target_kv_cache(k_cache, attn_metadata.block_table);
-      // LOG(INFO) << "after select_target_kv_cache k.";
-      unshared_attention_params.v_cache = 
-        select_target_kv_cache(v_cache, attn_metadata.block_table);
-      // LOG(INFO) << "after select_target_kv_cache v.";
-      // [batch_size, beam_size, max_decode_step, kv_heads, head_dim]
-      
-      int64_t max_decode_step = unshared_attention_params.k_cache.size(2);
-      
-      // 转为total_beam
-      // [batch_size * beam_size, max_decode_step, kv_heads, head_dim]
-      unshared_attention_params.k_cache = 
-        unshared_attention_params.k_cache.view({-1, max_decode_step, num_kv_heads_, head_size_});
-      unshared_attention_params.v_cache = 
-        (*(unshared_attention_params.v_cache)).view({-1, max_decode_step, num_kv_heads_, head_size_});
-      // LOG(INFO) << "unshared_attention_params.k_cache.shape: "
-      //           << unshared_attention_params.k_cache.sizes();
-      // LOG(INFO) << "unshared_attention_params.v_cache.shape: "
-      //           << (*(unshared_attention_params.v_cache)).sizes();
-      
-      // 这个应该是batch_size * beam_size粒度的，当作并行轴来处理
-      // 实际的计算是NHD，既[1, num_heads, head_dim] * [max_decode_step, kv_heads, head_dim]
-      // 这个是其实是拍平的block_table值，所以为arange(0, batch_size * beam_size)
-      // unshared_attention_params.paged_kv_indices = attn_metadata.paged_kv_indices;
-      unshared_attention_params.paged_kv_indices = 
-        torch::arange(total_beam, attn_metadata.paged_kv_indices.options());
-      // 这个属性代表的应该是block_table的累加值，所以为arange(0, batch_size * beam_size + 1)
-      // unshared_attention_params.paged_kv_indptr = attn_metadata.paged_kv_indptr;
-      unshared_attention_params.paged_kv_indptr =
-        torch::arange(total_beam + 1, attn_metadata.paged_kv_indptr.options());
-      // 这个属性代表的是尾块的seq_ken，当前一个block相当于有step + 1个有效值，所以这个应该是batch_size * beam_size 个step + 1
-      // unshared_attention_params.paged_kv_last_page_len =
-      //     attn_metadata.paged_kv_last_page_len;
-      unshared_attention_params.paged_kv_last_page_len =
-          torch::full({total_beam}, attn_metadata.step + 1, attn_metadata.paged_kv_last_page_len.options());
-      
+
+      int64_t max_decode_step = k_cache.size(2);
+
+      k_cache = k_cache.view({-1, max_decode_step, num_kv_heads_, head_size_});
+      v_cache = v_cache.view({-1, max_decode_step, num_kv_heads_, head_size_});
+
+      unshared_attention_params.k_cache = k_cache;
+      unshared_attention_params.v_cache = v_cache;
+
+      unshared_attention_params.paged_kv_indices = attn_metadata.paged_kv_indices;
+      unshared_attention_params.paged_kv_indptr = attn_metadata.paged_kv_indptr;
+      unshared_attention_params.paged_kv_last_page_len = attn_metadata.paged_kv_last_page_len;
+
       xllm::kernel::batch_decode(unshared_attention_params);
       // LOG(INFO) << "after kernel::batch_decode.";
       // combine
