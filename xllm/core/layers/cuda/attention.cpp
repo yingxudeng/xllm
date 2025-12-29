@@ -231,11 +231,14 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
       // LOG(INFO) << "after decoder_reshape_and_cache.";
       // LOG(INFO) << "begin prepare for unshared.";
       // q_seq_len一般为1，因为unshared,beam不算seq
-      torch::Tensor unshared_lse = 
-        torch::zeros({query.size(0), query.size(1), 1}, fp32_options);
-      // LOG(INFO) << "unshared_lse.shape: " << unshared_lse.sizes();
-      torch::Tensor unshared_o = 
-        torch::zeros_like(output);
+      // torch::Tensor unshared_lse = 
+      //   torch::zeros({query.size(0), query.size(1), 1}, fp32_options);
+      // // LOG(INFO) << "unshared_lse.shape: " << unshared_lse.sizes();
+      // torch::Tensor unshared_o = 
+      //   torch::zeros_like(output);
+      torch::Tensor unshared_lse = attn_metadata.unshared_lse;
+      torch::Tensor unshared_o = attn_metadata.unshared_o;
+      
       xllm::kernel::AttentionParams unshared_attention_params;
       // auto unshared_lse = std::nullopt;
       

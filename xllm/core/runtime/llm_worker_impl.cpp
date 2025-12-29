@@ -242,6 +242,11 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
     unshared_k_cache.push_back(kv_caches_[i].get_k_cache());
     unshared_v_cache.push_back(kv_caches_[i].get_v_cache());
   }
+
+  int32_t num_heads = context_.get_model_args().n_heads();
+  int32_t head_dim = context_.get_model_args().head_dim();
+  input.input_params.num_heads = num_heads;
+  input.input_params.head_dim = head_dim;
   int32_t batch = input.input_params.num_sequences;
 
   int32_t beam_width_init = input.beam_width;
@@ -284,6 +289,8 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
                     input.input_params.current_round_tensor_list.size())) {
       input.input_params.current_round_tensor =
           input.input_params.current_round_tensor_list[round];
+      // 对于llm_worker_impl，round为0， 1， 2
+      // 对于qwen3来说，current_round为-1, 0, 1
       input.input_params.current_round = round - 1;
     }
 

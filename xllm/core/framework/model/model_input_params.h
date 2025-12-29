@@ -335,6 +335,8 @@ struct ModelInputParams {
   // current round for step-level decode
   int32_t current_round = 0;
   int32_t total_round = 0;
+  int32_t num_heads = 0;
+  int32_t head_dim = 0;
 };
 
 }  // namespace xllm
