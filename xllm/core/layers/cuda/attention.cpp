@@ -199,13 +199,12 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
       key = key.view({batch_size, beam_size, num_kv_heads_, head_size_});
       value = value.view({batch_size, beam_size, num_kv_heads_, head_size_});
       
-      
-      rec_kernel_->decoder_reshape_and_cache(key, 
-                                              value, 
-                                              k_cache, 
-                                              v_cache, 
-                                              attn_metadata.block_table, 
-                                              attn_metadata.step);
+      xllm::kernel::cuda::decoder_reshape_and_cache(key, 
+                                                    value, 
+                                                    k_cache, 
+                                                    v_cache, 
+                                                    attn_metadata.block_table, 
+                                                    attn_metadata.step);
       torch::Tensor unshared_lse = attn_metadata.unshared_lse;
       torch::Tensor unshared_o = attn_metadata.unshared_o;
       

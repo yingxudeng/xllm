@@ -91,51 +91,10 @@ void RecTorchKernel::decoder_reshape_and_cache(torch::Tensor proj_k,          //
                                                torch::Tensor unshared_v_cache,   // [max_num_request, beam_size, max_decode_step, kv_heads, head_dim]
                                                torch::Tensor block_table,     // [batch_size, 1]
                                                uint32_t step) {
-  // 维度检查
-  TORCH_CHECK(proj_k.dim() == 4, "proj_k must be 4-dimensional");
-  TORCH_CHECK(proj_v.dim() == 4, "proj_v must be 4-dimensional");
-  TORCH_CHECK(unshared_k_cache.dim() == 5, "unshared_k_cache must be 5-dimensional");
-  TORCH_CHECK(unshared_v_cache.dim() == 5, "unshared_v_cache must be 5-dimensional");
-  TORCH_CHECK(block_table.dim() == 2, "block_table must be 2-dimensional");
-  TORCH_CHECK(block_table.size(1) == 1, "second dim must be 1");
-  
-  int64_t batch_size = proj_k.size(0);
-  int64_t beam_size = proj_k.size(1);
-  int64_t kv_heads = proj_k.size(2);
-  int64_t head_dim = proj_k.size(3);
-  int64_t max_decode_step = unshared_k_cache.size(2);
-  
-  // 形状兼容性检查
-  TORCH_CHECK(proj_v.sizes() == proj_k.sizes(), "proj_v and proj_k must have same shape");
-  TORCH_CHECK(block_table.size(0) == batch_size, "block_table size must match batch_size");
-  TORCH_CHECK(step >= 0 && step < max_decode_step, "step must be in valid range");
-  
-  for (int64_t i = 0; i < batch_size; ++i) {
-      int64_t batch_id = i;
-      
-      // 选择当前batch的数据
-      torch::Tensor target_batch_proj_k = proj_k.select(0, batch_id);  // [beam_size, kv_heads, head_dim]
-      torch::Tensor target_batch_proj_v = proj_v.select(0, batch_id);  // [beam_size, kv_heads, head_dim]
-      
-      // 获取对应的block索引
-      int64_t block_id = block_table[batch_id][0].item<int64_t>();
-      
-      // 边界检查
-      TORCH_CHECK(block_id >= 0 && block_id < unshared_k_cache.size(0), 
-                  "block_id out of range");
-      
-      // 将数据复制到缓存中
-      torch::Tensor target_block_unshared_k_cache = 
-        unshared_k_cache.select(0, block_id);     // [beam_size, max_decode_step, kv_heads, head_dim
-      torch::Tensor target_block_unshared_v_cache = 
-        unshared_v_cache.select(0, block_id);     // [beam_size, max_decode_step, kv_heads, head_dim
-
-      target_block_unshared_k_cache.select(1, step).copy_(target_batch_proj_k);
-      target_block_unshared_v_cache.select(1, step).copy_(target_batch_proj_v);
-      
-      // unshared_k_cache.select(0, block_id).select(2, step).copy_(target_batch_proj_k);
-      // unshared_v_cache.select(0, block_id).select(2, step).copy_(target_batch_proj_v);
-  }
+  // 使用融合的 CUDA kernel 来优化性能
+  // 将所有 batch 的复制操作融合到一个 kernel 中，减少 kernel launch 开销
+  // xllm::kernel::cuda::decoder_reshape_and_cache(
+  //     proj_k, proj_v, unshared_k_cache, unshared_v_cache, block_table, step);
 }
 
 void RecTorchKernel::shared(torch::Tensor q,              // [batch_size, beam_size, num_heads, head_dim]
