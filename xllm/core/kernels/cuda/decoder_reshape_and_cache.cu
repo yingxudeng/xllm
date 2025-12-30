@@ -21,15 +21,16 @@ limitations under the License.
 
 namespace {
 
-// 融合的 decoder reshape and cache kernel
-// 将 proj_k 和 proj_v 复制到 unshared_k_cache 和 unshared_v_cache 的指定位置
-// 输入:
-//   proj_k: [batch_size, beam_size, kv_heads, head_dim]
-//   proj_v: [batch_size, beam_size, kv_heads, head_dim]
-//   unshared_k_cache: [max_num_request, beam_size, max_decode_step, kv_heads, head_dim]
-//   unshared_v_cache: [max_num_request, beam_size, max_decode_step, kv_heads, head_dim]
-//   block_table: [batch_size] - 每个 batch 对应的 block_id
-//   step: 当前 decode step
+// Fused decoder reshape and cache kernel.
+// Copies proj_k and proj_v into unshared_k_cache / unshared_v_cache at the
+// positions specified by block_table and step.
+// Inputs:
+//   proj_k           : [batch_size, beam_size, kv_heads, head_dim]
+//   proj_v           : [batch_size, beam_size, kv_heads, head_dim]
+//   unshared_k_cache : [max_num_request, beam_size, max_decode_step, kv_heads, head_dim]
+//   unshared_v_cache : [max_num_request, beam_size, max_decode_step, kv_heads, head_dim]
+//   block_table      : [batch_size] - block_id per batch
+//   step             : current decode step
 template <typename scalar_t>
 __global__ void decoder_reshape_and_cache_kernel(
     const scalar_t* __restrict__ proj_k,           // [batch_size, beam_size, kv_heads, head_dim]
@@ -44,44 +45,41 @@ __global__ void decoder_reshape_and_cache_kernel(
     const int64_t max_decode_step,
     const int64_t max_num_request,
     const uint32_t step) {
-  
-  // 每个 thread 处理一个 (batch, beam, kv_head, head_dim) 的元素
-  // 或者每个 thread 处理一个 (batch, beam, kv_head) 的完整 head_dim（更高效）
-  
-  // 计算全局索引
-  const int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
   const int64_t total_elements = batch_size * beam_size * kv_heads;
-  
+  const int64_t idx = static_cast<int64_t>(blockIdx.y);
+
   if (idx >= total_elements) {
     return;
   }
-  
-  // 分解索引
+
+  // Decode flattened index -> (batch, beam, kv_head)
   const int64_t batch_idx = idx / (beam_size * kv_heads);
   const int64_t remaining = idx % (beam_size * kv_heads);
   const int64_t beam_idx = remaining / kv_heads;
   const int64_t kv_head_idx = remaining % kv_heads;
-  
-  // 获取对应的 block_id
+
   const int64_t block_id = block_table[batch_idx];
-  
-  // 边界检查
+
+  // Guard invalid block id
   if (block_id < 0 || block_id >= max_num_request) {
     return;
   }
-  
-  // 计算源和目标的基址索引
-  // proj_k[batch_idx, beam_idx, kv_head_idx, :] 的基址
-  const int64_t src_base = ((batch_idx * beam_size + beam_idx) * kv_heads + kv_head_idx) * head_dim;
-  
-  // unshared_k_cache[block_id, beam_idx, step, kv_head_idx, :] 的基址
-  const int64_t dst_k_base = (((block_id * beam_size + beam_idx) * max_decode_step + step) * kv_heads + kv_head_idx) * head_dim;
-  const int64_t dst_v_base = (((block_id * beam_size + beam_idx) * max_decode_step + step) * kv_heads + kv_head_idx) * head_dim;
-  
-  // 复制整个 head_dim（向量化复制，更高效）
-  for (int64_t d = 0; d < head_dim; ++d) {
-    unshared_k_cache[dst_k_base + d] = proj_k[src_base + d];
-    unshared_v_cache[dst_v_base + d] = proj_v[src_base + d];
+
+  // Compute base indices.
+  // proj_k[batch_idx, beam_idx, kv_head_idx, :]
+  const int64_t src_base =
+      ((batch_idx * beam_size + beam_idx) * kv_heads + kv_head_idx) * head_dim;
+
+  // unshared_*_cache[block_id, beam_idx, step, kv_head_idx, :]
+  const int64_t dst_base =
+      (((block_id * beam_size + beam_idx) * max_decode_step + step) * kv_heads +
+       kv_head_idx) *
+      head_dim;
+
+  // Copy the full head_dim with threads parallelizing along D.
+  for (int64_t d = threadIdx.x; d < head_dim; d += blockDim.x) {
+    unshared_k_cache[dst_base + d] = proj_k[src_base + d];
+    unshared_v_cache[dst_base + d] = proj_v[src_base + d];
   }
 }
 
@@ -95,7 +93,7 @@ void decoder_reshape_and_cache(torch::Tensor proj_k,
                                 torch::Tensor unshared_v_cache,
                                 torch::Tensor block_table,
                                 uint32_t step) {
-  // 输入检查
+
   TORCH_CHECK(proj_k.dim() == 4, "proj_k must be 4-dimensional");
   TORCH_CHECK(proj_v.dim() == 4, "proj_v must be 4-dimensional");
   TORCH_CHECK(unshared_k_cache.dim() == 5, "unshared_k_cache must be 5-dimensional");
@@ -110,7 +108,7 @@ void decoder_reshape_and_cache(torch::Tensor proj_k,
   const int64_t max_num_request = unshared_k_cache.size(0);
   const int64_t max_decode_step = unshared_k_cache.size(2);
   
-  // 形状兼容性检查
+
   TORCH_CHECK(proj_v.sizes() == proj_k.sizes(), "proj_v and proj_k must have same shape");
   TORCH_CHECK(block_table.size(0) == batch_size, "block_table size must match batch_size");
   TORCH_CHECK(step >= 0 && step < max_decode_step, "step must be in valid range");
@@ -123,16 +121,17 @@ void decoder_reshape_and_cache(torch::Tensor proj_k,
   const at::cuda::OptionalCUDAGuard device_guard(device_of(proj_k));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   
-  // 准备 block_table（只取第一列，转换为 int64_t）
+
   torch::Tensor block_table_flat = block_table.select(1, 0).to(torch::kInt64);
   
-  // Launch kernel
+  // Launch kernel: one block per (batch, beam, kv_head), threads along head_dim.
   const int64_t total_elements = batch_size * beam_size * kv_heads;
-  const int threads_per_block = 256;
-  const int blocks = (total_elements + threads_per_block - 1) / threads_per_block;
+  const int threads_per_block = 128;
+  dim3 block_dim(threads_per_block, 1, 1);
+  dim3 grid_dim(1, static_cast<unsigned int>(total_elements), 1);
   
   DISPATCH_FLOATING_TYPES(proj_k.scalar_type(), "decoder_reshape_and_cache_kernel", [&] {
-    decoder_reshape_and_cache_kernel<scalar_t><<<blocks, threads_per_block, 0, stream>>>(
+    decoder_reshape_and_cache_kernel<scalar_t><<<grid_dim, block_dim, 0, stream>>>(
         proj_k.data_ptr<scalar_t>(),
         proj_v.data_ptr<scalar_t>(),
         unshared_k_cache.data_ptr<scalar_t>(),
@@ -151,4 +150,3 @@ void decoder_reshape_and_cache(torch::Tensor proj_k,
 }
 
 } // namespace xllm::kernel::cuda
-

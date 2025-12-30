@@ -22,15 +22,20 @@ limitations under the License.
 
 namespace {
 
-// 融合的 LSE combine kernel
-// 每个 thread 处理一个 (batch_idx, head_idx) 的完整 head_dim
-// 输入:
-//   shared_o: [B, H, D] - shared attention output
-//   shared_lse: [B, H, 1] - shared log-sum-exp
-//   unshared_o: [B, H, D] - unshared attention output
-//   unshared_lse: [B, H, 1] - unshared log-sum-exp
-// 输出:
-//   output: [B, H, D] - combined output
+// Fused log-sum-exp combine kernel.
+//
+// Layout and strategy (aligned with the TileLang version):
+//   - Each block is responsible for one (batch_idx, head_idx) pair, i.e. one
+//     row in the flattened [B * H, D] layout.
+//   - Threads within a block parallelize along the head_dim (D) dimension to
+//     ensure coalesced global memory access.
+//
+// Tensors:
+//   shared_o    : [B, H, D] - shared attention output
+//   shared_lse  : [B, H, 1] - shared log-sum-exp (FP32)
+//   unshared_o  : [B, H, D] - unshared attention output
+//   unshared_lse: [B, H, 1] - unshared log-sum-exp (FP32)
+//   output      : [B, H, D] - combined output
 template <typename scalar_t>
 __global__ void lse_combine_kernel(
     scalar_t* __restrict__ output,           // [B, H, D]
@@ -41,42 +46,39 @@ __global__ void lse_combine_kernel(
     const int64_t B,    // batch_size * beam_size
     const int64_t H,    // num_heads
     const int64_t D) {  // head_dim
-  
-  // 每个 thread 处理一个 (batch_idx, head_idx) 的完整 head_dim
-  const int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
   const int64_t total_elements = B * H;
-  
+  const int64_t idx = static_cast<int64_t>(blockIdx.y);
+
   if (idx >= total_elements) {
     return;
   }
-  
-  const int64_t batch_idx = idx / H;
-  const int64_t head_idx = idx % H;
-  
-  // 计算 LSE 相关的值（融合所有中间计算）
-  const float shared_lse_val = static_cast<float>(shared_lse[idx]);
-  const float unshared_lse_val = static_cast<float>(unshared_lse[idx]);
-  
-  // 1. 计算 element-wise 最大 LSE
-  const float li_max = fmaxf(shared_lse_val, unshared_lse_val);
-  
-  // 2. 计算以 2 为底的指数差
-  const float exp_li = exp2f(shared_lse_val - li_max);
-  const float exp_lij = exp2f(unshared_lse_val - li_max);
-  
-  // 3. 计算合并后的新 LSE
-  const float li_new = li_max + log2f(exp_li + exp_lij);
-  
-  // 4. 计算归一化权重
-  const float wi = exp2f(shared_lse_val - li_new);
-  const float wij = exp2f(unshared_lse_val - li_new);
-  
-  // 5. 加权合并输出（每个 thread 处理完整的 head_dim）
+
+  // Load LSE scalars for this (batch, head) pair.
+  const float shared_lse_val = shared_lse[idx];
+  const float unshared_lse_val = unshared_lse[idx];
+
+  // 1. Compute element-wise max LSE.
+  const float lse_max = fmaxf(shared_lse_val, unshared_lse_val);
+
+  // 2. Compute base-2 exponentials relative to max.
+  const float exp_shared = exp2f(shared_lse_val - lse_max);
+  const float exp_unshared = exp2f(unshared_lse_val - lse_max);
+
+  // 3. Compute merged LSE.
+  const float lse_new = lse_max + log2f(exp_shared + exp_unshared);
+
+  // 4. Compute normalized weights.
+  const float w_shared = exp2f(shared_lse_val - lse_new);
+  const float w_unshared = exp2f(unshared_lse_val - lse_new);
+
+  // 5. Weighted combine along the head_dim.
   const int64_t base_idx = idx * D;
-  for (int64_t d = 0; d < D; ++d) {
+  // Threads in the block parallelize along D with stride blockDim.x for
+  // coalesced global memory access.
+  for (int64_t d = threadIdx.x; d < D; d += blockDim.x) {
     const float shared_val = static_cast<float>(shared_o[base_idx + d]);
     const float unshared_val = static_cast<float>(unshared_o[base_idx + d]);
-    const float combined = wi * shared_val + wij * unshared_val;
+    const float combined = w_shared * shared_val + w_unshared * unshared_val;
     output[base_idx + d] = static_cast<scalar_t>(combined);
   }
 }
@@ -85,12 +87,19 @@ __global__ void lse_combine_kernel(
 
 namespace xllm::kernel::cuda {
 
+// Host wrapper for the fused LSE combine kernel.
+//
+// All inputs are expected to be on the same CUDA device:
+//   shared_o    : [B, H, D], floating type (including Half/BFloat16)
+//   shared_lse  : [B, H, 1], float32
+//   unshared_o  : [B, H, D], same type/shape as shared_o
+//   unshared_lse: [B, H, 1], float32
+//   output      : [B, H, D], will be resized/allocated as needed.
 void lse_combine(torch::Tensor output,
                  torch::Tensor shared_o,
                  torch::Tensor shared_lse,
                  torch::Tensor unshared_o,
                  torch::Tensor unshared_lse) {
-  // 输入检查
   TORCH_CHECK(shared_o.dim() == 3, "shared_o must be 3D [B, H, D]");
   TORCH_CHECK(unshared_o.dim() == 3, "unshared_o must be 3D [B, H, D]");
   TORCH_CHECK(shared_lse.dim() == 3, "shared_lse must be 3D [B, H, 1]");
@@ -107,11 +116,11 @@ void lse_combine(torch::Tensor output,
   TORCH_CHECK(unshared_lse.scalar_type() == torch::kFloat32,
               "unshared_lse must be float32");
   TORCH_CHECK(shared_lse.size(0) == B && shared_lse.size(1) == H && shared_lse.size(2) == 1,
-              "shared_lse shape mismatch");
+              "shared_lse shape mismatch, expected [B, H, 1]");
   TORCH_CHECK(unshared_lse.size(0) == B && unshared_lse.size(1) == H && unshared_lse.size(2) == 1,
-              "unshared_lse shape mismatch");
+              "unshared_lse shape mismatch, expected [B, H, 1]");
   
-  // 确保 output 的形状和类型正确
+  // Ensure output has the correct shape and dtype.
   if (!output.defined() || output.sizes() != shared_o.sizes()) {
     output = torch::empty_like(shared_o);
   }
@@ -119,13 +128,14 @@ void lse_combine(torch::Tensor output,
   const at::cuda::OptionalCUDAGuard device_guard(device_of(shared_o));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   
-  // Launch kernel
+  // Launch kernel: one block per (batch, head) pair, threads along D.
   const int64_t total_elements = B * H;
-  const int threads_per_block = 256;
-  const int blocks = (total_elements + threads_per_block - 1) / threads_per_block;
+  const int threads_per_block = 128;
+  dim3 block_dim(threads_per_block, 1, 1);
+  dim3 grid_dim(1, static_cast<unsigned int>(total_elements), 1);
   
   DISPATCH_FLOATING_TYPES(shared_o.scalar_type(), "lse_combine_kernel", [&] {
-    lse_combine_kernel<scalar_t><<<blocks, threads_per_block, 0, stream>>>(
+    lse_combine_kernel<scalar_t><<<grid_dim, block_dim, 0, stream>>>(
         output.data_ptr<scalar_t>(),
         shared_o.data_ptr<scalar_t>(),
         shared_lse.data_ptr<float>(),
