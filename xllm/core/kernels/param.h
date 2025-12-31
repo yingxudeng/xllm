@@ -283,9 +283,11 @@ struct AttentionParams {
   // Supported values: -1 (no quant), 4 (int4), 8 (int8).
   // If 4, k_cache and v_cache shapes are adjusted for int4 packing.
   int64_t kv_cache_quant_bit_size = -1;
-  // Layer ID for plan reuse optimization. Default: 0.
-  // When layer_id=0, plan is computed and cached; when layer_id>0, cached plan is reused.
-  int64_t layer_id = 0;
+  // Cached plan_info for batch_prefill optimization (reused across layers).
+  // Managed by AttentionMetadata, passed through AttentionParams.
+  std::optional<torch::Tensor> plan_info;
+  // Flag to indicate if this is a decode shared call (for debugging/logging)
+  bool is_decode_shared = false;
 
   void print() const {
     LOG(INFO) << "========== AttentionParams ==========";

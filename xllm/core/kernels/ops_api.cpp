@@ -166,7 +166,8 @@ void batch_prefill(AttentionParams& params) {
                       params.output,
                       params.output_lse,
                       params.enable_cuda_graph,
-                      params.layer_id);
+                      params.plan_info,
+                      params.is_decode_shared);
 #elif defined(USE_ILU)
   ilu::batch_prefill(params.query,
                      params.key,

@@ -173,6 +173,11 @@ struct ModelInputParams {
 
     params.batch_id = batch_id;
 
+    // Copy plan_info if present
+    if (plan_info.has_value()) {
+      params.plan_info = plan_info.value();
+    }
+
     return params;
   }
 
@@ -337,6 +342,10 @@ struct ModelInputParams {
   int32_t total_round = 0;
   int32_t num_heads = 0;
   int32_t head_dim = 0;
+
+  // Cached plan_info for batch_prefill optimization (reused across layers)
+  // Generated in llm_worker_impl.cpp for prefill mode
+  std::optional<torch::Tensor> plan_info;
 };
 
 }  // namespace xllm

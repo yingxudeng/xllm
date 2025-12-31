@@ -145,7 +145,6 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
       for (size_t i = 0; i < layers_.size(); i++) {
         {
           LLM_NVTX_RANGE_COLOR("qwen3_layer_prepare", 0xFF808080);  // Gray
-          attn_metadata.layer_id = static_cast<int64_t>(i);
           if (FLAGS_max_decode_rounds) {
             auto target_layer_shared_k_cache = input_params_new.shared_k_caches[i];
             auto target_layer_shared_v_cache = input_params_new.shared_v_caches[i];

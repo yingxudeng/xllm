@@ -49,6 +49,9 @@ AttentionMetadata AttentionMetadata::build(const ModelInputParams& params,
 
   attn_metadata.is_dummy = (params.q_max_seq_len == 0);
 
+  // Copy plan_info from params if present
+  attn_metadata.plan_info = params.plan_info;
+
   // for xattention
   if (params.current_round >= 0) {
     auto fp32_options = 

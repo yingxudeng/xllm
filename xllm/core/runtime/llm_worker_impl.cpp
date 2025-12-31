@@ -30,10 +30,12 @@ limitations under the License.
 #include "common/metrics.h"
 #include "common/types.h"
 #include "core/common/global_flags.h"
+#include "core/common/nvtx_helper.h"
 #include "framework/kv_cache/kv_cache.h"
 #include "framework/model/model_input_params.h"
 #include "framework/state_dict/state_dict.h"
 #if defined(USE_CUDA) || defined(USE_ILU)
+#include "kernels/cuda/cuda_ops_api.h"
 #include "layers/cuda/flashinfer_workspace.h"
 #endif
 #include "models/model_registry.h"
@@ -243,8 +245,10 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
     unshared_v_cache.push_back(kv_caches_[i].get_v_cache());
   }
 
-  int32_t num_heads = context_.get_model_args().n_heads();
-  int32_t head_dim = context_.get_model_args().head_dim();
+  int64_t num_heads = context_.get_model_args().n_heads();
+  int64_t head_dim = context_.get_model_args().head_dim();
+  int64_t num_kv_heads = context_.get_model_args().n_kv_heads().value_or(num_heads);
+
   input.input_params.num_heads = num_heads;
   input.input_params.head_dim = head_dim;
   int32_t batch = input.input_params.num_sequences;
@@ -342,13 +346,35 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
         // top_logprobs = sample_output.top_logprobs.reshape({-1, 1});
 
         // 下面这些应该不是step=0才做的，应该是所有都要做
+        input.input_params.q_seq_lens = torch::arange(batch + 1, int_options);  
+        #if defined(USE_CUDA)
+        {
+          LLM_NVTX_RANGE_COLOR("generate_prefill_plan_info", 0xFF00FF00);  // Green
+          
+          input.input_params.plan_info =
+              kernel::cuda::generate_prefill_plan_info(
+                  layer::FlashinferWorkspace::get_instance().get_float_workspace_buffer(),
+                  layer::FlashinferWorkspace::get_instance().get_int_workspace_buffer(),
+                  layer::FlashinferWorkspace::get_instance().get_page_locked_int_workspace_buffer(),
+                  input.input_params.q_seq_lens,
+                  input.input_params.kv_seq_lens,
+                  num_heads * beam_width_init, // TODO 应该是num_heads，但是shared当前实现依赖beam_size
+                  num_kv_heads,
+                  head_dim,
+                  head_dim,
+                  dtype_,
+                  dtype_,
+                  dtype_,
+                  /*enable_cuda_graph=*/false);
+        }
         
+        #endif
 
         // 更新q_seq_len，原来保留的是prefill的seq_len，需要改成decode的
         // 其次，因为shared对beam_size和num_heads做了合轴，因此seq_len实际变成了beam_size
         // LOG(INFO) << "num_seq: " << num_seq;
         // input.input_params.q_seq_lens = torch::arange(batch + 1, int_options) * beam_width;
-        input.input_params.q_seq_lens = torch::arange(batch + 1, int_options);  
+        
         // input.input_params.q_seq_lens = torch::arange(batch + 1, int_options) * beam_width;  
         // 当batch和beam都确认下来的时候，就可以决定paged的indptr和indices了，且值是固定的，也不会随着step变化
         auto batch_offsets = input.input_params.paged_kv_indices;

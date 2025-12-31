@@ -112,7 +112,6 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
       attention_params.window_size_left = sliding_window_;
       attention_params.scale = scale_;
       attention_params.compute_dtype = attn_metadata.compute_dtype;
-      attention_params.layer_id = attn_metadata.layer_id;
       // for flashinfer
       attention_params.float_workspace_buffer =
           FlashinferWorkspace::get_instance().get_float_workspace_buffer();
@@ -125,16 +124,18 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
       attention_params.q_cu_seq_lens = attn_metadata.q_cu_seq_lens;
       // LOG(INFO) << "attn_metadata.is_prefill: " << attn_metadata.is_prefill;
       // TODO: support chunked prefill
-      
+      attention_params.plan_info = attn_metadata.plan_info;
       attention_params.key = key;
       attention_params.value = value;
       // LOG(INFO) << "key.shape: " << key.sizes();
       // LOG(INFO) << "value.shape: " << value.sizes();
       xllm::kernel::batch_prefill(attention_params);
+      
     }
   } else {
     LLM_NVTX_RANGE("attention_decode");
-    
+    // LOG(INFO) << "query: " << query;
+    // LOG(FATAL) << "after batch_prefill.";
     if (FLAGS_max_decode_rounds > 0) {
       LLM_NVTX_RANGE("attention_decode_with_shared");
       
@@ -190,7 +191,6 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
         shared_attention_params.window_size_left = sliding_window_;
         shared_attention_params.scale = scale_;
         shared_attention_params.compute_dtype = attn_metadata.compute_dtype;
-        shared_attention_params.layer_id = attn_metadata.layer_id;
         // for flashinfer
         shared_attention_params.float_workspace_buffer =
             FlashinferWorkspace::get_instance().get_float_workspace_buffer();
@@ -209,6 +209,9 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
             
         shared_attention_params.key = attn_metadata.shared_k_cache;
         shared_attention_params.value = attn_metadata.shared_v_cache;
+
+        shared_attention_params.plan_info = attn_metadata.plan_info;
+        // shared_attention_params.is_decode_shared = true;
 
         xllm::kernel::batch_prefill(shared_attention_params);
       }
@@ -338,8 +341,8 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
         xllm::kernel::batch_decode(decode_attention_params);
       }
       
-      // LOG(INFO) << "output: " << output;
-      // LOG(FATAL) << "after batch_decode.";
+      LOG(INFO) << "output: " << output;
+      LOG(FATAL) << "after batch_decode.";
     }
 
   }

@@ -60,8 +60,9 @@ struct AttentionMetadata {
   torch::Tensor unshared_o;
   torch::Tensor unshared_lse;
   
-  // Layer ID for plan reuse optimization
-  int64_t layer_id = 0;
+  // Cached plan_info for batch_prefill optimization (reused across layers)
+  // Generated in llm_worker_impl.cpp for prefill mode
+  std::optional<torch::Tensor> plan_info;
 };
 
 }  // namespace layer
