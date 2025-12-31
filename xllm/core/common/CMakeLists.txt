@@ -12,6 +12,7 @@ cc_library(
     message.h
     metrics.h
     $<$<BOOL:${USE_NPU}>:mspti_helper.h>
+    $<$<BOOL:${USE_CUDA}>:nvtx_helper.h>
     options.h
     rate_limiter.h
     types.h
@@ -22,6 +23,7 @@ cc_library(
     global_flags.cpp
     metrics.cpp
     $<$<BOOL:${USE_NPU}>:mspti_helper.cpp>
+    $<$<BOOL:${USE_CUDA}>:nvtx_helper.cpp>
     options.cpp
     rate_limiter.cpp
     device_monitor.cpp
@@ -64,6 +66,11 @@ cc_test(
     glog::glog
 )
 target_link_libraries(common PRIVATE OpenSSL::SSL OpenSSL::Crypto protobuf::libprotobuf)
+if(USE_CUDA)
+  # nvToolsExt is part of CUDA Toolkit, link it directly
+  # The link_directories in main CMakeLists.txt should include CUDA lib64
+  target_link_libraries(common PRIVATE nvToolsExt)
+endif()
 add_dependencies(common brpc-static)
 
 

@@ -57,7 +57,8 @@ void batch_prefill(torch::Tensor float_workspace_buffer,
                    double sm_scale,
                    torch::Tensor output,
                    std::optional<torch::Tensor>& output_lse,
-                   bool enable_cuda_graph);
+                   bool enable_cuda_graph,
+                   int64_t layer_id);
 
 void batch_decode(torch::Tensor float_workspace_buffer,
                   torch::Tensor int_workspace_buffer,

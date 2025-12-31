@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <glog/logging.h>
 
+#include "common/nvtx_helper.h"
 #include <tuple>
 
 namespace {
@@ -115,8 +116,14 @@ torch::Tensor Qwen2AttentionImpl::forward(
     const torch::Tensor& hidden_states,
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache) {
+  LLM_NVTX_RANGE("Qwen2Attention_forward");
+  
   // 1. qkv projection
-  auto qkv = qkv_proj_->forward(hidden_states);
+  torch::Tensor qkv;
+  {
+    LLM_NVTX_RANGE_COLOR("qkv_proj", 0xFF808080);  // Gray
+    qkv = qkv_proj_->forward(hidden_states);
+  }
 
   auto q = qkv.slice(/*dim=*/-1, 0, q_size_);
   auto k = qkv.slice(/*dim=*/-1, q_size_, q_size_ + kv_size_);
@@ -126,26 +133,42 @@ torch::Tensor Qwen2AttentionImpl::forward(
 
   if (is_qwen3_style_) {
     // 2. q-norm
-    q = std::get<0>(q_norm_->forward(q));
+    {
+      LLM_NVTX_RANGE_COLOR("q_norm", 0xFF800080);  // Purple
+      q = std::get<0>(q_norm_->forward(q));
+    }
 
     // 3. k-norm
-    k = std::get<0>(k_norm_->forward(k));
+    {
+      LLM_NVTX_RANGE_COLOR("k_norm", 0xFF800080);  // Purple
+      k = std::get<0>(k_norm_->forward(k));
+    }
   }
   // LOG(INFO) << "before rotary_emb_.";
   // LOG(INFO) << "q.shape: " << q.sizes();
   // LOG(INFO) << "k.shape: " << k.sizes();
   // LOG(INFO) << "positions.shape: " << positions.sizes();
   // 4. rope
-  rotary_emb_->forward(q, k, positions, attn_metadata);
+  {
+    LLM_NVTX_RANGE_COLOR("rotary_emb", 0xFF008080);  // Teal
+    rotary_emb_->forward(q, k, positions, attn_metadata);
+  }
   q = q.view({T, q_size_});
   k = k.view({T, kv_size_});
   // LOG(INFO) << "inner qwen2_attention, k.shape: " << k.sizes();
   // LOG(INFO) << "v.shape: " << v.sizes();
   // 5. store k/v cache and do attention
-  auto out = std::get<0>(attn_->forward(attn_metadata, q, k, v, kv_cache));
+  torch::Tensor out;
+  {
+    LLM_NVTX_RANGE_COLOR("attention_core", 0xFFFF0000);  // Red
+    out = std::get<0>(attn_->forward(attn_metadata, q, k, v, kv_cache));
+  }
 
   // 6. output projection
-  return o_proj_->forward(out);
+  {
+    LLM_NVTX_RANGE_COLOR("o_proj", 0xFF008000);  // Green
+    return o_proj_->forward(out);
+  }
 }
 
 void Qwen2AttentionImpl::load_state_dict(const StateDict& state_dict) {

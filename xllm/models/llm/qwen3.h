@@ -16,6 +16,7 @@ limitations under the License.
 #pragma once
 
 #include "core/layers/qwen3_decoder_layer.h"
+#include "core/common/nvtx_helper.h"
 #include "llm_model_base.h"
 #include "core/common/global_flags.h"
 
@@ -139,26 +140,40 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
     
 
     std::optional<torch::Tensor> residual;
-    for (size_t i = 0; i < layers_.size(); i++) {
-      if (FLAGS_max_decode_rounds) {
-        auto target_layer_shared_k_cache = input_params_new.shared_k_caches[i];
-        auto target_layer_shared_v_cache = input_params_new.shared_v_caches[i];
+    {
+      LLM_NVTX_RANGE("qwen3_layers_loop");
+      for (size_t i = 0; i < layers_.size(); i++) {
+        {
+          LLM_NVTX_RANGE_COLOR("qwen3_layer_prepare", 0xFF808080);  // Gray
+          attn_metadata.layer_id = static_cast<int64_t>(i);
+          if (FLAGS_max_decode_rounds) {
+            auto target_layer_shared_k_cache = input_params_new.shared_k_caches[i];
+            auto target_layer_shared_v_cache = input_params_new.shared_v_caches[i];
 
-        attn_metadata.shared_k_cache = target_layer_shared_k_cache;
-        attn_metadata.shared_v_cache = target_layer_shared_v_cache;
-      }
-      auto& layer = layers_[i];
-      h = layer(h,
-                residual,
-                positions,
-                attn_metadata,
-                kv_caches[i],
-                input_params_new);
+            attn_metadata.shared_k_cache = target_layer_shared_k_cache;
+            attn_metadata.shared_v_cache = target_layer_shared_v_cache;
+          }
+        }
+        
+        {
+          LLM_NVTX_RANGE_COLOR("qwen3_layer_forward", 0xFF00FF00);  // Green
+          auto& layer = layers_[i];
+          h = layer(h,
+                    residual,
+                    positions,
+                    attn_metadata,
+                    kv_caches[i],
+                    input_params_new);
+        }
 
-      if (use_deepstack) {
-        if (deep_stacks.size() > 0 && i < deep_stacks.size()) {
-          h = deepstack_process(
-              h, input_params.visual_pos_masks, deep_stacks[i]);
+        if (use_deepstack) {
+          if (deep_stacks.size() > 0 && i < deep_stacks.size()) {
+            {
+              LLM_NVTX_RANGE_COLOR("qwen3_deepstack", 0xFFFF00FF);  // Magenta
+              h = deepstack_process(
+                  h, input_params.visual_pos_masks, deep_stacks[i]);
+            }
+          }
         }
       }
     }

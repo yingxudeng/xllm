@@ -59,6 +59,9 @@ struct AttentionMetadata {
   // 不需要每一层都申请显存，而是维护起来，生命周期为整步的decode
   torch::Tensor unshared_o;
   torch::Tensor unshared_lse;
+  
+  // Layer ID for plan reuse optimization
+  int64_t layer_id = 0;
 };
 
 }  // namespace layer

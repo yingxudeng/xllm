@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <glog/logging.h>
 
+#include "common/nvtx_helper.h"
 #include "layer_utils.h"
 
 namespace xllm {
@@ -70,22 +71,36 @@ torch::Tensor Qwen2DecoderLayerImpl::forward(
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
     const ModelInputParams& input_params) {
+  LLM_NVTX_RANGE("Qwen2DecoderLayer_forward");
+  
   // Pre-attention norm
-  if (!residual.has_value()) {
-    residual = x;
-    x = std::get<0>(input_norm_->forward(x));
-  } else {
-    std::tie(x, residual) = input_norm_->forward(x, residual);
+  {
+    LLM_NVTX_RANGE_COLOR("input_norm", 0xFFFF00FF);  // Magenta
+    if (!residual.has_value()) {
+      residual = x;
+      x = std::get<0>(input_norm_->forward(x));
+    } else {
+      std::tie(x, residual) = input_norm_->forward(x, residual);
+    }
   }
 
   // Attention
-  x = attention_->forward(positions, x, attn_metadata, kv_cache);
+  {
+    LLM_NVTX_RANGE_COLOR("attention", 0xFFFFFF00);  // Yellow
+    x = attention_->forward(positions, x, attn_metadata, kv_cache);
+  }
 
   // Post-attention norm
-  std::tie(x, residual) = post_norm_->forward(x, residual);
+  {
+    LLM_NVTX_RANGE_COLOR("post_norm", 0xFF00FFFF);  // Cyan
+    std::tie(x, residual) = post_norm_->forward(x, residual);
+  }
 
   // MLP forward
-  x = mlp_->forward(x);
+  {
+    LLM_NVTX_RANGE_COLOR("mlp", 0xFFFF8000);  // Orange
+    x = mlp_->forward(x);
+  }
 
   return x;
 }
