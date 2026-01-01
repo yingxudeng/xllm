@@ -74,7 +74,8 @@ void batch_decode(torch::Tensor float_workspace_buffer,
                   double sm_scale,
                   torch::Tensor output,
                   std::optional<torch::Tensor>& output_lse,
-                  bool enable_cuda_graph);
+                  bool enable_cuda_graph,
+                  std::optional<torch::Tensor>& plan_info);
 
 void rms_norm(torch::Tensor output,
               torch::Tensor input,
@@ -118,6 +119,20 @@ torch::Tensor generate_prefill_plan_info(
     torch::ScalarType dtype_q,
     torch::ScalarType dtype_kv,
     torch::ScalarType dtype_o,
+    bool enable_cuda_graph);
+
+// Generate plan_info for batch_decode optimization
+// This should be called once before the layer loop for decode mode
+torch::Tensor generate_decode_plan_info(
+    torch::Tensor float_workspace_buffer,
+    torch::Tensor int_workspace_buffer,
+    torch::Tensor page_locked_int_workspace_buffer,
+    torch::Tensor paged_kv_indptr,
+    torch::Tensor paged_kv_last_page_len,
+    torch::Tensor query,
+    torch::Tensor k_cache,
+    torch::Tensor v_cache,
+    int64_t window_left,
     bool enable_cuda_graph);
 
 }  // namespace xllm::kernel::cuda

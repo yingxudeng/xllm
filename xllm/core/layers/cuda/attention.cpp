@@ -103,7 +103,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
                                                attn_metadata.kv_cu_seq_lens);
       }
     }
-    
+
     {
       LLM_NVTX_RANGE_COLOR("batch_prefill", 0xFF00FF00);  // Green
       xllm::kernel::AttentionParams attention_params;
@@ -160,13 +160,16 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
                                              v_cache,
                                              attn_metadata.block_table,
                                              attn_metadata.step);
-      
+      LOG(INFO) << "shared_k_cache.shape: " << shared_k_cache.sizes();
+      LOG(INFO) << "unshared_k_cache.shape: " << unshared_k_cache.sizes();
       // [batch_size * shared_kv_len + batch_size * beam_size * max_decode_step, num_kv_heads_, head_size_]
       auto full_k_cache = torch::cat({shared_k_cache, unshared_k_cache}, 0);
       full_k_cache = full_k_cache.unsqueeze(1);
+      LOG(INFO) << "full_k_cache.shape: " << full_k_cache.sizes();
       // LOG(INFO) << "full_k_cache.shape: " << full_k_cache.sizes();
       auto full_v_cache = torch::cat({shared_v_cache, unshared_v_cache}, 0);
       full_v_cache = full_v_cache.unsqueeze(1);
+      LOG(INFO) << "full_v_cache.shape: " << full_v_cache.sizes();
       // LOG(INFO) << "full_v_cache.shape: " << full_v_cache.sizes();
       
       {
@@ -202,6 +205,8 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
         unshared_attention_params.paged_kv_indices = attn_metadata.decode_paged_kv_indices;
         unshared_attention_params.paged_kv_indptr = attn_metadata.decode_paged_kv_indptr;
         unshared_attention_params.paged_kv_last_page_len = attn_metadata.decode_paged_kv_last_page_len;
+
+        unshared_attention_params.plan_info = attn_metadata.plan_info;
 
         xllm::kernel::batch_decode(unshared_attention_params);
         // LOG(INFO) << "output: " << o;
