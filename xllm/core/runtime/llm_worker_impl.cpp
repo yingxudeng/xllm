@@ -298,6 +298,32 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
       input.input_params.current_round = round - 1;
     }
 
+    // only do for prefill round, so di it before the first step, and only do once
+    if (round == 0) {
+      
+      #if defined(USE_CUDA)
+      {
+        LLM_NVTX_RANGE_COLOR("generate_prefill_plan_info", 0xFF00FF00);  // Green
+        
+        input.input_params.plan_info =
+            kernel::cuda::generate_prefill_plan_info(
+                layer::FlashinferWorkspace::get_instance().get_float_workspace_buffer(),
+                layer::FlashinferWorkspace::get_instance().get_int_workspace_buffer(),
+                layer::FlashinferWorkspace::get_instance().get_page_locked_int_workspace_buffer(),
+                input.input_params.q_seq_lens,
+                input.input_params.kv_seq_lens,
+                num_heads, // TODO 应该是num_heads，但是shared当前实现依赖beam_size
+                num_kv_heads,
+                head_dim,
+                head_dim,
+                dtype_,
+                dtype_,
+                dtype_,
+                /*enable_cuda_graph=*/false);
+      }
+      #endif
+    }
+
     // input.token_ids为下一轮的token_ids
     // LOG(INFO) << "before model_executor_->forward.";
     // LOG(INFO) << "input.token_ids: " << input.token_ids;
@@ -350,29 +376,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
         // top_logprobs = sample_output.top_logprobs.reshape({-1, 1});
 
         // 下面这些应该不是step=0才做的，应该是所有都要做
-        input.input_params.q_seq_lens = torch::arange(batch + 1, int_options);  
-        #if defined(USE_CUDA)
-        {
-          LLM_NVTX_RANGE_COLOR("generate_prefill_plan_info", 0xFF00FF00);  // Green
-          
-          input.input_params.plan_info =
-              kernel::cuda::generate_prefill_plan_info(
-                  layer::FlashinferWorkspace::get_instance().get_float_workspace_buffer(),
-                  layer::FlashinferWorkspace::get_instance().get_int_workspace_buffer(),
-                  layer::FlashinferWorkspace::get_instance().get_page_locked_int_workspace_buffer(),
-                  input.input_params.q_seq_lens,
-                  input.input_params.kv_seq_lens,
-                  num_heads * beam_width_init, // TODO 应该是num_heads，但是shared当前实现依赖beam_size
-                  num_kv_heads,
-                  head_dim,
-                  head_dim,
-                  dtype_,
-                  dtype_,
-                  dtype_,
-                  /*enable_cuda_graph=*/false);
-        }
         
-        #endif
 
         // 在 decode 阶段（round > 0）计算 paged_kv 相关参数，这些值在所有层都是相同的
                 
@@ -454,30 +458,8 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
         input.input_params.decode_paged_kv_indptr = paged_kv_indptr;
         input.input_params.decode_paged_kv_last_page_len = paged_kv_last_page_len;
         
-        // 更新q_seq_len，原来保留的是prefill的seq_len，需要改成decode的
-        // 其次，因为shared对beam_size和num_heads做了合轴，因此seq_len实际变成了beam_size
-        // LOG(INFO) << "num_seq: " << num_seq;
-        // input.input_params.q_seq_lens = torch::arange(batch + 1, int_options) * beam_width;
-        
-        // input.input_params.q_seq_lens = torch::arange(batch + 1, int_options) * beam_width;  
-        // 当batch和beam都确认下来的时候，就可以决定paged的indptr和indices了，且值是固定的，也不会随着step变化
-        // auto batch_offsets = input.input_params.paged_kv_indices;
-        // batch_offsets = batch_offsets.unsqueeze(1).expand({-1, beam_width_init});
-        // auto beam_offsets = torch::arange(beam_width_init, input.input_params.paged_kv_indices.options());
-        // auto batch_beam_offsets = batch_offsets * beam_width_init + beam_offsets;
-
-        // input.input_params.paged_kv_indices = 
-        //   batch_beam_offsets.flatten();
-        // input.input_params.paged_kv_indptr = 
-        //   torch::arange(batch * beam_width_init + 1, input.input_params.paged_kv_indptr.options());
-        // 至于last_page_len，应该就是beam_width个step + 1，所以这三个参数都可以放在layer外面设置，非layer内
       } 
-      // input.input_params.paged_kv_last_page_len = 
-      //   torch::full({batch * beam_width_init}, round + 1, input.input_params.paged_kv_last_page_len.options());
-      // else {
-        
-        
-      // }
+
       top_tokens = sample_output.top_tokens.to(torch::kInt32)
                          .reshape({-1, beam_width});
       top_logprobs = sample_output.top_logprobs.reshape({-1, beam_width});

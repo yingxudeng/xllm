@@ -80,11 +80,12 @@ void batch_prefill(torch::Tensor float_workspace_buffer,
   // 如果没有传入，则在这里生成（fallback）
   torch::Tensor plan_info_tensor;
   if (plan_info.has_value()) {
-    // LOG(INFO) << "plan_info is already precomputed";
+    LOG(INFO) << "plan_info is already precomputed";
     // plan_info 已经预先计算好，直接复用
     plan_info_tensor = *plan_info;
+    LOG(INFO) << "plan_info_tensor: " << plan_info_tensor;
   } else {
-    // LOG(INFO) << "plan_info is not precomputed, generating it";
+    LOG(INFO) << "plan_info is not precomputed, generating it";
     // plan_info 未预先计算，需要在这里计算（fallback）
     LLM_NVTX_RANGE_COLOR("batch_prefill_plan", 0xFF00FF00);  // Green
     plan_info_tensor = FunctionFactory::get_instance().prefill_plan_func(uri).call(
@@ -104,25 +105,24 @@ void batch_prefill(torch::Tensor float_workspace_buffer,
         value.size(-1),  // head_dim_vo
         /*causal=*/true);
     // Only print debug logs for decode shared calls
-    if (is_decode_shared) {
-      LOG(INFO) << "float_workspace_buffer.shape: " << float_workspace_buffer.sizes();
-      LOG(INFO) << "int_workspace_buffer.shape: " << int_workspace_buffer.sizes();
-      LOG(INFO) << "page_locked_int_workspace_buffer.shape: " << page_locked_int_workspace_buffer.sizes();
-      LOG(INFO) << "qo_indptr_host: " << qo_indptr_host;
-      LOG(INFO) << "kv_cu_seq_lens_host: " << kv_cu_seq_lens_host;
-      LOG(INFO) << "kv_len_arr_host: " << kv_len_arr_host;
-      LOG(INFO) << "total_num_rows: " << total_num_rows;
-      LOG(INFO) << "batch_size: " << batch_size;
-      LOG(INFO) << "num_qo_heads: " << query.size(1);
-      LOG(INFO) << "num_kv_heads: " << key.size(1);
-      LOG(INFO) << "page_size: " << /*page_size=*/128;
-      LOG(INFO) << "enable_cuda_graph: " << enable_cuda_graph;
-      LOG(INFO) << "head_dim_qk: " << query.size(-1);
-      LOG(INFO) << "head_dim_vo: " << value.size(-1);
-      LOG(INFO) << "causal: " << /*causal=*/true;
-      LOG(INFO) << "plan_info_tensor: " << plan_info_tensor;
-      LOG(FATAL) << "after batch_prefill_plan";
-    }
+    // LOG(INFO) << "float_workspace_buffer.shape: " << float_workspace_buffer.sizes();
+    // LOG(INFO) << "int_workspace_buffer.shape: " << int_workspace_buffer.sizes();
+    // LOG(INFO) << "page_locked_int_workspace_buffer.shape: " << page_locked_int_workspace_buffer.sizes();
+    // LOG(INFO) << "qo_indptr_host: " << qo_indptr_host;
+    // LOG(INFO) << "kv_cu_seq_lens_host: " << kv_cu_seq_lens_host;
+    // LOG(INFO) << "kv_len_arr_host: " << kv_len_arr_host;
+    // LOG(INFO) << "total_num_rows: " << total_num_rows;
+    // LOG(INFO) << "batch_size: " << batch_size;
+    // LOG(INFO) << "num_qo_heads: " << query.size(1);
+    // LOG(INFO) << "num_kv_heads: " << key.size(1);
+    // LOG(INFO) << "page_size: " << /*page_size=*/128;
+    // LOG(INFO) << "enable_cuda_graph: " << enable_cuda_graph;
+    // LOG(INFO) << "head_dim_qk: " << query.size(-1);
+    // LOG(INFO) << "head_dim_vo: " << value.size(-1);
+    // LOG(INFO) << "causal: " << /*causal=*/true;
+    // LOG(INFO) << "plan_info_tensor: " << plan_info_tensor;
+    // LOG(FATAL) << "after batch_prefill_plan";
+    
   }
 
   {

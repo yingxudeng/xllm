@@ -103,6 +103,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
                                                attn_metadata.kv_cu_seq_lens);
       }
     }
+    
     {
       LLM_NVTX_RANGE_COLOR("batch_prefill", 0xFF00FF00);  // Green
       xllm::kernel::AttentionParams attention_params;
@@ -138,9 +139,6 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
 
     if (FLAGS_max_decode_rounds > 0) {
       LLM_NVTX_RANGE("attention_decode_with_shared");
-      
-      auto fp32_options =
-        torch::TensorOptions().dtype(torch::kFloat32).device(query.device());
 
       uint32_t batch_size = attn_metadata.kv_cu_seq_lens.size(0) - 1;
       uint32_t total_beam = query.size(0);
