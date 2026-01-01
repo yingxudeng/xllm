@@ -463,4 +463,85 @@ void RecTorchKernel::beam_search(torch::Tensor acc_logprob,
   }
 }
 
+void RecTorchKernel::cache_select(const torch::Tensor& beam_index,        // [batch * beam, 1] - out_token_index
+                                  std::vector<torch::Tensor>& unshared_k_cache,  // per layer: [max_num_request, beam_size, max_decode_step, kv_heads, head_dim]
+                                  std::vector<torch::Tensor>& unshared_v_cache,  // per layer: [max_num_request, beam_size, max_decode_step, kv_heads, head_dim]
+                                  const torch::Tensor& block_table,        // [batch_size, 1]
+                                  const torch::Tensor& group_offset,       // [batch * beam, 1] - out_beam_count_prefix_sums
+                                  int64_t decode_step,                     // current round (step 0, 1, ...)
+                                  int64_t beam_size,                       // beam width
+                                  int64_t layer_num) {                     // number of layers
+  // 获取维度信息
+  int64_t batch_size = block_table.size(0);
+  int64_t total_beams = beam_index.size(0);
+  CHECK_EQ(total_beams, batch_size * beam_size) << "beam_index size mismatch";
+  
+  // 检查 unshared cache 的维度
+  if (layer_num > 0) {
+    int64_t max_num_request = unshared_k_cache[0].size(0);
+    int64_t max_decode_step = unshared_k_cache[0].size(2);
+    
+    CHECK_EQ(unshared_k_cache.size(), static_cast<size_t>(layer_num)) << "unshared_k_cache size mismatch";
+    CHECK_EQ(unshared_v_cache.size(), static_cast<size_t>(layer_num)) << "unshared_v_cache size mismatch";
+    CHECK_LT(decode_step, max_decode_step) << "decode_step must be less than max_decode_step";
+    
+    // 将 beam_index reshape 成 [batch_size, beam_size] 并计算 parent_beam
+    // beam_index 是 new_indices，parent_beam = new_indices / top_k (top_k == beam_size)
+    auto beam_index_reshaped = beam_index.reshape({batch_size, beam_size}).to(torch::kLong);  // [batch_size, beam_size]
+    auto parent_beam = (beam_index_reshaped / beam_size).to(torch::kLong);  // [batch_size, beam_size]
+    
+    // 将 block_table 移到 CPU 以便访问 request_id
+    auto block_table_cpu = block_table.select(1, 0).to(torch::kCPU);  // [batch_size]
+    
+    // 对于每一层，更新 unshared cache
+    for (int64_t layer = 0; layer < layer_num; ++layer) {
+      auto& k_cache = unshared_k_cache[layer];
+      auto& v_cache = unshared_v_cache[layer];
+      
+      // 对于每个 batch
+      for (int64_t b = 0; b < batch_size; ++b) {
+        int64_t request_id = block_table_cpu[b].item<int64_t>();
+        
+        // 检查 request_id 是否有效
+        CHECK_GE(request_id, 0) << "Invalid request_id: " << request_id;
+        CHECK_LT(request_id, max_num_request) << 
+                    "request_id (" << request_id << ") >= max_num_request (" 
+                    << max_num_request << ")";
+        
+        // 获取当前 batch 的 parent_beam: [beam_size]
+        auto parent_beam_batch = parent_beam[b];  // [beam_size]
+        
+        // 对于每个新的 beam，从对应的旧 beam 复制所有历史 step 的 KV cache
+        // 需要复制从 0 到 decode_step 的所有 step，因为新的 beam 可能来自不同的旧 beam
+        // 例如：在 step 1 时，如果新的 beam 1 来自旧的 beam 0（而不是旧的 beam 1），
+        // 那么新的 beam 1 的所有历史（step 0 和 step 1）都应该来自旧的 beam 0
+        for (int64_t new_beam = 0; new_beam < beam_size; ++new_beam) {
+          int64_t old_beam = parent_beam_batch[new_beam].item<int64_t>();
+          
+          // 检查 old_beam 是否有效
+          CHECK_GE(old_beam, 0) << "Invalid old_beam: " << old_beam;
+          CHECK_LT(old_beam, beam_size) << 
+                      "old_beam (" << old_beam << ") >= beam_size (" 
+                      << beam_size << ")";
+          
+          // 如果新 beam 和旧 beam 相同，则不需要复制（保持不变）
+          if (new_beam == old_beam) {
+            continue;
+          }
+          
+          // 复制从 0 到 decode_step 的所有 step 的 KV cache 值
+          // 从 unshared_k_cache[request_id, old_beam, 0:decode_step+1, :, :] 
+          // 复制到 unshared_k_cache[request_id, new_beam, 0:decode_step+1, :, :]
+          for (int64_t step = 0; step <= decode_step; ++step) {
+            k_cache[request_id][new_beam][step].copy_(
+                k_cache[request_id][old_beam][step]);
+            v_cache[request_id][new_beam][step].copy_(
+                v_cache[request_id][old_beam][step]);
+          }
+        }
+      }
+    }
+  }
+}
+
 } // namespace xllm::kernel::cuda::triton

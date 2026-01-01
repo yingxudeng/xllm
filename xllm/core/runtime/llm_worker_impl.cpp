@@ -335,7 +335,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
         input.token_ids, input.positions, kv_caches_, input.input_params);
     if (round == 1) {
       LOG(INFO) << "hidden_states: " << hidden_states;
-      LOG(FATAL) << "after model_executor_->forward.";
+    //   LOG(FATAL) << "after model_executor_->forward.";
     }
     // LOG(INFO) << "hidden_states.shape: " << hidden_states.sizes();
     // LOG(INFO) << "hidden_states: " << hidden_states;
@@ -395,15 +395,15 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
 
       
       #if defined(USE_CUDA)
-      // LOG(INFO) << "acc_logprob: " << acc_logprob;
-      // LOG(INFO) << "sequence_group: " << sequence_group;
-      // LOG(INFO) << "top_tokens: " << top_tokens;
-      // LOG(INFO) << "top_logprobs: " << top_logprobs;
-      // LOG(INFO) << "out_log_probs: " << out_log_probs;
-      // LOG(INFO) << "out_token_ids: " << out_token_ids;
-      // LOG(INFO) << "out_token_index: " << out_token_index;
-      // LOG(INFO) << "out_beam_count_prefix_sums: " << out_beam_count_prefix_sums;
-      // LOG(INFO) << "out_seqgroup: " << out_seqgroup;
+      LOG(INFO) << "acc_logprob: " << acc_logprob;
+      LOG(INFO) << "sequence_group: " << sequence_group;
+      LOG(INFO) << "top_tokens: " << top_tokens;
+      LOG(INFO) << "top_logprobs: " << top_logprobs;
+      LOG(INFO) << "out_log_probs: " << out_log_probs;
+      LOG(INFO) << "out_token_ids: " << out_token_ids;
+      LOG(INFO) << "out_token_index: " << out_token_index;
+      LOG(INFO) << "out_beam_count_prefix_sums: " << out_beam_count_prefix_sums;
+      LOG(INFO) << "out_seqgroup: " << out_seqgroup;
       rec_kernel_->beam_search(acc_logprob, 
                                sequence_group, 
                                top_tokens, 
@@ -416,12 +416,12 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
                                batch, 
                                round
                                );
-      // LOG(INFO) << "after beam_search.";
-      // LOG(INFO) << "out_log_probs: " << out_log_probs;
-      // LOG(INFO) << "out_token_ids: " << out_token_ids;
-      // LOG(INFO) << "out_token_index: " << out_token_index;
-      // LOG(INFO) << "out_beam_count_prefix_sums: " << out_beam_count_prefix_sums;
-      // LOG(INFO) << "out_seqgroup: " << out_seqgroup;
+      LOG(INFO) << "after beam_search.";
+      LOG(INFO) << "out_log_probs: " << out_log_probs;
+      LOG(INFO) << "out_token_ids: " << out_token_ids;
+      LOG(INFO) << "out_token_index: " << out_token_index;
+      LOG(INFO) << "out_beam_count_prefix_sums: " << out_beam_count_prefix_sums;
+      LOG(INFO) << "out_seqgroup: " << out_seqgroup;
       #elif defined(USE_NPU)
       xllm_ops::beam_search(acc_logprob,
                             top_tokens,
@@ -596,6 +596,21 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
                                beam_width,
                                layer_num);
       }
+#elif defined(USE_CUDA)
+      LOG(INFO) << "out_token_index: " << out_token_index;
+      LOG(INFO) << "out_beam_count_prefix_sums: " << out_beam_count_prefix_sums;
+      LOG(INFO) << "round: " << round;
+      if (beam_width > 1 && round == 1) {
+        rec_kernel_->cache_select(out_token_index,
+                                  unshared_k_cache,
+                                  unshared_v_cache,
+                                  input.input_params.block_tables,
+                                  out_beam_count_prefix_sums,
+                                  round - 1, //对应第0步decode
+                                  beam_width,
+                                  layer_num);
+      }
+      // LOG(FATAL) << "after cache_select.";
 #endif
     }
   }

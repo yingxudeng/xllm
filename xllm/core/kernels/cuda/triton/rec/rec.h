@@ -41,6 +41,15 @@ class RecKernel {
                            torch::Tensor out_sequence_group, 
                            uint32_t batch_size,
                            uint32_t current_step) = 0;
+
+  virtual void cache_select(const torch::Tensor& beam_index,        // [batch * beam, 1] - out_token_index
+                            std::vector<torch::Tensor>& unshared_k_cache,  // per layer: [max_num_request, beam_size, max_decode_step, kv_heads, head_dim]
+                            std::vector<torch::Tensor>& unshared_v_cache,  // per layer: [max_num_request, beam_size, max_decode_step, kv_heads, head_dim]
+                            const torch::Tensor& block_table,        // [batch_size, 1]
+                            const torch::Tensor& group_offset,       // [batch * beam, 1] - out_beam_count_prefix_sums
+                            int64_t decode_step,                     // current round
+                            int64_t beam_size,                       // beam width
+                            int64_t layer_num) = 0;                 // number of layers
  private:
 
 };

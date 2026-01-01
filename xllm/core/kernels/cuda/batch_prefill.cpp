@@ -80,12 +80,12 @@ void batch_prefill(torch::Tensor float_workspace_buffer,
   // 如果没有传入，则在这里生成（fallback）
   torch::Tensor plan_info_tensor;
   if (plan_info.has_value()) {
-    LOG(INFO) << "plan_info is already precomputed";
+    // LOG(INFO) << "plan_info is already precomputed";
     // plan_info 已经预先计算好，直接复用
     plan_info_tensor = *plan_info;
-    LOG(INFO) << "plan_info_tensor: " << plan_info_tensor;
+    // LOG(INFO) << "plan_info_tensor: " << plan_info_tensor;
   } else {
-    LOG(INFO) << "plan_info is not precomputed, generating it";
+    // LOG(INFO) << "plan_info is not precomputed, generating it";
     // plan_info 未预先计算，需要在这里计算（fallback）
     LLM_NVTX_RANGE_COLOR("batch_prefill_plan", 0xFF00FF00);  // Green
     plan_info_tensor = FunctionFactory::get_instance().prefill_plan_func(uri).call(
