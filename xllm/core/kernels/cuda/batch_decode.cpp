@@ -68,7 +68,31 @@ void batch_decode(torch::Tensor float_workspace_buffer,
   }
 //   LOG(INFO) << "k_cache.shape: " << k_cache.sizes();
 //   LOG(INFO) << "v_cache.shape: " << v_cache.sizes();
+  LOG(INFO) << "num_qo_heads: " << query.size(1);
+  LOG(INFO) << "num_kv_heads: " << k_cache.size(2);
+  LOG(INFO) << "block_size: " << k_cache.size(1);
+  LOG(INFO) << "window_left: " << window_left;
+  LOG(INFO) << "enable_cuda_graph: " << enable_cuda_graph;
+  LOG(INFO) << "head_dim_qk: " << query.size(-1);
+  LOG(INFO) << "head_dim_vo: " << v_cache.size(-1);
+  LOG(INFO) << "empty_q_data.shape: " << empty_q_data.sizes();
+
   
+  LOG(INFO) << "float_workspace_buffer.sizes(): " << float_workspace_buffer.sizes();
+  LOG(INFO) << "int_workspace_buffer.sizes(): " << int_workspace_buffer.sizes();
+  LOG(INFO) << "page_locked_int_workspace_buffer.sizes(): " << page_locked_int_workspace_buffer.sizes();
+  LOG(INFO) << "paged_kv_indptr_host: " << paged_kv_indptr_host;
+  LOG(INFO) << "batch_size: " << batch_size;
+  LOG(INFO) << "num_qo_heads: " << query.size(1);
+  LOG(INFO) << "num_kv_heads: " << k_cache.size(2);
+  LOG(INFO) << "block_size: " << k_cache.size(1);
+  LOG(INFO) << "enable_cuda_graph: " << enable_cuda_graph;
+  LOG(INFO) << "window_left: " << window_left;
+  LOG(INFO) << "logits_soft_cap: " << 0.0;
+  LOG(INFO) << "head_dim_qk: " << query.size(-1);
+  LOG(INFO) << "head_dim_vo: " << v_cache.size(-1);
+  LOG(INFO) << "empty_q_data: " << empty_q_data;
+  LOG(INFO) << "empty_kv_data: " << empty_kv_data;
   auto plan_info = [&]() {
     LLM_NVTX_RANGE_COLOR("batch_decode_plan", 0xFF00FF00);  // Green
     return FunctionFactory::get_instance().decode_plan_func(uri).call(
@@ -88,7 +112,7 @@ void batch_decode(torch::Tensor float_workspace_buffer,
         empty_q_data,
         empty_kv_data);
   }();
-
+  LOG(INFO) << "plan_info: " << plan_info;
   {
     LLM_NVTX_RANGE_COLOR("batch_decode_kernel", 0xFFFF0000);  // Red
     FunctionFactory::get_instance().decode_run_func(uri).call(
