@@ -318,6 +318,12 @@ struct ModelInputParams {
   // IntTensor: [n_seq]
   torch::Tensor paged_kv_last_page_len;
 
+  // for multi-round decode with shared KV cache
+  // computed once per step in step_multi_round, reused across all layers
+  torch::Tensor decode_paged_kv_indices;  // filtered indices after mask
+  torch::Tensor decode_paged_kv_indptr;  // cumulative indptr
+  torch::Tensor decode_paged_kv_last_page_len;  // last page len for each sequence
+
   uint64_t batch_id;
 
   struct GraphBuffer {

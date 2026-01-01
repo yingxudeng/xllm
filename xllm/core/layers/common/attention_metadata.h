@@ -51,18 +51,23 @@ struct AttentionMetadata {
   torch::Tensor paged_kv_indices;
   torch::Tensor paged_kv_last_page_len;
 
+
+
   // for xattention
   torch::Tensor shared_k_cache;
   torch::Tensor shared_v_cache;
   uint32_t step;
-  
-  // 不需要每一层都申请显存，而是维护起来，生命周期为整步的decode
-  torch::Tensor unshared_o;
-  torch::Tensor unshared_lse;
+
   
   // Cached plan_info for batch_prefill optimization (reused across layers)
   // Generated in llm_worker_impl.cpp for prefill mode
   std::optional<torch::Tensor> plan_info;
+
+  // for multi-round decode with shared KV cache
+  // computed once per step in step_multi_round, reused across all layers
+  torch::Tensor decode_paged_kv_indices;  // filtered indices after mask
+  torch::Tensor decode_paged_kv_indptr;  // cumulative indptr
+  torch::Tensor decode_paged_kv_last_page_len;  // last page len for each sequence
 };
 
 }  // namespace layer

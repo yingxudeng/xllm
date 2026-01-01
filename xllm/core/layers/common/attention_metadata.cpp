@@ -54,17 +54,12 @@ AttentionMetadata AttentionMetadata::build(const ModelInputParams& params,
 
   // for xattention
   if (params.current_round >= 0) {
-    auto fp32_options = 
-      torch::TensorOptions().dtype(torch::kFloat32).device(attn_metadata.paged_kv_indices.device());
-    auto bf16_options = 
-      torch::TensorOptions().dtype(torch::kBFloat16).device(attn_metadata.paged_kv_indices.device());
-    int32_t num_heads = params.num_heads;
-    int32_t head_dim = params.head_dim;
-    int32_t total_beam = attn_metadata.paged_kv_indices.size(0);
-    
-    // hard code
-    attn_metadata.unshared_o = torch::zeros({total_beam, num_heads, head_dim}, bf16_options);
-    attn_metadata.unshared_lse = torch::zeros({total_beam, num_heads, 1}, fp32_options);
+    CHECK(params.decode_paged_kv_indices.defined()) << "decode_paged_kv_indices is not defined";
+    CHECK(params.decode_paged_kv_indptr.defined()) << "decode_paged_kv_indptr is not defined";
+    CHECK(params.decode_paged_kv_last_page_len.defined()) << "decode_paged_kv_last_page_len is not defined";
+    attn_metadata.decode_paged_kv_indices = params.decode_paged_kv_indices;
+    attn_metadata.decode_paged_kv_indptr = params.decode_paged_kv_indptr;
+    attn_metadata.decode_paged_kv_last_page_len = params.decode_paged_kv_last_page_len;
   }
 
   return attn_metadata;
