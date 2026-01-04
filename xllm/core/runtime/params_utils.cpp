@@ -44,6 +44,7 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
                             int64_t num_decoding_tokens) {
   Timer timer;
   int32_t num_sequences = pb_forward_input->num_sequences();
+  LOG(INFO) << "num_sequences: " << num_sequences;
   std::vector<int32_t> flatten_tokens_vec =
       std::vector<int32_t>(pb_forward_input->flatten_tokens_vec().begin(),
                            pb_forward_input->flatten_tokens_vec().end());
@@ -84,6 +85,7 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
       std::vector<int32_t>(pb_forward_input->paged_kv_last_page_len().begin(),
                            pb_forward_input->paged_kv_last_page_len().end());
   std::vector<std::vector<int32_t>> block_tables_vec;
+  LOG(INFO) << "pb_forward_input->block_tables_vec().size(): " << pb_forward_input->block_tables_vec().size();
   for (size_t i = 0; i < pb_forward_input->block_tables_vec().size(); ++i) {
     block_tables_vec.emplace_back(std::vector<int32_t>(
         pb_forward_input->block_tables_vec()[i].block_tables().begin(),
@@ -91,6 +93,10 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
     // aprint<int32_t>((block_tables_vec.back()), "block_tables_vec",
     // global_rank_);
   }
+  for (size_t i = 0; i < block_tables_vec.size(); ++i) {
+    LOG(INFO) << "block_tables_vec[" << i << "].size(): " << block_tables_vec[i].size();
+  }
+  // LOG(INFO) << "block_tables_vec.size(): " << block_tables_vec.size();
   std::vector<int32_t> selected_token_idxes =
       std::vector<int32_t>(pb_forward_input->selected_token_idxes().begin(),
                            pb_forward_input->selected_token_idxes().end());
@@ -233,45 +239,46 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
   // Compact meta for step-level decode with beam search: keep one copy per
   // original batch Instead of expanding kv_seq_lens/q_seq_lens/block_tables to
   // [batch*beam], compress them back to [batch] and [batch, max_blocks].
-  {
-    const int32_t beam_width = pb_forward_input->beam_width();
-    const int32_t total_seqs = num_sequences;
-    if (beam_width > 1 && total_seqs >= beam_width &&
-        total_seqs % beam_width == 0) {
-      const int32_t batch_size = total_seqs / beam_width;
-      // Build gather indices: 0, beam, 2*beam, ...
-      std::vector<int32_t> gather_idx;
-      gather_idx.reserve(batch_size);
-      for (int32_t b = 0; b < batch_size; ++b)
-        gather_idx.push_back(b * beam_width);
+  // {
+  //   const int32_t beam_width = pb_forward_input->beam_width();
+  //   const int32_t total_seqs = num_sequences;
+  //   if (beam_width > 1 && total_seqs >= beam_width &&
+  //       total_seqs % beam_width == 0) {
+  //     // const int32_t batch_size = total_seqs / beam_width;
+  //     const int32_t batch_size = total_seqs;
+  //     // Build gather indices: 0, beam, 2*beam, ...
+  //     std::vector<int32_t> gather_idx;
+  //     gather_idx.reserve(batch_size);
+  //     for (int32_t b = 0; b < batch_size; ++b)
+  //       gather_idx.push_back(b * beam_width);
 
-      // kv_seq_lens/q_seq_lens -> [batch]
-      if (static_cast<int32_t>(seq_lens.size()) == total_seqs) {
-        std::vector<int32_t> compact;
-        compact.reserve(batch_size);
-        for (auto id : gather_idx) compact.push_back(seq_lens[id]);
-        seq_lens.swap(compact);
-      }
-      if (static_cast<int32_t>(q_seq_lens.size()) == total_seqs) {
-        std::vector<int32_t> compact;
-        compact.reserve(batch_size);
-        for (auto id : gather_idx) compact.push_back(q_seq_lens[id]);
-        q_seq_lens.swap(compact);
-      }
+  //     // kv_seq_lens/q_seq_lens -> [batch]
+  //     if (static_cast<int32_t>(seq_lens.size()) == total_seqs) {
+  //       std::vector<int32_t> compact;
+  //       compact.reserve(batch_size);
+  //       for (auto id : gather_idx) compact.push_back(seq_lens[id]);
+  //       seq_lens.swap(compact);
+  //     }
+  //     if (static_cast<int32_t>(q_seq_lens.size()) == total_seqs) {
+  //       std::vector<int32_t> compact;
+  //       compact.reserve(batch_size);
+  //       for (auto id : gather_idx) compact.push_back(q_seq_lens[id]);
+  //       q_seq_lens.swap(compact);
+  //     }
 
-      // block_tables -> [batch, max_blocks]
-      if (static_cast<int32_t>(block_tables_vec.size()) == total_seqs) {
-        std::vector<std::vector<int32_t>> compact;
-        compact.reserve(batch_size);
-        for (auto id : gather_idx)
-          compact.emplace_back(std::move(block_tables_vec[id]));
-        block_tables_vec.swap(compact);
-      }
+  //     // block_tables -> [batch, max_blocks]
+  //     if (static_cast<int32_t>(block_tables_vec.size()) == total_seqs) {
+  //       std::vector<std::vector<int32_t>> compact;
+  //       compact.reserve(batch_size);
+  //       for (auto id : gather_idx)
+  //         compact.emplace_back(std::move(block_tables_vec[id]));
+  //       block_tables_vec.swap(compact);
+  //     }
 
-      // Update num_sequences after compaction
-      num_sequences = static_cast<int32_t>(block_tables_vec.size());
-    }
-  }
+  //     // Update num_sequences after compaction
+  //     num_sequences = static_cast<int32_t>(block_tables_vec.size());
+  //   }
+  // }
 
   // Create ForwardInput on cpu pinned memory here
   auto tensor_options = torch::TensorOptions()
@@ -293,6 +300,7 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
   input_params.batch_forward_type =
       BatchForwardType(pb_forward_input->batch_forward_type());
   input_params.num_sequences = block_tables_vec.size();
+  LOG(INFO) << "input_params.num_sequences: " << input_params.num_sequences;
   assert(input_params.num_sequences == pb_forward_input->num_sequences());
   input_params.kv_max_seq_len = pb_forward_input->max_seq_len();
   input_params.q_max_seq_len = pb_forward_input->q_max_seq_len();
@@ -323,11 +331,13 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
 
   input_params.new_cache_slots =
       torch::tensor(new_token_slot_ids, tensor_options);
-
+  for (size_t i = 0; i < block_tables_vec.size(); ++i) {
+    LOG(INFO) << "block_tables_vec[" << i << "].size(): " << block_tables_vec[i].size();
+  }
   util::pad_2d_vector(block_tables_vec, /*pad_value=*/0);
   input_params.block_tables =
       std::move(create_2d_tensor(block_tables_vec, torch::kInt));
-
+  LOG(INFO) << "input_params.block_tables: " << input_params.block_tables;
   input_params.dp_global_token_nums = std::move(dp_global_token_nums);
   input_params.embedding_ids = std::move(embedding_ids);
   input_params.extra_token_ids = std::move(extra_token_ids);

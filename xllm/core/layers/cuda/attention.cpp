@@ -99,8 +99,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
         rec_kernel_->prefill_reshape_and_cache(key, 
                                                value, 
                                                attn_metadata.shared_k_cache, 
-                                               attn_metadata.shared_v_cache,
-                                               attn_metadata.kv_cu_seq_lens);
+                                               attn_metadata.shared_v_cache);
       }
     }
 
@@ -138,6 +137,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
     LLM_NVTX_RANGE("attention_decode");
 
     if (FLAGS_max_decode_rounds > 0) {
+      LOG(INFO) << "attention_decode_with_shared";
       LLM_NVTX_RANGE("attention_decode_with_shared");
 
       uint32_t batch_size = attn_metadata.kv_cu_seq_lens.size(0) - 1;
@@ -147,19 +147,23 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
       // [max_shared_kv_len, num_kv_heads_, head_size_]
       torch::Tensor shared_k_cache = attn_metadata.shared_k_cache;
       torch::Tensor shared_v_cache = attn_metadata.shared_v_cache;
-      
+      LOG(INFO) << "shared_k_cache.shape: " << shared_k_cache.sizes();
+      LOG(INFO) << "shared_v_cache.shape: " << shared_v_cache.sizes();
       // [batch_size * beam_size * max_decode_step, num_kv_heads_, head_size_]
-      torch::Tensor unshared_k_cache = k_cache.view({-1, num_kv_heads_, head_size_});
-      torch::Tensor unshared_v_cache = v_cache.view({-1, num_kv_heads_, head_size_});
+      
       key = key.view({batch_size, beam_size, num_kv_heads_, head_size_});
       value = value.view({batch_size, beam_size, num_kv_heads_, head_size_});
-
+      LOG(INFO) << "key.shape: " << key.sizes();
+      LOG(INFO) << "value.shape: " << value.sizes();
       rec_kernel_->decoder_reshape_and_cache(key, 
                                              value, 
                                              k_cache, 
                                              v_cache,
                                              attn_metadata.block_table,
                                              attn_metadata.step);
+      LOG(INFO) << "after decoder_reshape_and_cache";                                       
+      torch::Tensor unshared_k_cache = k_cache.view({-1, num_kv_heads_, head_size_});
+      torch::Tensor unshared_v_cache = v_cache.view({-1, num_kv_heads_, head_size_});
       // LOG(INFO) << "shared_k_cache.shape: " << shared_k_cache.sizes();
       // LOG(INFO) << "unshared_k_cache.shape: " << unshared_k_cache.sizes();
       // [batch_size * shared_kv_len + batch_size * beam_size * max_decode_step, num_kv_heads_, head_size_]

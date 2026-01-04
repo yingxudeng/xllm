@@ -97,7 +97,7 @@ torch::Tensor generate_decode_plan_info(
         v_cache.size(-1),  // head_dim_vo
         empty_q_data,
         empty_kv_data);
-  LOG(INFO) << "plan_info_tensor: " << plan_info_tensor;
+  // LOG(INFO) << "plan_info_tensor: " << plan_info_tensor;
     return plan_info_tensor;
   }
 }

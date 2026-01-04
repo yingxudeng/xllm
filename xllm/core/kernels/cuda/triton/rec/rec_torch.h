@@ -25,9 +25,7 @@ class RecTorchKernel : public RecKernel {
   void prefill_reshape_and_cache(torch::Tensor proj_k,          // [shared_len, kv_heads, head_dim]
                                  torch::Tensor proj_v,          // [shared_len, kv_heads, head_dim]
                                  torch::Tensor shared_k_cache,  // [num_shared_kv_seq_len, kv_heads, head_dim]
-                                 torch::Tensor shared_v_cache,  // [num_shared_kv_seq_len, kv_heads, head_dim]
-                                 torch::Tensor kv_cu_seq_lens    // [batch_size + 1], cumulative sequence lengths
-                                 ) override;
+                                 torch::Tensor shared_v_cache) override; // [batch_size + 1], cumulative sequence lengths
 
   void decoder_reshape_and_cache(torch::Tensor proj_k,          // [batch_size, beam_size, kv_heads, head_dim]
                                  torch::Tensor proj_v,          // [batch_size, beam_size, kv_heads, head_dim]

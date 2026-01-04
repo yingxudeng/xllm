@@ -60,6 +60,7 @@ MultiStepBatchInputBuilder::MultiStepBatchInputBuilder(
       swap_block_transfer_infos_(swap_block_transfer_infos),
       thread_pool_(thread_pool),
       batch_id_(batch_id) {
+  LOG(INFO) << "sequences_.size(): " << sequences_.size();
   // LOG(INFO) << "batch_forward_type: " << batch_forward_type.to_string();
   if (args_ != nullptr) {
     use_mrope_ = (args_->rope_scaling_rope_type() == "mrope");
@@ -168,7 +169,7 @@ RawForwardInput MultiStepBatchInputBuilder::build_raw_forward_input() {
   multi_step_state_.total_steps = FLAGS_max_decode_rounds;
 
   is_mtp_decode_ = false;
-
+  LOG(INFO) << "sequences_.size(): " << sequences_.size();
   // Single-threaded processing for now; can be extended to use thread_pool_
   for (int32_t i = 0; i < static_cast<int32_t>(sequences_.size()); ++i) {
     process_single_sequence(i, &multi_step_state_.base_state, nullptr);
@@ -356,6 +357,7 @@ void MultiStepBatchInputBuilder::setup_kv_cache_info(
     block_ids.push_back(block.id());
     u_block_ids.emplace_back(block.id());
     base_state.paged_kv_indices.push_back(block.id());
+    LOG(INFO) << "block.id(): " << block.id();
   }
   base_state.paged_kv_indptr.push_back(base_state.paged_kv_indptr.back() + blocks.size());
   int32_t last_page_len =
@@ -375,7 +377,7 @@ void MultiStepBatchInputBuilder::setup_kv_cache_info(
     base_state.transfer_kv_infos.emplace_back(transfer_kv_info.value());
     base_state.transfer_kv_infos.back().local_blocks_ids = std::move(u_block_ids);
   }
-
+  LOG(INFO) << "before block_tables_vec.emplace_back";
   base_state.block_tables_vec.emplace_back(std::move(block_ids));
 #endif
 
@@ -474,6 +476,7 @@ RawForwardInput MultiStepBatchInputBuilder::state_to_raw_forward_input(
   raw_forward_input.seq_lens = std::move(src.seq_lens);
   raw_forward_input.q_seq_lens = std::move(src.q_seq_lens);
   raw_forward_input.new_token_slot_ids = std::move(src.new_token_slot_ids);
+  LOG(INFO) << "src.block_tables_vec.size(): " << src.block_tables_vec.size();
   raw_forward_input.block_tables_vec = std::move(src.block_tables_vec);
   raw_forward_input.num_sequences = num_sequences_;
   raw_forward_input.transfer_kv_infos = std::move(src.transfer_kv_infos);

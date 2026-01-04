@@ -315,12 +315,12 @@ bool LLMEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
     if (FLAGS_max_decode_rounds > 0) {
       kv_cache_shape.emplace_back(std::vector<int64_t>{kv_cache_cap.n_blocks,
                                                        block_size,
-                                                       FLAGS_max_decode_rounds,
+                                                       FLAGS_max_decode_rounds - 1,
                                                        n_local_kv_heads_,
                                                        head_dim_});
       kv_cache_shape.emplace_back(std::vector<int64_t>{kv_cache_cap.n_blocks,
                                                        block_size,
-                                                       FLAGS_max_decode_rounds,
+                                                       FLAGS_max_decode_rounds - 1,
                                                        n_local_kv_heads_,
                                                        head_dim_});
     } else {

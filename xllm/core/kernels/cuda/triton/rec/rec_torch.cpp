@@ -57,66 +57,16 @@ torch::Tensor RecTorchKernel::xattention(torch::Tensor q,                    // 
 void RecTorchKernel::prefill_reshape_and_cache(torch::Tensor proj_k,          // [shared_len, kv_heads, head_dim]
                                                torch::Tensor proj_v,          // [shared_len, kv_heads, head_dim]
                                                torch::Tensor shared_k_cache,  // [num_shared_kv_seq_len, kv_heads, head_dim]
-                                               torch::Tensor shared_v_cache,  // [num_shared_kv_seq_len, kv_heads, head_dim]
-                                               torch::Tensor kv_cu_seq_lens) {
-  // LOG(INFO) << "inner RecTorchKernel::prefill_reshape_and_cache";
-  // 获取维度信息
+                                               torch::Tensor shared_v_cache) {
+  LOG(INFO) << "proj_k.shape: " << proj_k.sizes();
+  LOG(INFO) << "proj_v.shape: " << proj_v.sizes();
+  LOG(INFO) << "shared_k_cache.shape: " << shared_k_cache.sizes();
+  LOG(INFO) << "shared_v_cache.shape: " << shared_v_cache.sizes();
   int64_t shared_len = proj_k.size(0);
-  int64_t kv_heads = proj_k.size(1);
-  int64_t head_dim = proj_k.size(2);
-  int64_t num_shared_kv_seq_len = shared_k_cache.size(0);
-  
-  // 计算 batch_size
-  int64_t batch_size = kv_cu_seq_lens.size(0) - 1;
-  int64_t shared_kv_len = num_shared_kv_seq_len / batch_size;  // 每个 batch 分配的空间
-  
-  // 检查维度兼容性
-  CHECK_EQ(num_shared_kv_seq_len, batch_size * shared_kv_len) <<
-              "num_shared_kv_seq_len must be divisible by batch_size";
-  CHECK_EQ(proj_k.size(1), shared_k_cache.size(1)) <<
-              "kv_heads dimension mismatch";
-  CHECK_EQ(proj_k.size(2), shared_k_cache.size(2)) << 
-              "head_dim dimension mismatch";
-  CHECK_EQ(proj_v.sizes(), proj_k.sizes()) << 
-              "proj_v and proj_k must have same shape";
-  CHECK_EQ(shared_v_cache.sizes(), shared_k_cache.sizes()) << 
-              "shared_v_cache and shared_k_cache must have same shape";
-  
-  // 计算每个 batch 的实际长度
-  auto batch_kv_lens = torch::diff(kv_cu_seq_lens);  // [batch_size]
-  
-  // 将 kv_cu_seq_lens 移到 CPU 以便访问
-  auto kv_cu_seq_lens_cpu = kv_cu_seq_lens.to(torch::kCPU);
-  auto batch_kv_lens_cpu = batch_kv_lens.to(torch::kCPU);
-  
-  // 遍历每个 batch，分别写入对应的位置
-  int64_t proj_offset = 0;  // proj_k/proj_v 中的偏移
-  for (int64_t b = 0; b < batch_size; ++b) {
-    int64_t batch_kv_len = batch_kv_lens_cpu[b].item<int64_t>();
-    int64_t cache_start = b * shared_kv_len;  // 在 shared_k_cache 中的起始位置
-    
-    // 检查长度是否超出分配的空间
-    CHECK_LE(batch_kv_len, shared_kv_len) << 
-                "batch " << b << " kv_len (" << batch_kv_len 
-                << ") exceeds allocated space (" << shared_kv_len << ")";
-    
-    if (batch_kv_len > 0) {
-      // 从 proj_k/proj_v 中提取当前 batch 的数据
-      auto proj_k_batch = proj_k.slice(0, proj_offset, proj_offset + batch_kv_len);
-      auto proj_v_batch = proj_v.slice(0, proj_offset, proj_offset + batch_kv_len);
-      
-      // 写入到 shared_k_cache/shared_v_cache 的对应位置
-      shared_k_cache.slice(0, cache_start, cache_start + batch_kv_len).copy_(proj_k_batch);
-      shared_v_cache.slice(0, cache_start, cache_start + batch_kv_len).copy_(proj_v_batch);
-      
-      proj_offset += batch_kv_len;
-    }
-  }
-  
-  // 验证总长度
-  CHECK_EQ(proj_offset, shared_len) << 
-              "Total proj length mismatch: expected " << shared_len 
-              << ", got " << proj_offset;
+  shared_k_cache = shared_k_cache.slice(0, 0, shared_len);
+  shared_v_cache = shared_v_cache.slice(0, 0, shared_len);
+  shared_k_cache.copy_(proj_k);
+  shared_v_cache.copy_(proj_v);
 }
 
 void RecTorchKernel::decoder_reshape_and_cache(torch::Tensor proj_k,          // [batch_size, beam_size, kv_heads, head_dim]
