@@ -59,6 +59,20 @@ class LLMWorkerImpl : public WorkerImpl {
  private:
   std::unique_ptr<BeamSearcher> beam_searcher_;
   std::optional<ForwardOutput> step_multi_round(ForwardInput input);
+
+  // Update input for next round in multi-round decoding
+  void update_input_for_decode(ForwardInput& input,
+    int32_t round,
+    const SampleOutput& sample_output,
+    const torch::Tensor& out_token_ids,
+    int32_t batch,
+    int32_t beam_width_init,
+    const std::vector<torch::Tensor>& unshared_k_cache,
+    const std::vector<torch::Tensor>& unshared_v_cache,
+    int64_t num_heads,
+    int64_t num_kv_heads,
+    int64_t head_dim);
+    
   #if defined(USE_CUDA)
   std::unique_ptr<kernel::cuda::triton::RecKernel> rec_kernel_;
   #endif

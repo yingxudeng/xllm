@@ -54,6 +54,7 @@ AttentionMetadata AttentionMetadata::build(const ModelInputParams& params,
 
   // for xattention
   if (params.current_round >= 0) {
+    attn_metadata.step = params.current_round;
     CHECK(params.decode_paged_kv_indices.defined()) << "decode_paged_kv_indices is not defined";
     CHECK(params.decode_paged_kv_indptr.defined()) << "decode_paged_kv_indptr is not defined";
     CHECK(params.decode_paged_kv_last_page_len.defined()) << "decode_paged_kv_last_page_len is not defined";

@@ -134,10 +134,6 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
       attn_metadata.mrope_cos = std::move(cos_pos);
       attn_metadata.mrope_sin = std::move(sin_pos);
     }
-    if (FLAGS_max_decode_rounds) {
-      attn_metadata.step = input_params_new.current_round;
-    }
-    
 
     std::optional<torch::Tensor> residual;
     {
