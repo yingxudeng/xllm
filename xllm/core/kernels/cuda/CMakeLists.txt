@@ -1,4 +1,5 @@
 include(cc_library)
+include(cc_test)
 
 file(GLOB_RECURSE CUDA_HEADER_FILES
   "${CMAKE_CURRENT_LIST_DIR}/*.h"
@@ -11,6 +12,18 @@ file(GLOB_RECURSE CUDA_SOURCE_FILES
 )
 
 add_subdirectory(triton)
+# add_subdirectory(tests)
+cc_test(
+  NAME
+    decoder_reshape_and_cache_test
+  SRCS
+    decoder_reshape_and_cache_test.cpp
+  DEPS
+    :cuda_kernels
+    torch
+    GTest::gtest_main
+    glog::glog
+)
 
 cc_library(
   NAME

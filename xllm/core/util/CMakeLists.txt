@@ -46,6 +46,7 @@ cc_library(
   DEPS
     torch
     brpc
+    leveldb::leveldb
     nlohmann_json::nlohmann_json
     glog::glog
     torch

@@ -17,21 +17,22 @@ limitations under the License.
 
 #include "common/nvtx_helper.h"
 #include "flashinfer_workspace.h"
-#include "kernels/ops_api.h"
 #include "kernels/cuda/cuda_ops_api.h"
+#include "kernels/ops_api.h"
 
 DECLARE_bool(enable_chunked_prefill);
 
 namespace {
 
-void lse_combine(torch::Tensor shared_o, 
-                 torch::Tensor shared_lse, 
-                 torch::Tensor unshared_o, 
-                 torch::Tensor unshared_lse, 
+void lse_combine(torch::Tensor shared_o,
+                 torch::Tensor shared_lse,
+                 torch::Tensor unshared_o,
+                 torch::Tensor unshared_lse,
                  torch::Tensor output) {
-  xllm::kernel::cuda::lse_combine(output, shared_o, shared_lse, unshared_o, unshared_lse);
+  xllm::kernel::cuda::lse_combine(
+      output, shared_o, shared_lse, unshared_o, unshared_lse);
 }
-} // namespace
+}  // namespace
 
 namespace xllm {
 namespace layer {
@@ -45,8 +46,8 @@ AttentionImpl::AttentionImpl(int num_heads,
       scale_(scale),
       num_kv_heads_(num_kv_heads),
       sliding_window_(sliding_window - 1) {
-        rec_kernel_ = std::make_unique<kernel::cuda::triton::RecTorchKernel>();
-      }
+  rec_kernel_ = std::make_unique<kernel::cuda::triton::RecTorchKernel>();
+}
 
 std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
     const AttentionMetadata& attn_metadata,
@@ -55,7 +56,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
     torch::Tensor& value,
     KVCache& kv_cache) {
   LLM_NVTX_RANGE("AttentionImpl_forward");
-  
+
   // LOG(INFO) << "inner AttentionImpl::forward.";
   auto output = torch::empty_like(query);
   auto output_lse = std::nullopt;
@@ -87,10 +88,10 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
       xllm::kernel::reshape_paged_cache(reshape_paged_cache_params);
     }
   }
-  
+
   if (attn_metadata.is_prefill) {
     LLM_NVTX_RANGE("attention_prefill");
-    
+
     CHECK(!attn_metadata.is_chunked_prefill)
         << "chunked prefill is not supported";
     if (FLAGS_max_decode_rounds > 0) {
@@ -131,7 +132,6 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
       // LOG(INFO) << "key.shape: " << key.sizes();
       // LOG(INFO) << "value.shape: " << value.sizes();
       xllm::kernel::batch_prefill(attention_params);
-      
     }
   } else {
     LLM_NVTX_RANGE("attention_decode");
@@ -143,30 +143,34 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
       uint32_t batch_size = attn_metadata.kv_cu_seq_lens.size(0) - 1;
       uint32_t total_beam = query.size(0);
       uint32_t beam_size = total_beam / batch_size;
-      
+
       // [max_shared_kv_len, num_kv_heads_, head_size_]
       torch::Tensor shared_k_cache = attn_metadata.shared_k_cache;
       torch::Tensor shared_v_cache = attn_metadata.shared_v_cache;
-      LOG(INFO) << "shared_k_cache.shape: " << shared_k_cache.sizes();
-      LOG(INFO) << "shared_v_cache.shape: " << shared_v_cache.sizes();
+
       // [batch_size * beam_size * max_decode_step, num_kv_heads_, head_size_]
-      
-      key = key.view({batch_size, beam_size, num_kv_heads_, head_size_});
-      value = value.view({batch_size, beam_size, num_kv_heads_, head_size_});
-      LOG(INFO) << "key.shape: " << key.sizes();
-      LOG(INFO) << "value.shape: " << value.sizes();
-      rec_kernel_->decoder_reshape_and_cache(key, 
-                                             value, 
-                                             k_cache, 
-                                             v_cache,
-                                             attn_metadata.block_table,
-                                             attn_metadata.step);
-      LOG(INFO) << "after decoder_reshape_and_cache";                                       
-      torch::Tensor unshared_k_cache = k_cache.view({-1, num_kv_heads_, head_size_});
-      torch::Tensor unshared_v_cache = v_cache.view({-1, num_kv_heads_, head_size_});
-      // LOG(INFO) << "shared_k_cache.shape: " << shared_k_cache.sizes();
-      // LOG(INFO) << "unshared_k_cache.shape: " << unshared_k_cache.sizes();
-      // [batch_size * shared_kv_len + batch_size * beam_size * max_decode_step, num_kv_heads_, head_size_]
+      key = key.view({batch_size, beam_size, num_kv_heads_, head_size_})
+                .contiguous();
+      value = value.view({batch_size, beam_size, num_kv_heads_, head_size_})
+                  .contiguous();
+
+      // rec_kernel_->decoder_reshape_and_cache(key,
+      //                                        value,
+      //                                        k_cache,
+      //                                        v_cache,
+      //                                        attn_metadata.block_table,
+      //                                        attn_metadata.step);
+      // `step` is a plain uint32_t (not a Tensor), so just print its value.
+      xllm::kernel::cuda::decoder_reshape_and_cache(key,
+                                                    value,
+                                                    k_cache,
+                                                    v_cache,
+                                                    attn_metadata.block_table,
+                                                    attn_metadata.step);
+      torch::Tensor unshared_k_cache =
+          k_cache.view({-1, num_kv_heads_, head_size_});
+      torch::Tensor unshared_v_cache =
+          v_cache.view({-1, num_kv_heads_, head_size_});
       auto full_k_cache = torch::cat({shared_k_cache, unshared_k_cache}, 0);
       full_k_cache = full_k_cache.unsqueeze(1);
       // LOG(INFO) << "full_k_cache.shape: " << full_k_cache.sizes();
@@ -175,15 +179,15 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
       full_v_cache = full_v_cache.unsqueeze(1);
       // LOG(INFO) << "full_v_cache.shape: " << full_v_cache.sizes();
       // LOG(INFO) << "full_v_cache.shape: " << full_v_cache.sizes();
-      
+
       {
         LLM_NVTX_RANGE_COLOR("batch_decode_unshared", 0xFFFF0000);  // Red
         xllm::kernel::AttentionParams unshared_attention_params;
         auto unshared_lse = std::nullopt;
-        
+
         unshared_attention_params.return_lse = false;
         unshared_attention_params.output_lse = unshared_lse;
-        
+
         unshared_attention_params.window_size_left = sliding_window_;
         unshared_attention_params.scale = scale_;
         unshared_attention_params.compute_dtype = attn_metadata.compute_dtype;
@@ -206,9 +210,12 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
         unshared_attention_params.k_cache = full_k_cache;
         unshared_attention_params.v_cache = full_v_cache;
 
-        unshared_attention_params.paged_kv_indices = attn_metadata.decode_paged_kv_indices;
-        unshared_attention_params.paged_kv_indptr = attn_metadata.decode_paged_kv_indptr;
-        unshared_attention_params.paged_kv_last_page_len = attn_metadata.decode_paged_kv_last_page_len;
+        unshared_attention_params.paged_kv_indices =
+            attn_metadata.decode_paged_kv_indices;
+        unshared_attention_params.paged_kv_indptr =
+            attn_metadata.decode_paged_kv_indptr;
+        unshared_attention_params.paged_kv_last_page_len =
+            attn_metadata.decode_paged_kv_last_page_len;
 
         unshared_attention_params.plan_info = attn_metadata.plan_info;
 
@@ -216,12 +223,12 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
         // LOG(INFO) << "output: " << o;
         // LOG(FATAL) << "after batch_decode.";
       }
-      
+
       // LOG(INFO) << "output: " << output;
       // LOG(FATAL) << "after batch_decode.";
     } else {
       LLM_NVTX_RANGE("attention_decode_standard");
-      
+
       {
         LLM_NVTX_RANGE_COLOR("batch_decode_standard", 0xFF0000FF);  // Blue
         query = query.view({-1, 1, num_heads_, head_size_});
@@ -236,7 +243,6 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
         decode_attention_params.k_cache = k_cache;
         decode_attention_params.v_cache = v_cache;
 
-
         // for flashinfer
         decode_attention_params.float_workspace_buffer =
             FlashinferWorkspace::get_instance().get_float_workspace_buffer();
@@ -246,17 +252,17 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
             FlashinferWorkspace::get_instance()
                 .get_page_locked_int_workspace_buffer();
         decode_attention_params.paged_kv_indptr = attn_metadata.paged_kv_indptr;
-        decode_attention_params.paged_kv_indices = attn_metadata.paged_kv_indices;
+        decode_attention_params.paged_kv_indices =
+            attn_metadata.paged_kv_indices;
         decode_attention_params.paged_kv_last_page_len =
             attn_metadata.paged_kv_last_page_len;
-        
+
         xllm::kernel::batch_decode(decode_attention_params);
       }
-      
+
       LOG(INFO) << "output: " << output;
       LOG(FATAL) << "after batch_decode.";
     }
-
   }
   // LOG(INFO) << "output: " << output;
   output = output.view({-1, num_heads_ * head_size_});
