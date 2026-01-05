@@ -24,6 +24,7 @@ cc_test(
     GTest::gtest_main
     glog::glog
 )
+target_link_libraries(decoder_reshape_and_cache_test PRIVATE brpc)
 
 cc_library(
   NAME

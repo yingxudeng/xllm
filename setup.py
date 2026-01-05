@@ -20,7 +20,6 @@ from setuptools.command.build_ext import build_ext
 
 BUILD_TEST_FILE = True
 BUILD_EXPORT = True
-TEST_BUILD_TARGETS = ["all_tests"]
 
 # get cpu architecture
 def get_cpu_arch():
@@ -369,8 +368,6 @@ class ExtBuild(build_ext):
             f"-DINSTALL_XLLM_KERNELS={'ON' if self.install_xllm_kernels else 'OFF'}",
             f"-DCMAKE_JOB_POOLS=archive={archive_jobs}",
         ]
-        # Control whether test targets are generated (cc_test() is guarded by BUILD_TESTING).
-        cmake_args += [f"-DBUILD_TESTING={'ON' if BUILD_TEST_FILE else 'OFF'}"]
 
         if self.device == "a2" or self.device == "a3":
             cmake_args += ["-DUSE_NPU=ON"]
@@ -438,7 +435,7 @@ class ExtBuild(build_ext):
 
         if BUILD_TEST_FILE:
             # build tests target
-            build_args = base_build_args + ["--target"] + (TEST_BUILD_TARGETS if TEST_BUILD_TARGETS else ["all_tests"])
+            build_args = base_build_args + ["--target all_tests"]
             subprocess.check_call(["cmake", "--build", ".", "--verbose"] + build_args, cwd=cmake_dir)
 
 class BuildDistWheel(bdist_wheel):
@@ -627,7 +624,14 @@ def parse_arguments():
         epilog='Example: python setup.py build --device a3',
         usage='%(prog)s [COMMAND] [OPTIONS]'
     )
-
+    
+    parser.add_argument(
+        'setup_args',
+        nargs='*',
+        metavar='argparse.REMAINDER',
+        help='setup command (build, test, bdist_wheel, etc.)'
+    )
+    
     parser.add_argument(
         '--device',
         type=str.lower,
@@ -639,7 +643,7 @@ def parse_arguments():
     parser.add_argument(
         '--dry-run',
         action='store_true',
-        help='Dry run mode: only skip pre_build (patch/deps). It will still run CMake build.'
+        help='Dry run mode (do not execute pre_build)'
     )
     
     parser.add_argument(
@@ -658,34 +662,18 @@ def parse_arguments():
         help='Whether to generate so or binary'
     )
 
-    parser.add_argument(
-        '--test-target',
-        type=str,
-        default=None,
-        help='Build specified test target(s) (comma-separated), e.g. decoder_reshape_and_cache_test. '
-             'If omitted, keep default behavior (build all_tests unless env SKIP_TEST is set).'
-    )
-
-    # Parse our custom args while preserving distutils/setuptools args (e.g. build/test/bdist_wheel).
-    # This allows flags to appear before or after the command:
-    #   python setup.py build --dry-run --test-target decoder_reshape_and_cache_test ...
-    #   python setup.py --dry-run --test-target decoder_reshape_and_cache_test build ...
-    args, setup_args = parser.parse_known_args()
-    sys.argv = [sys.argv[0]] + setup_args
+    args = parser.parse_args()
+    
+    sys.argv = [sys.argv[0]] + args.setup_args
     
     install_kernels = args.install_xllm_kernels.lower() in ('true', '1', 'yes', 'y', 'on')
     generate_so = args.generate_so.lower() in ('true', '1', 'yes', 'y', 'on')
-    test_targets = None
-    if args.test_target is not None:
-        parsed = [t.strip() for t in args.test_target.split(",") if t.strip()]
-        test_targets = parsed if parsed else None
 
     return {
         'device': args.device,
         'dry_run': args.dry_run,
         'install_xllm_kernels': install_kernels,
         'generate_so': generate_so,
-        'test_targets': test_targets,
     }
 
 
@@ -704,16 +692,8 @@ if __name__ == "__main__":
     install_kernels = config['install_xllm_kernels']
     generate_so = config['generate_so']
 
-    specified_test_targets = config.get('test_targets')
-    if specified_test_targets is not None:
-        # If user specifies test targets, we always build tests (override env SKIP_TEST).
-        TEST_BUILD_TARGETS = specified_test_targets
-        BUILD_TEST_FILE = True
-    else:
-        # Keep legacy behavior: build all tests unless env SKIP_TEST is set.
-        TEST_BUILD_TARGETS = ["all_tests"]
-        if "SKIP_TEST" in os.environ:
-            BUILD_TEST_FILE = False
+    if "SKIP_TEST" in os.environ:
+        BUILD_TEST_FILE = False
     if "SKIP_EXPORT" in os.environ:
         BUILD_EXPORT = False
     
