@@ -54,20 +54,22 @@ struct AttentionMetadata {
 
 
   // for xattention
-  torch::Tensor shared_k_cache;
-  torch::Tensor shared_v_cache;
+  torch::Tensor full_k_cache;
+  torch::Tensor full_v_cache;
   uint32_t step;
 
   
   // Cached plan_info for batch_prefill optimization (reused across layers)
   // Generated in llm_worker_impl.cpp for prefill mode
-  std::optional<torch::Tensor> plan_info;
+  std::optional<torch::Tensor> prefill_plan_info;
+  std::optional<torch::Tensor> decode_plan_info;
 
   // for multi-round decode with shared KV cache
   // computed once per step in step_multi_round, reused across all layers
   torch::Tensor decode_paged_kv_indices;  // filtered indices after mask
   torch::Tensor decode_paged_kv_indptr;  // cumulative indptr
   torch::Tensor decode_paged_kv_last_page_len;  // last page len for each sequence
+  torch::Tensor naive_block_table;
 };
 
 }  // namespace layer

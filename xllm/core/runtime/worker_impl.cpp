@@ -398,7 +398,7 @@ void WorkerImpl::prepare_work_before_execute(const ForwardInput& input,
 #endif
 
 #if defined(USE_NPU) || defined(USE_CUDA)
-  // step-level decode shared cache: allocate/attach by step_uid metadata
+  // step-level decode full cache: allocate/attach by step_uid metadata
   if (FLAGS_max_decode_rounds > 0) {
     bool is_prefill =
         processed_input.input_params.global_empty_kv_cache ? true : false;
@@ -408,7 +408,7 @@ void WorkerImpl::prepare_work_before_execute(const ForwardInput& input,
       int32_t beam_width = processed_input.beam_width;
       int32_t current_round = processed_input.current_round;
       int32_t total_round = processed_input.total_round;
-      const auto& shape = processed_input.shared_kv_shape;
+      const auto& shape = processed_input.full_kv_shape;
 
       if (shape.size() == 3) {
         int64_t num_tokens = shape[0];
@@ -416,14 +416,14 @@ void WorkerImpl::prepare_work_before_execute(const ForwardInput& input,
         int64_t head_dim = shape[2];
         auto fp_options = torch::TensorOptions().dtype(dtype_).device(device_);
         int32_t num_layers = context_.get_model_args().n_layers();
-        mip.shared_k_caches.clear();
-        mip.shared_v_caches.clear();
-        mip.shared_k_caches.reserve(num_layers);
-        mip.shared_v_caches.reserve(num_layers);
+        mip.full_k_caches.clear();
+        mip.full_v_caches.clear();
+        mip.full_k_caches.reserve(num_layers);
+        mip.full_v_caches.reserve(num_layers);
         for (int32_t layer_id = 0; layer_id < num_layers; ++layer_id) {
-          mip.shared_k_caches.emplace_back(
+          mip.full_k_caches.emplace_back(
               torch::zeros({num_tokens, head_num, head_dim}, fp_options));
-          mip.shared_v_caches.emplace_back(
+          mip.full_v_caches.emplace_back(
               torch::zeros({num_tokens, head_num, head_dim}, fp_options));
         }
       }

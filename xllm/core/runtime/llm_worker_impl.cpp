@@ -271,36 +271,39 @@ void LLMWorkerImpl::update_input_for_decode(
   int32_t current_step = round;  // round 0 是 prefill，round 1 是 step 0
   
   // 从第一层的 cache 获取维度信息（假设所有层相同）
-  auto shared_k_cache = input.input_params.shared_k_caches[0];
   auto unshared_k_cache_first = unshared_k_cache[0];
-  
-  uint32_t shared_kv_len = shared_k_cache.size(0) / batch_size;
+  uint32_t shared_kv_len = FLAGS_max_token_per_req;
+  // LOG(INFO) << "shared_kv_len: " << shared_kv_len;
   uint32_t max_decode_step = unshared_k_cache_first.size(2);
-  LOG(INFO) << "max_decode_step: " << max_decode_step;
+  // LOG(INFO) << "max_decode_step: " << max_decode_step;
   // 获取必要的 tensor
   auto kv_cu_seq_lens = input.input_params.kv_seq_lens;
   auto block_table = input.input_params.block_tables;
-  
+  // LOG(INFO) << "kv_cu_seq_lens: " << kv_cu_seq_lens;
   // 计算 batch_shared_kv_lens
+  // [batch_size]
   auto batch_shared_kv_lens = torch::diff(kv_cu_seq_lens);
-  
+  // LOG(INFO) << "batch_shared_kv_lens: " << batch_shared_kv_lens;
   auto paged_options = input.input_params.paged_kv_indices.options();
 
   // 计算 shared_kv_indices（与 attention.cpp 中的逻辑相同）
   // [[13, 13, 13], [15, 15, 15], [16, 16, 16], ...]
   auto beam_shared_kv_expanded = batch_shared_kv_lens.unsqueeze(1).expand({-1, shared_kv_len});
-  LOG(INFO) << "beam_shared_kv_expanded: " << beam_shared_kv_expanded;
+  // LOG(INFO) << "beam_shared_kv_expanded: " << beam_shared_kv_expanded;
   auto shared_kv_len_offsets = torch::arange(0, shared_kv_len, paged_options);
-  LOG(INFO) << "shared_kv_len_offsets: " << shared_kv_len_offsets;
   shared_kv_len_offsets = shared_kv_len_offsets.unsqueeze(0).expand({batch_size, -1});
-  LOG(INFO) << "shared_kv_len_offsets: " << shared_kv_len_offsets;
-  auto mask = shared_kv_len_offsets < beam_shared_kv_expanded;
-  LOG(INFO) << "mask: " << mask;
+  // LOG(INFO) << "shared_kv_len_offsets: " << shared_kv_len_offsets;
+  auto shared_mask = shared_kv_len_offsets < beam_shared_kv_expanded;
+  shared_mask = shared_mask.unsqueeze(1).expand({-1, beam_size, -1});
+  // LOG(INFO) << "shared_mask: " << shared_mask;
+
+
+  
   // auto batch_offsets = torch::arange(0, batch_size, paged_options);
   // auto shared_batch_offsets = batch_offsets.unsqueeze(1).expand({-1, shared_kv_len});
   // [[0, 0, 0], [0, 0, 0], [0, 0, 0], ...]
   auto shared_batch_offsets = torch::zeros({batch_size, shared_kv_len}, paged_options);
-  LOG(INFO) << "shared_batch_offsets: " << shared_batch_offsets;
+  // LOG(INFO) << "shared_batch_offsets: " << shared_batch_offsets;
   // 这个tensor是确定每个请求的shared_kv的基址的，现在是按照shared_kv_len直接均匀划分的
   // 但是也可以参考batch_shared_kv_lens，按照请求的真实长度划分，这样prefill_reshape_and_cache就很简单了
   // shared_batch_offsets = shared_batch_offsets * shared_kv_len;
@@ -308,54 +311,72 @@ void LLMWorkerImpl::update_input_for_decode(
   // kv_cu_seq_lens.slice(0, 0, -1): [0, 13, 28]
   // shared_batch_offsets: [[0, 0, 0], [0, 0, 0], [0, 0, 0], ...]
   shared_batch_offsets = shared_batch_offsets + kv_cu_seq_lens.slice(0, 0, -1).unsqueeze(1).expand({-1, shared_kv_len});
-  LOG(INFO) << "shared_batch_offsets: " << shared_batch_offsets;
+  // LOG(INFO) << "shared_batch_offsets: " << shared_batch_offsets;
   // shared_batch_offsets: [[0, 0, 0], [13, 13, 13], [28, 28, 28], ...]
   // shared_kv_len_offsets: [[0, 1, 2], [0, 1, 2], [0, 1, 2], ...]
   auto shared_kv_indices = shared_batch_offsets + shared_kv_len_offsets;
-  LOG(INFO) << "shared_kv_indices: " << shared_kv_indices;
+  shared_kv_indices = shared_kv_indices.unsqueeze(1).expand({-1, beam_size, -1});
+  // LOG(INFO) << "shared_kv_indices: " << shared_kv_indices;
   // shared_kv_indices: [[0, 1, 2], [13, 14, 15], [28, 29, 30], ...]
 
-  shared_kv_indices = shared_kv_indices.masked_fill(~mask, 0);
-  LOG(INFO) << "shared_kv_indices: " << shared_kv_indices;
+  // shared_kv_indices = shared_kv_indices.masked_fill(~mask, 0);
+  // LOG(INFO) << "shared_kv_indices: " << shared_kv_indices;
   
   // 计算 unshared_kv_indices
   uint32_t unshared_begin_index = shared_kv_len * batch_size;
   // auto batch_ids = block_table.select(1, 0);
-  auto batch_ids = input.input_params.paged_kv_indices;
-  LOG(INFO) << "batch_ids: " << batch_ids;
+  // auto batch_ids = input.input_params.paged_kv_indices;
+  auto batch_ids = torch::arange(0, batch_size, paged_options);
+  // LOG(INFO) << "batch_ids: " << batch_ids;
   batch_ids = batch_ids.unsqueeze(1).expand({-1, beam_size}).unsqueeze(2).expand({-1, -1, max_decode_step});
   batch_ids = batch_ids * beam_size * max_decode_step;
-  LOG(INFO) << "batch_ids: " << batch_ids;
+  // LOG(INFO) << "batch_ids: " << batch_ids;
   auto beams_ids = torch::arange(0, beam_size, paged_options);
   beams_ids = beams_ids.unsqueeze(0).expand({batch_size, -1}).unsqueeze(2).expand({-1, -1, max_decode_step});
   beams_ids = beams_ids * max_decode_step;
-  LOG(INFO) << "beams_ids: " << beams_ids;
+  // LOG(INFO) << "beams_ids: " << beams_ids;
   auto max_decode_step_ids = torch::arange(0, max_decode_step, paged_options);
   max_decode_step_ids = max_decode_step_ids.unsqueeze(0).expand({batch_size, -1}).unsqueeze(1).expand({-1, beam_size, -1});
-  LOG(INFO) << "max_decode_step_ids: " << max_decode_step_ids;
+  // LOG(INFO) << "max_decode_step_ids: " << max_decode_step_ids;
   auto unshared_kv_offsets = batch_ids + beams_ids + max_decode_step_ids;
-  LOG(INFO) << "unshared_kv_offsets: " << unshared_kv_offsets;
+  // LOG(INFO) << "unshared_kv_offsets: " << unshared_kv_offsets;
   auto unshared_kv_indices = unshared_kv_offsets + unshared_begin_index;
-  LOG(INFO) << "unshared_kv_indices: " << unshared_kv_indices;
-  // 合并 shared 和 unshared indices
-  shared_kv_indices = shared_kv_indices.unsqueeze(1).expand({-1, beam_size, -1});
-  auto full_kv_indices = torch::cat({shared_kv_indices, unshared_kv_indices}, 2);
-  LOG(INFO) << "full_kv_indices: " << full_kv_indices;
-  // 计算 mask
-  auto shared_mask = mask.unsqueeze(1).expand({-1, beam_size, -1});
+  // unshared_kv_indices = unshared_kv_indices.view({batch_size, -1});
+  // LOG(INFO) << "unshared_kv_indices: " << unshared_kv_indices;
+  // // 合并 shared 和 unshared indices
+  // shared_kv_indices = shared_kv_indices.unsqueeze(1).expand({-1, beam_size, -1});
+  // auto full_kv_indices = torch::cat({shared_kv_indices, unshared_kv_indices}, 2);
+  // LOG(INFO) << "full_kv_indices: " << full_kv_indices;
+  // // 计算 mask
+  // auto shared_mask = mask.unsqueeze(1).expand({-1, beam_size, -1});
   auto unshared_mask = max_decode_step_ids <= current_step;
+  // unshared_mask = unshared_mask.view({batch_size, -1});
+  // LOG(INFO) << "unshared_mask: " << unshared_mask;
   auto full_mask = torch::cat({shared_mask, unshared_mask}, 2);
-  LOG(INFO) << "full_mask: " << full_mask;
-  // 过滤 indices
-  auto paged_kv_indices = full_kv_indices.masked_select(full_mask);
-  LOG(INFO) << "paged_kv_indices: " << paged_kv_indices;
+  // LOG(INFO) << "full_mask: " << full_mask;
+
+  // torch::Tensor shared_kv_indices = torch::arange(0, shared_kv_len, paged_options);
+  // shared_kv_indices = shared_kv_indices.unsqueeze(0).expand({batch_size, -1});
+  // shared_kv_indices = shared_kv_indices.unsqueeze(1).expand({-1, beam_size, -1});
+  // LOG(INFO) << "shared_kv_indices: " << shared_kv_indices;
+  torch::Tensor full_kv_indices = torch::cat({shared_kv_indices, unshared_kv_indices}, 2);
+  // LOG(INFO) << "full_kv_indices: " << full_kv_indices;
+  full_kv_indices = full_kv_indices.masked_select(full_mask);
+  // LOG(INFO) << "full_kv_indices: " << full_kv_indices;
+  // LOG(INFO) << "shared_kv_indices: " << shared_kv_indices;
+  // LOG(FATAL) << "after.";
+  // auto full_mask = torch::cat({shared_mask, unshared_mask}, 2);
+  // LOG(INFO) << "full_mask: " << full_mask;
+  // // 过滤 indices
+  // auto paged_kv_indices = full_kv_indices.masked_select(full_mask);
+  auto paged_kv_indices = full_kv_indices;
+  // LOG(INFO) << "paged_kv_indices: " << paged_kv_indices;
   // 计算 paged_kv_indptr
   auto batch_beam_shared_kv_lens = batch_shared_kv_lens.unsqueeze(1).expand({-1, beam_size});
   uint32_t unshared_kv_len = current_step + 1;
   batch_beam_shared_kv_lens = batch_beam_shared_kv_lens + unshared_kv_len;
   auto flattened = batch_beam_shared_kv_lens.flatten();
   auto cumsum_result = torch::cumsum(flattened, 0);
-  // torch::cat expects all tensors to have the same dtype/device/options, so ensure both tensors use paged_options.
   auto paged_kv_indptr = torch::cat(
       {torch::zeros({1}, paged_options), cumsum_result.to(paged_options)}, 0
   );
@@ -368,7 +389,10 @@ void LLMWorkerImpl::update_input_for_decode(
   input.input_params.decode_paged_kv_indices = paged_kv_indices;
   input.input_params.decode_paged_kv_indptr = paged_kv_indptr;
   input.input_params.decode_paged_kv_last_page_len = paged_kv_last_page_len;
-
+  // LOG(INFO) << "input.input_params.decode_paged_kv_indices: " << input.input_params.decode_paged_kv_indices;
+  // LOG(INFO) << "input.input_params.decode_paged_kv_indptr: " << input.input_params.decode_paged_kv_indptr;
+  // LOG(INFO) << "input.input_params.decode_paged_kv_last_page_len: " << input.input_params.decode_paged_kv_last_page_len;
+  // LOG(FATAL) << "after update_input_for_decode.";
   #if defined(USE_CUDA)
   {
     LLM_NVTX_RANGE_COLOR("generate_decode_plan_info", 0xFF00FF00);  // Green
@@ -379,7 +403,7 @@ void LLMWorkerImpl::update_input_for_decode(
                                     torch::TensorOptions().dtype(dtype_).device(device_));
     // 由于里面用的是unshared_k_cache_first.size(2)，size(1)代表block_size,代表num_kv_heads，所以需要先view一下
     unshared_k_cache_first = unshared_k_cache_first.view({-1, 1, num_kv_heads, head_dim});
-    input.input_params.plan_info =
+    input.input_params.decode_plan_info =
         kernel::cuda::generate_decode_plan_info(
             layer::FlashinferWorkspace::get_instance().get_float_workspace_buffer(),
             layer::FlashinferWorkspace::get_instance().get_int_workspace_buffer(),
@@ -427,9 +451,6 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
   auto fp32_options =
       torch::TensorOptions().dtype(torch::kFloat32).device(device_);
 
-  
-  auto shared_kv_cache = input.input_params.shared_k_caches[0];
-  auto shared_kv_len = shared_kv_cache.size(0);
   // int32_t batch = shared_kv_len / FLAGS_max_token_per_req;
   // LOG(INFO) << "batch: " << batch;
   // 相当于用显存维护起sequence token ids
@@ -459,14 +480,14 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
   {
     LLM_NVTX_RANGE_COLOR("generate_prefill_plan_info", 0xFF00FF00);  // Green
     
-    input.input_params.plan_info =
+    input.input_params.prefill_plan_info =
         kernel::cuda::generate_prefill_plan_info(
             layer::FlashinferWorkspace::get_instance().get_float_workspace_buffer(),
             layer::FlashinferWorkspace::get_instance().get_int_workspace_buffer(),
             layer::FlashinferWorkspace::get_instance().get_page_locked_int_workspace_buffer(),
             input.input_params.q_seq_lens,
             input.input_params.kv_seq_lens,
-            num_heads, // TODO 应该是num_heads，但是shared当前实现依赖beam_size
+            num_heads,
             num_kv_heads,
             head_dim,
             head_dim,
@@ -478,7 +499,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
   #endif
 
   for (int32_t round = 0; round < total_rounds; ++round) {
-    LOG(INFO) << "round: " << round;
+    // LOG(INFO) << "round: " << round;
     const auto& sampling_params =
         round > 0 ? input.decoder_sampling_params : input.sampling_params;
     input.input_params.is_prefill = round == 0;
@@ -503,7 +524,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
     auto hidden_states = model_executor_->forward(
         input.token_ids, input.positions, kv_caches_, input.input_params);
     // if (round == total_rounds - 1) {
-    LOG(INFO) << "hidden_states: " << hidden_states;
+    // LOG(INFO) << "hidden_states: " << hidden_states;
     //   LOG(FATAL) << "after model_executor_->forward.";
     // }
     // LOG(INFO) << "hidden_states.shape: " << hidden_states.sizes();
@@ -568,15 +589,15 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
         out_beam_count_prefix_sums,
         out_seqgroup);
       #elif defined(USE_CUDA)
-      LOG(INFO) << "acc_logprob: " << acc_logprob;
-      LOG(INFO) << "sequence_group: " << sequence_group;
-      LOG(INFO) << "top_tokens: " << top_tokens;
-      LOG(INFO) << "top_logprobs: " << top_logprobs;
-      LOG(INFO) << "out_log_probs: " << out_log_probs;
-      LOG(INFO) << "out_token_ids: " << out_token_ids;
-      LOG(INFO) << "out_token_index: " << out_token_index;
-      LOG(INFO) << "out_beam_count_prefix_sums: " << out_beam_count_prefix_sums;
-      LOG(INFO) << "out_seqgroup: " << out_seqgroup;
+      // LOG(INFO) << "acc_logprob: " << acc_logprob;
+      // LOG(INFO) << "sequence_group: " << sequence_group;
+      // LOG(INFO) << "top_tokens: " << top_tokens;
+      // LOG(INFO) << "top_logprobs: " << top_logprobs;
+      // LOG(INFO) << "out_log_probs: " << out_log_probs;
+      // LOG(INFO) << "out_token_ids: " << out_token_ids;
+      // LOG(INFO) << "out_token_index: " << out_token_index;
+      // LOG(INFO) << "out_beam_count_prefix_sums: " << out_beam_count_prefix_sums;
+      // LOG(INFO) << "out_seqgroup: " << out_seqgroup;
       rec_kernel_->beam_search(acc_logprob, 
                                sequence_group, 
                                top_tokens, 

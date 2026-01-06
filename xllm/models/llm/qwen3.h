@@ -142,11 +142,11 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
         {
           LLM_NVTX_RANGE_COLOR("qwen3_layer_prepare", 0xFF808080);  // Gray
           if (FLAGS_max_decode_rounds) {
-            auto target_layer_shared_k_cache = input_params_new.shared_k_caches[i];
-            auto target_layer_shared_v_cache = input_params_new.shared_v_caches[i];
+            auto target_layer_full_k_cache = input_params_new.full_k_caches[i];
+            auto target_layer_full_v_cache = input_params_new.full_v_caches[i];
 
-            attn_metadata.shared_k_cache = target_layer_shared_k_cache;
-            attn_metadata.shared_v_cache = target_layer_shared_v_cache;
+            attn_metadata.full_k_cache = target_layer_full_k_cache;
+            attn_metadata.full_v_cache = target_layer_full_v_cache;
           }
         }
         

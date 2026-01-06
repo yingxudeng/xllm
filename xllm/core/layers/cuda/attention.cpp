@@ -99,8 +99,8 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
         LLM_NVTX_RANGE_COLOR("prefill_reshape_and_cache", 0xFF008080);  // Teal
         rec_kernel_->prefill_reshape_and_cache(key, 
                                                value, 
-                                               attn_metadata.shared_k_cache, 
-                                               attn_metadata.shared_v_cache);
+                                               attn_metadata.full_k_cache, 
+                                               attn_metadata.full_v_cache);
       }
     }
 
@@ -126,7 +126,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
       attention_params.q_cu_seq_lens = attn_metadata.q_cu_seq_lens;
       // LOG(INFO) << "attn_metadata.is_prefill: " << attn_metadata.is_prefill;
       // TODO: support chunked prefill
-      attention_params.plan_info = attn_metadata.plan_info;
+      attention_params.plan_info = attn_metadata.prefill_plan_info;
       attention_params.key = key;
       attention_params.value = value;
       // LOG(INFO) << "key.shape: " << key.sizes();
@@ -137,7 +137,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
     LLM_NVTX_RANGE("attention_decode");
 
     if (FLAGS_max_decode_rounds > 0) {
-      LOG(INFO) << "attention_decode_with_shared";
+      // LOG(INFO) << "attention_decode_with_shared";
       LLM_NVTX_RANGE("attention_decode_with_shared");
 
       uint32_t batch_size = attn_metadata.kv_cu_seq_lens.size(0) - 1;
@@ -145,40 +145,37 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
       uint32_t beam_size = total_beam / batch_size;
 
       // [max_shared_kv_len, num_kv_heads_, head_size_]
-      torch::Tensor shared_k_cache = attn_metadata.shared_k_cache;
-      torch::Tensor shared_v_cache = attn_metadata.shared_v_cache;
+      torch::Tensor full_k_cache = attn_metadata.full_k_cache;
+      torch::Tensor full_v_cache = attn_metadata.full_v_cache;
 
       // [batch_size * beam_size * max_decode_step, num_kv_heads_, head_size_]
       key = key.view({batch_size, beam_size, num_kv_heads_, head_size_})
                 .contiguous();
       value = value.view({batch_size, beam_size, num_kv_heads_, head_size_})
                   .contiguous();
+      int32_t full_kv_len = full_k_cache.size(0);
+      int32_t unshared_offset = batch_size * FLAGS_max_token_per_req;
+      int32_t max_decode_step = k_cache.size(2);
+      // LOG(INFO) << "full_kv_len: " << full_kv_len;
+      // LOG(INFO) << "unshared_offset: " << unshared_offset;
+      auto unshared_k_cache = full_k_cache.slice(0, unshared_offset, full_kv_len);
+      auto unshared_v_cache = full_v_cache.slice(0, unshared_offset, full_kv_len);
+      // LOG(INFO) << "unshared_k_cache.shape: " << unshared_k_cache.sizes();
+      // LOG(INFO) << "unshared_v_cache.shape: " << unshared_v_cache.sizes();
+      unshared_k_cache = unshared_k_cache.view({batch_size, beam_size, max_decode_step, num_kv_heads_, head_size_});
+      unshared_v_cache = unshared_v_cache.view({batch_size, beam_size, max_decode_step, num_kv_heads_, head_size_});
 
-      // rec_kernel_->decoder_reshape_and_cache(key,
-      //                                        value,
-      //                                        k_cache,
-      //                                        v_cache,
-      //                                        attn_metadata.block_table,
-      //                                        attn_metadata.step);
-      // `step` is a plain uint32_t (not a Tensor), so just print its value.
+
       xllm::kernel::cuda::decoder_reshape_and_cache(key,
                                                     value,
-                                                    k_cache,
-                                                    v_cache,
-                                                    attn_metadata.block_table,
+                                                    unshared_k_cache,
+                                                    unshared_v_cache,
+                                                    attn_metadata.naive_block_table,
                                                     attn_metadata.step);
-      torch::Tensor unshared_k_cache =
-          k_cache.view({-1, num_kv_heads_, head_size_});
-      torch::Tensor unshared_v_cache =
-          v_cache.view({-1, num_kv_heads_, head_size_});
-      auto full_k_cache = torch::cat({shared_k_cache, unshared_k_cache}, 0);
+
       full_k_cache = full_k_cache.unsqueeze(1);
-      // LOG(INFO) << "full_k_cache.shape: " << full_k_cache.sizes();
-      // LOG(INFO) << "full_k_cache.shape: " << full_k_cache.sizes();
-      auto full_v_cache = torch::cat({shared_v_cache, unshared_v_cache}, 0);
       full_v_cache = full_v_cache.unsqueeze(1);
-      // LOG(INFO) << "full_v_cache.shape: " << full_v_cache.sizes();
-      // LOG(INFO) << "full_v_cache.shape: " << full_v_cache.sizes();
+
 
       {
         LLM_NVTX_RANGE_COLOR("batch_decode_unshared", 0xFFFF0000);  // Red
@@ -217,7 +214,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
         unshared_attention_params.paged_kv_last_page_len =
             attn_metadata.decode_paged_kv_last_page_len;
 
-        unshared_attention_params.plan_info = attn_metadata.plan_info;
+        unshared_attention_params.plan_info = attn_metadata.decode_plan_info;
 
         xllm::kernel::batch_decode(unshared_attention_params);
         // LOG(INFO) << "output: " << o;

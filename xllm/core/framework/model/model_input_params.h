@@ -134,13 +134,13 @@ struct ModelInputParams {
     params.kv_cache_start_offsets = safe_to(kv_cache_start_offsets, device);
 
     // shared kv caches per layer (optional)
-    params.shared_k_caches.clear();
-    params.shared_v_caches.clear();
-    for (const auto& t : shared_k_caches) {
-      params.shared_k_caches.push_back(safe_to(t, device));
+    params.full_k_caches.clear();
+    params.full_v_caches.clear();
+    for (const auto& t : full_k_caches) {
+      params.full_k_caches.push_back(safe_to(t, device));
     }
-    for (const auto& t : shared_v_caches) {
-      params.shared_v_caches.push_back(safe_to(t, device));
+    for (const auto& t : full_v_caches) {
+      params.full_v_caches.push_back(safe_to(t, device));
     }
     params.beam_width_tensor = safe_to(beam_width_tensor, device);
     params.current_round_tensor = safe_to(current_round_tensor, device);
@@ -174,8 +174,11 @@ struct ModelInputParams {
     params.batch_id = batch_id;
 
     // Copy plan_info if present
-    if (plan_info.has_value()) {
-      params.plan_info = plan_info.value();
+    if (prefill_plan_info.has_value()) {
+      params.prefill_plan_info = prefill_plan_info.value();
+    }
+    if (decode_plan_info.has_value()) {
+      params.decode_plan_info = decode_plan_info.value();
     }
 
     return params;
@@ -334,9 +337,9 @@ struct ModelInputParams {
 
   torch::Tensor graph_buffer_rec;
 
-  // shared kv caches provided by engine for step-level decode, per layer
-  std::vector<torch::Tensor> shared_k_caches;
-  std::vector<torch::Tensor> shared_v_caches;
+  // full kv caches provided by engine for step-level decode, per layer
+  std::vector<torch::Tensor> full_k_caches;
+  std::vector<torch::Tensor> full_v_caches;
   torch::Tensor beam_width_tensor;
   torch::Tensor current_round_tensor;
   std::vector<torch::Tensor> current_round_tensor_list;
@@ -351,7 +354,8 @@ struct ModelInputParams {
 
   // Cached plan_info for batch_prefill optimization (reused across layers)
   // Generated in llm_worker_impl.cpp for prefill mode
-  std::optional<torch::Tensor> plan_info;
+  std::optional<torch::Tensor> prefill_plan_info;
+  std::optional<torch::Tensor> decode_plan_info;
 };
 
 }  // namespace xllm

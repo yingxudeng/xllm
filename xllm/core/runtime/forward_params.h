@@ -103,7 +103,7 @@ struct ForwardInput {
     inputs.beam_width = beam_width;
     inputs.current_round = current_round;
     inputs.total_round = total_round;
-    inputs.shared_kv_shape = shared_kv_shape;
+    inputs.full_kv_shape = full_kv_shape;
     inputs.decode_positions_vec = decode_positions_vec;
     return inputs;
   }
@@ -137,7 +137,7 @@ struct ForwardInput {
   int32_t total_round = 0;
   // decode kv cache shape planned by engine: [batch_size * beam_width,
   // n_kv_heads, step_rounds, head_dim]
-  std::vector<int64_t> shared_kv_shape;
+  std::vector<int64_t> full_kv_shape;
 };
 
 // output after forward execution
@@ -222,7 +222,7 @@ struct RawForwardInput {
   int32_t total_round = 0;
   // decode kv cache shape planned by engine: [batch_size * beam_width,
   // n_kv_heads, step_rounds, head_dim]
-  std::vector<int64_t> shared_kv_shape;
+  std::vector<int64_t> full_kv_shape;
   // for flashinfer
   std::vector<int32_t> paged_kv_indptr;         //[n_seq + 1]
   std::vector<int32_t> paged_kv_indices;        //[num_used_pages]

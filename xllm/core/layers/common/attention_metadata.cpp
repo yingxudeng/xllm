@@ -50,7 +50,8 @@ AttentionMetadata AttentionMetadata::build(const ModelInputParams& params,
   attn_metadata.is_dummy = (params.q_max_seq_len == 0);
 
   // Copy plan_info from params if present
-  attn_metadata.plan_info = params.plan_info;
+  attn_metadata.prefill_plan_info = params.prefill_plan_info;
+  attn_metadata.decode_plan_info = params.decode_plan_info;
 
   // for xattention
   if (params.current_round >= 0) {
@@ -61,6 +62,9 @@ AttentionMetadata AttentionMetadata::build(const ModelInputParams& params,
     attn_metadata.decode_paged_kv_indices = params.decode_paged_kv_indices;
     attn_metadata.decode_paged_kv_indptr = params.decode_paged_kv_indptr;
     attn_metadata.decode_paged_kv_last_page_len = params.decode_paged_kv_last_page_len;
+    int32_t batch_size = attn_metadata.block_table.size(0);
+    // LOG(INFO) << "batch_size: " << batch_size;
+    attn_metadata.naive_block_table = torch::arange(0, batch_size, params.block_tables.options()).unsqueeze(1);
   }
 
   return attn_metadata;

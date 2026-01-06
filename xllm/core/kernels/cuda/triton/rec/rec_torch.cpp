@@ -58,10 +58,10 @@ void RecTorchKernel::prefill_reshape_and_cache(torch::Tensor proj_k,          //
                                                torch::Tensor proj_v,          // [shared_len, kv_heads, head_dim]
                                                torch::Tensor shared_k_cache,  // [num_shared_kv_seq_len, kv_heads, head_dim]
                                                torch::Tensor shared_v_cache) {
-  LOG(INFO) << "proj_k.shape: " << proj_k.sizes();
-  LOG(INFO) << "proj_v.shape: " << proj_v.sizes();
-  LOG(INFO) << "shared_k_cache.shape: " << shared_k_cache.sizes();
-  LOG(INFO) << "shared_v_cache.shape: " << shared_v_cache.sizes();
+  // LOG(INFO) << "proj_k.shape: " << proj_k.sizes();
+  // LOG(INFO) << "proj_v.shape: " << proj_v.sizes();
+  // LOG(INFO) << "shared_k_cache.shape: " << shared_k_cache.sizes();
+  // LOG(INFO) << "shared_v_cache.shape: " << shared_v_cache.sizes();
   int64_t shared_len = proj_k.size(0);
   shared_k_cache = shared_k_cache.slice(0, 0, shared_len);
   shared_v_cache = shared_v_cache.slice(0, 0, shared_len);
@@ -82,12 +82,12 @@ void RecTorchKernel::decoder_reshape_and_cache(torch::Tensor proj_k,          //
   int64_t head_dim = proj_k.size(3);
   int64_t max_num_request = unshared_k_cache.size(0);
   int64_t max_decode_step = unshared_k_cache.size(2);
-  LOG(INFO) << "proj_k.shape: " << proj_k.sizes();
-  LOG(INFO) << "proj_v.shape: " << proj_v.sizes();
-  LOG(INFO) << "unshared_k_cache.shape: " << unshared_k_cache.sizes();
-  LOG(INFO) << "unshared_v_cache.shape: " << unshared_v_cache.sizes();
-  LOG(INFO) << "block_table.shape: " << block_table.sizes();
-  LOG(INFO) << "step: " << step;
+  // LOG(INFO) << "proj_k.shape: " << proj_k.sizes();
+  // LOG(INFO) << "proj_v.shape: " << proj_v.sizes();
+  // LOG(INFO) << "unshared_k_cache.shape: " << unshared_k_cache.sizes();
+  // LOG(INFO) << "unshared_v_cache.shape: " << unshared_v_cache.sizes();
+  // LOG(INFO) << "block_table.shape: " << block_table.sizes();
+  // LOG(INFO) << "step: " << step;
   // 检查维度兼容性
   CHECK_EQ(proj_v.sizes(), proj_k.sizes()) << 
               "proj_v and proj_k must have same shape";
