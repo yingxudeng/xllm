@@ -29,6 +29,7 @@ limitations under the License.
 #include "core/framework/block/block_manager_impl.h"
 #include "core/framework/kv_cache/kv_cache.h"
 #include "core/framework/model/model_args.h"
+#include "core/framework/model/npu_causal_lm.h"
 #include "core/framework/model_loader.h"
 #include "core/framework/request/sequence.h"
 #include "core/framework/request/stopping_checker.h"
@@ -83,7 +84,7 @@ void InitializeGlog() {
 
 // Simple CausalLM implementation for testing ACL graph executor
 // Uses basic operations to verify graph capture and replay functionality
-class SimpleCausalLM : public CausalLM {
+class SimpleCausalLM : public NPUCausalLM {
  public:
   SimpleCausalLM(const ModelArgs& args, const torch::Device& device)
       : args_(args), device_(device) {

@@ -1283,7 +1283,7 @@ class MiniCPMV2_6Impl : public torch::nn::Module {
 };
 TORCH_MODULE(MiniCPMV2_6);
 
-REGISTER_CAUSAL_VLM_MODEL(minicpmv, MiniCPMV2_6);
+REGISTER_NPU_CAUSAL_VLM_MODEL(minicpmv, MiniCPMV2_6);
 REGISTER_INPUT_PROCESSOR(minicpmv, MiniCPMInputProcessor);
 REGISTER_IMAGE_PROCESSOR(minicpmv, MiniCPMVImageProcessor);
 

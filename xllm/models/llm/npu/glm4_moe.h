@@ -292,7 +292,7 @@ class Glm4MoeForCausalLMImpl : public LlmForCausalLMImplBase<Glm4MoeModel> {
 TORCH_MODULE(Glm4MoeForCausalLM);
 
 // register the causal model
-REGISTER_CAUSAL_MODEL(glm4_moe, Glm4MoeForCausalLM);
+REGISTER_NPU_CAUSAL_MODEL(glm4_moe, Glm4MoeForCausalLM);
 
 // register the model args
 // example config:

@@ -347,7 +347,7 @@ class Qwen3MoeForCausalLMImpl : public LlmForCausalLMImplBase<Qwen3MoeModel> {
 TORCH_MODULE(Qwen3MoeForCausalLM);
 
 // register the causal model
-REGISTER_CAUSAL_MODEL(qwen3_moe, Qwen3MoeForCausalLM);
+REGISTER_NPU_CAUSAL_MODEL(qwen3_moe, Qwen3MoeForCausalLM);
 
 // register the model args
 // example config:

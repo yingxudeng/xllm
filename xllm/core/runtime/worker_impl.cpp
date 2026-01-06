@@ -21,6 +21,9 @@ limitations under the License.
 #include <glog/logging.h>
 #include <torch/torch.h>
 #if defined(USE_NPU)
+#include <torch_npu/csrc/aten/NPUNativeFunctions.h>
+#include <torch_npu/csrc/core/npu/NPUFormat.h>
+
 #include "acl/acl.h"
 #include "kernels/npu/xllm_ops/replace_token.h"
 #elif defined(USE_MLU)

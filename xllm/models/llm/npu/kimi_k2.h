@@ -19,7 +19,7 @@ limitations under the License.
 
 namespace xllm {
 // register the causal model
-REGISTER_CAUSAL_MODEL(kimi_k2, DeepseekV2ForCausalLM);
+REGISTER_NPU_CAUSAL_MODEL(kimi_k2, DeepseekV2ForCausalLM);
 // register the model args
 // example config:
 // example config:

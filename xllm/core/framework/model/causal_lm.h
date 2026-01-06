@@ -15,13 +15,7 @@ limitations under the License.
 ==============================================================================*/
 
 #pragma once
-// clang-format off
-#if defined(USE_NPU)
-#include "graph/types.h"
-#include "layers/npu/npu_lm_head_impl.h"
-#include "layers/npu/npu_word_embedding_impl.h"
-#endif
-// clang-format on
+
 #include <c10/core/Device.h>
 #include <torch/torch.h>
 
@@ -104,16 +98,11 @@ class CausalLM : public torch::nn::Module {
 
   virtual const torch::TensorOptions& options() const = 0;
 
-  // MTP-specific interface.
-#if defined(USE_NPU)
-  virtual layer::NpuLmHead get_npu_lm_head() = 0;
-  virtual void set_npu_lm_head(layer::NpuLmHead& head) = 0;
-  virtual layer::NpuWordEmbedding get_npu_word_embedding() = 0;
-  virtual void set_npu_word_embedding(layer::NpuWordEmbedding& embedding) = 0;
-#endif
+  // Optional interfaces for models that support them
   virtual layer::LmHead get_lm_head() {
     LOG(FATAL)
         << "Method 'get_lm_head' is not implemented/supported by this model.";
+    return nullptr;  // Unreachable, but needed for compilation
   }
   virtual void set_lm_head(layer::LmHead& head) {
     LOG(FATAL)
@@ -122,6 +111,7 @@ class CausalLM : public torch::nn::Module {
   virtual layer::WordEmbedding get_word_embedding() {
     LOG(FATAL) << "Method 'get_word_embedding' is not implemented/supported by "
                   "this model.";
+    return nullptr;  // Unreachable, but needed for compilation
   }
   virtual void set_word_embedding(layer::WordEmbedding& embedding) {
     LOG(FATAL) << "Method 'set_word_embedding' is not implemented/supported by "
@@ -160,23 +150,6 @@ class CausalLMImpl : public CausalLM {
     return model_->update_expert_weight(layer_id);
   }
 
-#if defined(USE_NPU)
-  layer::NpuLmHead get_npu_lm_head() override {
-    return model_->get_npu_lm_head();
-  }
-
-  void set_npu_lm_head(layer::NpuLmHead& head) override {
-    model_->set_npu_lm_head(head);
-  }
-
-  layer::NpuWordEmbedding get_npu_word_embedding() override {
-    return model_->get_npu_word_embedding();
-  }
-
-  void set_npu_word_embedding(layer::NpuWordEmbedding& embedding) override {
-    model_->set_npu_word_embedding(embedding);
-  }
-#endif
   layer::LmHead get_lm_head() override {
     if constexpr (detail::has_get_lm_head<Model>::value) {
       return model_->get_lm_head();

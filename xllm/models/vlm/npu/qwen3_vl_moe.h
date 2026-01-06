@@ -145,7 +145,8 @@ class Qwen3_VLMoeForConditionalGenerationImpl : public torch::nn::Module {
 TORCH_MODULE(Qwen3_VLMoeForConditionalGeneration);
 
 REGISTER_INPUT_PROCESSOR(qwen3_vl_moe, Qwen2_5_VLInputProcessor);
-REGISTER_CAUSAL_VLM_MODEL(qwen3_vl_moe, Qwen3_VLMoeForConditionalGeneration);
+REGISTER_NPU_CAUSAL_VLM_MODEL(qwen3_vl_moe,
+                              Qwen3_VLMoeForConditionalGeneration);
 REGISTER_IMAGE_PROCESSOR(qwen3_vl_moe, Qwen2VLImageProcessor);
 // register the model args
 REGISTER_MODEL_ARGS(qwen3_vl_moe, [&] {

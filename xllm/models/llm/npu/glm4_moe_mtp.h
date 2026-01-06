@@ -51,7 +51,7 @@ class Glm4MoeMtpForCausalLMImpl
 TORCH_MODULE(Glm4MoeMtpForCausalLM);
 
 // register the causal model
-REGISTER_CAUSAL_MODEL(glm4_moe_mtp, Glm4MoeMtpForCausalLM);
+REGISTER_NPU_CAUSAL_MODEL(glm4_moe_mtp, Glm4MoeMtpForCausalLM);
 
 // example config:
 // https://huggingface.co/zai-org/GLM-4.5-Air/blob/main/config.json

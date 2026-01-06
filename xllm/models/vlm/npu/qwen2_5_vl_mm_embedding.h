@@ -103,58 +103,8 @@ class Qwen2_5_VLForMMEmbeddingImpl : public torch::nn::Module {
 };
 TORCH_MODULE(Qwen2_5_VLForMMEmbedding);
 
-template <>
-class MMEmbeddingVLMImpl<xllm::Qwen2_5_VLForMMEmbedding>
-    : public MMEmbeddingVLM {
- public:
-  MMEmbeddingVLMImpl(xllm::Qwen2_5_VLForMMEmbedding model,
-                     const torch::TensorOptions& options)
-      : model_(std::move(model)), options_(options) {}
-
-  std::vector<torch::Tensor> encode(
-      const ModelInputParams& input_params) override {
-    return model_->encode(input_params);
-  };
-
-  virtual torch::Tensor logits(const torch::Tensor& hidden_states,
-                               const torch::Tensor& selected_idxes) {
-    return torch::Tensor();
-  }
-
-  virtual torch::Tensor forward(const torch::Tensor& tokens,
-                                const torch::Tensor& positions,
-                                std::vector<KVCache>& kv_caches,
-                                const ModelInputParams& input_params) {
-    return torch::Tensor{};
-  }
-  virtual void prepare_expert_weight(int32_t layer_id,
-                                     const std::vector<int32_t>& expert_ids) {
-    return;
-  }
-  virtual void update_expert_weight(int32_t layer_id) { return; }
-  virtual void set_npu_lm_head(layer::NpuLmHead& head) { return; }
-  virtual layer::NpuLmHead get_npu_lm_head() { return nullptr; }
-  virtual layer::NpuWordEmbedding get_npu_word_embedding() { return nullptr; }
-  virtual void set_npu_word_embedding(layer::NpuWordEmbedding& embedding) {
-    return;
-  }
-
-  void load_model(std::unique_ptr<ModelLoader> loader) override {
-    model_->load_model(std::move(loader));
-  }
-
-  torch::Device device() const override { return model_->device(); }
-
-  const torch::TensorOptions& options() const override {
-    return model_->options();
-  }
-
- private:
-  xllm::Qwen2_5_VLForMMEmbedding model_;
-  torch::TensorOptions options_;
-};
-
-REGISTER_MM_EMBEDDING_VLM_MODEL_WITH_VARNAME(qwen2_5_vl_mm_embedding,
-                                             qwen2_5_vl,
-                                             Qwen2_5_VLForMMEmbedding);
+// Use NPU-specific registration for this model
+REGISTER_NPU_MM_EMBEDDING_VLM_MODEL_WITH_VARNAME(qwen2_5_vl_mm_embedding,
+                                                 qwen2_5_vl,
+                                                 Qwen2_5_VLForMMEmbedding);
 }  // namespace xllm

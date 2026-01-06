@@ -271,7 +271,7 @@ class DeepseekV2ForCausalLMImpl
 TORCH_MODULE(DeepseekV2ForCausalLM);
 
 // register the causal model
-REGISTER_CAUSAL_MODEL(deepseek_v2, DeepseekV2ForCausalLM);
+REGISTER_NPU_CAUSAL_MODEL(deepseek_v2, DeepseekV2ForCausalLM);
 
 // register the model args
 // example config:

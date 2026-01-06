@@ -227,8 +227,8 @@ class LlamaForCausalLMImpl : public LlmForCausalLMImplBase<LlamaModel> {
 };
 TORCH_MODULE(LlamaForCausalLM);
 
-// register the causal model
-REGISTER_CAUSAL_MODEL(llama, LlamaForCausalLM);
+// register the NPU causal model
+REGISTER_NPU_CAUSAL_MODEL(llama, LlamaForCausalLM);
 
 // register the model args
 // example config:

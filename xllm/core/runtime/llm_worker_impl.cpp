@@ -38,6 +38,9 @@ limitations under the License.
 #include "models/model_registry.h"
 #include "util/threadpool.h"
 #include "util/timer.h"
+#if defined(USE_NPU)
+#include "framework/model/npu_causal_lm.h"
+#endif
 
 namespace xllm {
 
@@ -200,5 +203,42 @@ std::optional<ForwardOutput> LLMWorkerImpl::step(const ForwardInput& input) {
 
   return output;
 }
+
+#if defined(USE_NPU)
+// NPU-specific methods implementation
+layer::NpuLmHead LLMWorkerImpl::get_npu_lm_head() {
+  auto* npu_model = dynamic_cast<NPUCausalLM*>(model_.get());
+  if (npu_model) {
+    return npu_model->get_npu_lm_head();
+  }
+  LOG(FATAL) << "Model is not an NPU model";
+}
+
+void LLMWorkerImpl::set_npu_lm_head(layer::NpuLmHead& head) {
+  auto* npu_model = dynamic_cast<NPUCausalLM*>(model_.get());
+  if (npu_model) {
+    npu_model->set_npu_lm_head(head);
+  } else {
+    LOG(FATAL) << "Model is not an NPU model";
+  }
+}
+
+layer::NpuWordEmbedding LLMWorkerImpl::get_npu_word_embedding() {
+  auto* npu_model = dynamic_cast<NPUCausalLM*>(model_.get());
+  if (npu_model) {
+    return npu_model->get_npu_word_embedding();
+  }
+  LOG(FATAL) << "Model is not an NPU model";
+}
+
+void LLMWorkerImpl::set_npu_word_embedding(layer::NpuWordEmbedding& embedding) {
+  auto* npu_model = dynamic_cast<NPUCausalLM*>(model_.get());
+  if (npu_model) {
+    npu_model->set_npu_word_embedding(embedding);
+  } else {
+    LOG(FATAL) << "Model is not an NPU model";
+  }
+}
+#endif
 
 }  // namespace xllm

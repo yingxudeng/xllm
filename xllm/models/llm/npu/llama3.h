@@ -18,6 +18,6 @@ limitations under the License.
 #include "llama.h"
 
 namespace xllm {
-// register the causal model
-REGISTER_CAUSAL_MODEL(llama3, LlamaForCausalLM);
+// register the NPU causal model
+REGISTER_NPU_CAUSAL_MODEL(llama3, LlamaForCausalLM);
 }  // namespace xllm

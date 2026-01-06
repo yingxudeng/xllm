@@ -19,7 +19,7 @@ limitations under the License.
 
 namespace xllm {
 // register the causal model
-REGISTER_CAUSAL_MODEL(deepseek_v3, DeepseekV2ForCausalLM);
+REGISTER_NPU_CAUSAL_MODEL(deepseek_v3, DeepseekV2ForCausalLM);
 // register the model args
 // example config:
 // https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/main/config.json

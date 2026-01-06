@@ -18,6 +18,11 @@ limitations under the License.
 #include <folly/futures/Future.h>
 #include <torch/torch.h>
 
+#if defined(USE_NPU)
+#include "layers/npu/npu_lm_head_impl.h"
+#include "layers/npu/npu_word_embedding_impl.h"
+#endif
+
 #include "executor.h"
 #include "forward_params.h"
 #include "framework/model/causal_lm.h"
@@ -44,22 +49,7 @@ class LLMWorkerImpl : public WorkerImpl {
 
   std::optional<ForwardOutput> step(const ForwardInput& input) override;
 
-#if defined(USE_NPU)
-  layer::NpuLmHead get_npu_lm_head() { return model_->get_npu_lm_head(); };
-
-  void set_npu_lm_head(layer::NpuLmHead& head) {
-    model_->set_npu_lm_head(head);
-  };
-
-  layer::NpuWordEmbedding get_npu_word_embedding() {
-    return model_->get_npu_word_embedding();
-  };
-
-  void set_npu_word_embedding(layer::NpuWordEmbedding& embedding) {
-    model_->set_npu_word_embedding(embedding);
-  };
-
-#endif
+  // Get/Set methods for lm_head and word_embedding
   layer::LmHead get_lm_head() { return model_->get_lm_head(); };
 
   void set_lm_head(layer::LmHead& head) { model_->set_lm_head(head); };
@@ -71,6 +61,14 @@ class LLMWorkerImpl : public WorkerImpl {
   void set_word_embedding(layer::WordEmbedding& embedding) {
     model_->set_word_embedding(embedding);
   };
+
+#if defined(USE_NPU)
+  // NPU-specific get/set methods
+  layer::NpuLmHead get_npu_lm_head();
+  void set_npu_lm_head(layer::NpuLmHead& head);
+  layer::NpuWordEmbedding get_npu_word_embedding();
+  void set_npu_word_embedding(layer::NpuWordEmbedding& embedding);
+#endif
 
  private:
   std::unique_ptr<BeamSearcher> beam_searcher_;

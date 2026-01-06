@@ -181,7 +181,7 @@ class Glm4ForCausalLMImpl : public LlmForCausalLMImplBase<Glm4Model> {
 TORCH_MODULE(Glm4ForCausalLM);
 
 // register the causal model
-REGISTER_CAUSAL_MODEL(glm4, Glm4ForCausalLM);
+REGISTER_NPU_CAUSAL_MODEL(glm4, Glm4ForCausalLM);
 
 // register the model args
 REGISTER_MODEL_ARGS(glm4, [&] {

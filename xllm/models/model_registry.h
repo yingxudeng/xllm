@@ -24,6 +24,13 @@ limitations under the License.
 #include "core/framework/model/causal_lm.h"
 #include "core/framework/model/causal_vlm.h"
 #include "core/framework/model/dit_model.h"
+#if defined(USE_NPU)
+#include "core/framework/model/npu_causal_lm.h"
+#include "core/framework/model/npu_causal_vlm.h"
+#include "core/framework/model/npu_embedding_lm.h"
+#include "core/framework/model/npu_embedding_vlm.h"
+#include "core/framework/model/npu_mm_embedding_vlm.h"
+#endif
 #include "core/framework/model/embedding_lm.h"
 #include "core/framework/model/embedding_vlm.h"
 #include "core/framework/model/mm_embedding_vlm.h"
@@ -199,6 +206,97 @@ std::unique_ptr<DiTModel> create_dit_model(const DiTModelContext& context);
 
 #define REGISTER_CAUSAL_VLM_MODEL(ModelType, ModelClass) \
   REGISTER_CAUSAL_VLM_MODEL_WITH_VARNAME(ModelType, ModelType, ModelClass)
+
+// NPU-specific registration macros (only available when USE_NPU is defined)
+#if defined(USE_NPU)
+
+// Macro to register NPU-specific causal models
+#define REGISTER_NPU_CAUSAL_MODEL_WITH_VARNAME(VarName, ModelType, ModelClass) \
+  const bool VarName##_registered = []() {                                     \
+    ModelRegistry::register_causallm_factory(                                  \
+        #ModelType, [](const ModelContext& context) {                          \
+          ModelClass model(context);                                           \
+          model->eval();                                                       \
+          return std::make_unique<xllm::NPUCausalLMImpl<ModelClass>>(          \
+              std::move(model), context.get_tensor_options());                 \
+        });                                                                    \
+    return true;                                                               \
+  }()
+
+#define REGISTER_NPU_CAUSAL_MODEL(ModelType, ModelClass) \
+  REGISTER_NPU_CAUSAL_MODEL_WITH_VARNAME(ModelType, ModelType, ModelClass)
+
+// Macro to register NPU-specific causal VLM models
+#define REGISTER_NPU_CAUSAL_VLM_MODEL_WITH_VARNAME(                    \
+    VarName, ModelType, ModelClass)                                    \
+  const bool VarName##_registered = []() {                             \
+    ModelRegistry::register_causalvlm_factory(                         \
+        #ModelType, [](const ModelContext& context) {                  \
+          ModelClass model(context);                                   \
+          model->eval();                                               \
+          return std::make_unique<xllm::NPUCausalVLMImpl<ModelClass>>( \
+              std::move(model), context.get_tensor_options());         \
+        });                                                            \
+    return true;                                                       \
+  }()
+
+#define REGISTER_NPU_CAUSAL_VLM_MODEL(ModelType, ModelClass) \
+  REGISTER_NPU_CAUSAL_VLM_MODEL_WITH_VARNAME(ModelType, ModelType, ModelClass)
+
+// Macro to register NPU-specific embedding models
+#define REGISTER_NPU_EMBEDDING_MODEL_WITH_VARNAME(                       \
+    VarName, ModelType, ModelClass)                                      \
+  const bool VarName##_registered = []() {                               \
+    ModelRegistry::register_lm_embedding_factory(                        \
+        #ModelType, [](const ModelContext& context) {                    \
+          ModelClass model(context);                                     \
+          model->eval();                                                 \
+          return std::make_unique<xllm::NPUEmbeddingLMImpl<ModelClass>>( \
+              std::move(model), context.get_tensor_options());           \
+        });                                                              \
+    return true;                                                         \
+  }()
+
+#define REGISTER_NPU_EMBEDDING_MODEL(ModelType, ModelClass) \
+  REGISTER_NPU_EMBEDDING_MODEL_WITH_VARNAME(ModelType, ModelType, ModelClass)
+
+// Macro to register NPU-specific embedding VLM models
+#define REGISTER_NPU_EMBEDDING_VLM_MODEL_WITH_VARNAME(                    \
+    VarName, ModelType, ModelClass)                                       \
+  const bool VarName##_registered = []() {                                \
+    ModelRegistry::register_vlm_embedding_factory(                        \
+        #ModelType, [](const ModelContext& context) {                     \
+          ModelClass model(context);                                      \
+          model->eval();                                                  \
+          return std::make_unique<xllm::NPUEmbeddingVLMImpl<ModelClass>>( \
+              std::move(model), context.get_tensor_options());            \
+        });                                                               \
+    return true;                                                          \
+  }()
+
+#define REGISTER_NPU_EMBEDDING_VLM_MODEL(ModelType, ModelClass) \
+  REGISTER_NPU_EMBEDDING_VLM_MODEL_WITH_VARNAME(                \
+      ModelType, ModelType, ModelClass)
+
+// Macro to register NPU-specific MM embedding VLM models
+#define REGISTER_NPU_MM_EMBEDDING_VLM_MODEL_WITH_VARNAME(                   \
+    VarName, ModelType, ModelClass)                                         \
+  const bool VarName##_registered = []() {                                  \
+    ModelRegistry::register_mm_embedding_vlm_factory(                       \
+        #ModelType, [](const ModelContext& context) {                       \
+          ModelClass model(context);                                        \
+          model->eval();                                                    \
+          return std::make_unique<xllm::NPUMMEmbeddingVLMImpl<ModelClass>>( \
+              std::move(model), context.get_tensor_options());              \
+        });                                                                 \
+    return true;                                                            \
+  }()
+
+#define REGISTER_NPU_MM_EMBEDDING_VLM_MODEL(ModelType, ModelClass) \
+  REGISTER_NPU_MM_EMBEDDING_VLM_MODEL_WITH_VARNAME(                \
+      ModelType, ModelType, ModelClass)
+
+#endif  // defined(USE_NPU)
 
 // Macro to register a causal model with the ModelRegistry
 #define REGISTER_EMBEDDING_MODEL_WITH_VARNAME(VarName, ModelType, ModelClass) \

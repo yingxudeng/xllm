@@ -956,7 +956,7 @@ class Glm4vForConditionalGenerationImpl : public torch::nn::Module {
 TORCH_MODULE(Glm4vForConditionalGeneration);
 
 REGISTER_INPUT_PROCESSOR(glm4v, GLM4VInputProcessor);
-REGISTER_CAUSAL_VLM_MODEL(glm4v, Glm4vForConditionalGeneration);
+REGISTER_NPU_CAUSAL_VLM_MODEL(glm4v, Glm4vForConditionalGeneration);
 REGISTER_IMAGE_PROCESSOR(glm4v, Glm4VImageProcessor);
 // register the model args
 REGISTER_MODEL_ARGS(glm4v, [&] {
