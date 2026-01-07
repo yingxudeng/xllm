@@ -129,14 +129,6 @@ inline torch::Tensor create_cos_sin_tensor(
   // [max_position_embeddings, rotary_dim/2]
   const auto freqs = torch::einsum("i,j->ij", {t, inv_freq});
 
-  if (Device::type_str() == "npu") {
-    const auto cos_sin =
-        torch::cat({freqs.cos() * mscale_, freqs.sin() * mscale_}, /*dim=*/-1)
-            .contiguous()
-            .to(options);
-    return cos_sin;
-  }
-
   // Create cos and sin embeddings.
   torch::Tensor emd;
   if (interleaved) {
