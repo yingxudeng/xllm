@@ -236,8 +236,8 @@ void LLMWorkerImpl::update_input_for_decode(
   const torch::Tensor& out_token_ids,
   int32_t batch,
   int32_t beam_width,
-  const std::vector<torch::Tensor>& unshared_k_cache,
-  const std::vector<torch::Tensor>& unshared_v_cache,
+  const std::vector<torch::Tensor>& unshared_k_caches,
+  const std::vector<torch::Tensor>& unshared_v_caches,
   int64_t num_heads,
   int64_t num_kv_heads,
   int64_t head_dim) {
@@ -271,14 +271,13 @@ void LLMWorkerImpl::update_input_for_decode(
   int32_t current_step = round;  // round 0 是 prefill，round 1 是 step 0
   
   // 从第一层的 cache 获取维度信息（假设所有层相同）
-  auto unshared_k_cache_first = unshared_k_cache[0];
+  auto unshared_k_cache_first = unshared_k_caches[0];
   uint32_t shared_kv_len = FLAGS_max_token_per_req;
   // LOG(INFO) << "shared_kv_len: " << shared_kv_len;
   uint32_t max_decode_step = unshared_k_cache_first.size(2);
   // LOG(INFO) << "max_decode_step: " << max_decode_step;
   // 获取必要的 tensor
   auto kv_cu_seq_lens = input.input_params.kv_seq_lens;
-  auto block_table = input.input_params.block_tables;
   // LOG(INFO) << "kv_cu_seq_lens: " << kv_cu_seq_lens;
   // 计算 batch_shared_kv_lens
   // [batch_size]
@@ -324,7 +323,6 @@ void LLMWorkerImpl::update_input_for_decode(
   
   // 计算 unshared_kv_indices
   uint32_t unshared_begin_index = shared_kv_len * batch_size;
-  // auto batch_ids = block_table.select(1, 0);
   // auto batch_ids = input.input_params.paged_kv_indices;
   auto batch_ids = torch::arange(0, batch_size, paged_options);
   // LOG(INFO) << "batch_ids: " << batch_ids;
@@ -412,7 +410,7 @@ void LLMWorkerImpl::update_input_for_decode(
             paged_kv_last_page_len,
             dummy_query,
             unshared_k_cache_first,
-            unshared_v_cache[0],
+            unshared_v_caches[0],
             /*window_left=*/0,  // TODO: 从 input_params 获取
             /*enable_cuda_graph=*/false
           );
@@ -426,25 +424,43 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
   Timer timer;
 
   int32_t total_rounds = input.total_round;
+  int32_t batch = input.input_params.num_sequences;
+  int32_t beam_width = input.beam_width;
   // LOG(INFO) << "total_rounds: " << total_rounds;
-  std::vector<torch::Tensor> unshared_k_cache;
-  std::vector<torch::Tensor> unshared_v_cache;
+  std::vector<torch::Tensor> unshared_k_caches;
+  std::vector<torch::Tensor> unshared_v_caches;
   auto args = context_.get_model_args();
   int32_t layer_num = static_cast<int32_t>(args.n_layers());
-  for (auto i = 0; i < layer_num; ++i) {
-    unshared_k_cache.push_back(kv_caches_[i].get_k_cache());
-    unshared_v_cache.push_back(kv_caches_[i].get_v_cache());
-  }
-
   int64_t num_heads = context_.get_model_args().n_heads();
   int64_t head_dim = context_.get_model_args().head_dim();
   int64_t num_kv_heads = context_.get_model_args().n_kv_heads().value_or(num_heads);
 
+  int32_t full_kv_len = input.input_params.full_k_caches[0].size(0);
+  int32_t unshared_offset = batch * FLAGS_max_token_per_req;
+  int32_t max_decode_step = total_rounds - 1;
+  LOG(INFO) << "full_kv_len: " << full_kv_len;
+  LOG(INFO) << "unshared_offset: " << unshared_offset;
+  LOG(INFO) << "max_decode_step: " << max_decode_step;
+  for (auto i = 0; i < layer_num; ++i) {
+    auto full_k_cache = input.input_params.full_k_caches[i];
+    auto full_v_cache = input.input_params.full_v_caches[i];
+    // LOG(INFO) << "full_k_cache.shape: " << full_k_cache.sizes();
+    // LOG(INFO) << "full_v_cache.shape: " << full_v_cache.sizes();
+    auto unshared_k_cache = full_k_cache.slice(0, unshared_offset, full_kv_len);
+    auto unshared_v_cache = full_v_cache.slice(0, unshared_offset, full_kv_len);
+    // LOG(INFO) << "unshared_k_cache.shape: " << unshared_k_cache.sizes();
+    // LOG(INFO) << "unshared_v_cache.shape: " << unshared_v_cache.sizes();
+    unshared_k_cache = unshared_k_cache.view({batch, beam_width, max_decode_step, num_kv_heads, head_dim});
+    unshared_v_cache = unshared_v_cache.view({batch, beam_width, max_decode_step, num_kv_heads, head_dim});
+    // LOG(INFO) << "unshared_k_cache.shape: " << unshared_k_cache.sizes();
+    // LOG(INFO) << "unshared_v_cache.shape: " << unshared_v_cache.sizes();
+    unshared_k_caches.push_back(unshared_k_cache);
+    unshared_v_caches.push_back(unshared_v_cache);
+  }
+
   input.input_params.num_heads = num_heads;
   input.input_params.head_dim = head_dim;
-  int32_t batch = input.input_params.num_sequences;
-
-  int32_t beam_width = input.beam_width;
+  
   input.input_params.beam_width = beam_width;
   auto int_options =
       torch::TensorOptions().dtype(torch::kInt32).device(device_);
@@ -611,11 +627,11 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
                                round
                                );
       // LOG(INFO) << "after beam_search.";
-      LOG(INFO) << "out_log_probs: " << out_log_probs;
-      LOG(INFO) << "out_token_ids: " << out_token_ids;
+      // LOG(INFO) << "out_log_probs: " << out_log_probs;
+      // LOG(INFO) << "out_token_ids: " << out_token_ids;
       // LOG(INFO) << "out_token_index: " << out_token_index;
       // LOG(INFO) << "out_beam_count_prefix_sums: " << out_beam_count_prefix_sums;
-      LOG(INFO) << "out_seqgroup: " << out_seqgroup;      
+      // LOG(INFO) << "out_seqgroup: " << out_seqgroup;      
       #endif
       sequence_group.copy_(out_seqgroup);
       acc_logprob.copy_(out_log_probs);
@@ -630,16 +646,16 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
           out_token_ids, 
           batch, 
           beam_width, 
-          unshared_k_cache, 
-          unshared_v_cache, 
+          unshared_k_caches, 
+          unshared_v_caches, 
           num_heads, 
           num_kv_heads, 
           head_dim);
         if (round > 0) {
           #if defined(USE_NPU)
           xllm_ops::cache_select(out_token_index,
-                                unshared_k_cache,
-                                unshared_v_cache,
+                                unshared_k_caches,
+                                unshared_v_caches,
                                 input.input_params.block_tables,
                                 out_beam_count_prefix_sums,
                                 round,
@@ -649,10 +665,12 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_multi_round(
           // LOG(INFO) << "out_token_index: " << out_token_index;
           // LOG(INFO) << "out_beam_count_prefix_sums: " << out_beam_count_prefix_sums;
           // LOG(INFO) << "round: " << round;
+          torch::Tensor naive_block_table = torch::arange(batch, int_options).unsqueeze(1);
+
           rec_kernel_->cache_select(out_token_index,
-                                    unshared_k_cache,
-                                    unshared_v_cache,
-                                    input.input_params.block_tables,
+                                    unshared_k_caches,
+                                    unshared_v_caches,
+                                    naive_block_table,
                                     out_beam_count_prefix_sums,
                                     round - 1, //对应第0步decode
                                     beam_width,

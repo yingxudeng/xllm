@@ -424,33 +424,47 @@ void RecTorchKernel::cache_select(const torch::Tensor& beam_index,        // [ba
   // 获取维度信息
   int64_t batch_size = block_table.size(0);
   int64_t total_beams = beam_index.size(0);
+  int64_t kv_heads = unshared_k_cache[0].size(3);
+  int64_t head_dim = unshared_k_cache[0].size(4);
+  // LOG(INFO) << "block_table: " << block_table;
+  // LOG(INFO) << "beam_index: " << beam_index;
+  // LOG(INFO) << "unshared_k_cache: " << unshared_k_cache[0].sizes();
+  // LOG(INFO) << "unshared_v_cache: " << unshared_v_cache[0].sizes();
+  // LOG(INFO) << "layer_num: " << layer_num;
+  // LOG(INFO) << "decode_step: " << decode_step;
+  // LOG(INFO) << "beam_size: " << beam_size;
+  // LOG(INFO) << "total_beams: " << total_beams;
   CHECK_EQ(total_beams, batch_size * beam_size) << "beam_index size mismatch";
-  
   // 检查 unshared cache 的维度
   if (layer_num > 0) {
     int64_t max_num_request = unshared_k_cache[0].size(0);
     int64_t max_decode_step = unshared_k_cache[0].size(2);
-    
-    CHECK_EQ(unshared_k_cache.size(), static_cast<size_t>(layer_num)) << "unshared_k_cache size mismatch";
-    CHECK_EQ(unshared_v_cache.size(), static_cast<size_t>(layer_num)) << "unshared_v_cache size mismatch";
-    CHECK_LT(decode_step, max_decode_step) << "decode_step must be less than max_decode_step";
-    
     // 将 beam_index reshape 成 [batch_size, beam_size] 并计算 parent_beam
     // beam_index 是 new_indices，parent_beam = new_indices / top_k (top_k == beam_size)
     auto beam_index_reshaped = beam_index.reshape({batch_size, beam_size}).to(torch::kLong);  // [batch_size, beam_size]
     auto parent_beam = (beam_index_reshaped / beam_size).to(torch::kLong);  // [batch_size, beam_size]
     
     // 将 block_table 移到 CPU 以便访问 request_id
-    auto block_table_cpu = block_table.select(1, 0).to(torch::kCPU);  // [batch_size]
+    auto _block_table = block_table.select(1, 0);
     
+    auto ori_k_cache = torch::zeros({layer_num, batch_size, beam_size, max_decode_step, kv_heads, head_dim});
+    auto ori_v_cache = torch::zeros({layer_num, batch_size, beam_size, max_decode_step, kv_heads, head_dim});
+
+    for (int64_t layer = 0; layer < layer_num; ++layer) {
+      auto k_cache = unshared_k_cache[layer];
+      auto v_cache = unshared_v_cache[layer];
+      ori_k_cache[layer].copy_(k_cache.index_select(0, _block_table));
+      ori_v_cache[layer].copy_(v_cache.index_select(0, _block_table));
+    }
+
     // 对于每一层，更新 unshared cache
     for (int64_t layer = 0; layer < layer_num; ++layer) {
-      auto& k_cache = unshared_k_cache[layer];
-      auto& v_cache = unshared_v_cache[layer];
+      auto k_cache = unshared_k_cache[layer];
+      auto v_cache = unshared_v_cache[layer];
       
       // 对于每个 batch
       for (int64_t b = 0; b < batch_size; ++b) {
-        int64_t request_id = block_table_cpu[b].item<int64_t>();
+        int64_t request_id = block_table[b].item<int64_t>();
         
         // 检查 request_id 是否有效
         CHECK_GE(request_id, 0) << "Invalid request_id: " << request_id;
@@ -484,9 +498,9 @@ void RecTorchKernel::cache_select(const torch::Tensor& beam_index,        // [ba
           // 复制到 unshared_k_cache[request_id, new_beam, 0:decode_step+1, :, :]
           for (int64_t step = 0; step <= decode_step; ++step) {
             k_cache[request_id][new_beam][step].copy_(
-                k_cache[request_id][old_beam][step]);
+              ori_k_cache[layer][request_id][old_beam][step]);
             v_cache[request_id][new_beam][step].copy_(
-                v_cache[request_id][old_beam][step]);
+              ori_v_cache[layer][request_id][old_beam][step]);
           }
         }
       }
