@@ -26,6 +26,20 @@ cc_test(
 )
 target_link_libraries(decoder_reshape_and_cache_test PRIVATE brpc)
 
+# beam_search_test
+cc_test(
+  NAME
+    beam_search_test
+  SRCS
+    beam_search_test.cpp
+  DEPS
+    :cuda_kernels
+    torch
+    GTest::gtest_main
+    glog::glog
+)
+target_link_libraries(beam_search_test PRIVATE brpc)
+
 cc_library(
   NAME
     cuda_kernels
