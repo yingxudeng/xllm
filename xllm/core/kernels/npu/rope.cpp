@@ -30,13 +30,12 @@ void apply_rotary(torch::Tensor& q,
   // reused/cached to avoid redundant computation.
   auto cos_sin = cos_sin_cache.index_select(0, positions);
   int64_t last_dim = cos_sin.size(-1);
-  auto cos_sin_vec = cos_sin.view({-1, 2, last_dim / 2})
-                         .repeat({1, 1, 2})
-                         .chunk(2, /*dim=*/-2);
-  auto cos = cos_sin_vec[0].view({1, -1, 1, last_dim});
-  auto sin = cos_sin_vec[1].view({1, -1, 1, last_dim});
 
-  const int64_t rotary_dim = sin.size(-1);
+  const int64_t rotary_dim = last_dim / 2;
+  auto cos_sin_split = cos_sin.chunk(2, /*dim=*/-1);
+  auto cos = cos_sin_split[0].view({1, -1, 1, rotary_dim});
+  auto sin = cos_sin_split[1].view({1, -1, 1, rotary_dim});
+
   q = q.view({1, q.size(0), -1, rotary_dim});
   k = k.view({1, k.size(0), -1, rotary_dim});
 
