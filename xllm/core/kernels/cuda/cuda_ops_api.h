@@ -55,11 +55,11 @@ void batch_prefill(torch::Tensor float_workspace_buffer,
                    torch::Tensor kv_cu_seq_lens,
                    int64_t window_left,
                    double sm_scale,
-                  torch::Tensor output,
-                  std::optional<torch::Tensor>& output_lse,
-                  bool enable_cuda_graph,
-                  std::optional<torch::Tensor>& plan_info,
-                  bool is_decode_shared = false);
+                   torch::Tensor output,
+                   std::optional<torch::Tensor>& output_lse,
+                   bool enable_cuda_graph,
+                   std::optional<torch::Tensor>& plan_info,
+                   bool is_decode_shared = false);
 
 void batch_decode(torch::Tensor float_workspace_buffer,
                   torch::Tensor int_workspace_buffer,
@@ -98,11 +98,11 @@ void lse_combine(torch::Tensor output,
                  torch::Tensor unshared_lse);
 
 void decoder_reshape_and_cache(torch::Tensor proj_k,
-                                torch::Tensor proj_v,
-                                torch::Tensor unshared_k_cache,
-                                torch::Tensor unshared_v_cache,
-                                torch::Tensor block_table,
-                                uint32_t step);
+                               torch::Tensor proj_v,
+                               torch::Tensor unshared_k_cache,
+                               torch::Tensor unshared_v_cache,
+                               torch::Tensor block_table,
+                               uint32_t step);
 
 // Generate plan_info for batch_prefill optimization
 // This should be called once before the layer loop for prefill mode
@@ -134,5 +134,22 @@ torch::Tensor generate_decode_plan_info(
     torch::Tensor v_cache,
     int64_t window_left,
     bool enable_cuda_graph);
+
+void cutlass_scaled_mm(torch::Tensor& c,
+                       torch::Tensor const& a,
+                       torch::Tensor const& b,
+                       torch::Tensor const& a_scales,
+                       torch::Tensor const& b_scales,
+                       std::optional<torch::Tensor> const& bias);
+
+// FP8 quantization
+// Static scaled FP8 quantization with pre-computed scale
+// Quantizes input tensor to FP8 format using a fixed scale factor
+// @param out: Output FP8 tensor [..., hidden_size]
+// @param input: Input tensor [..., hidden_size]
+// @param scale: Scale tensor [1] - pre-computed scaling factor
+void static_scaled_fp8_quant(torch::Tensor& out,
+                             torch::Tensor const& input,
+                             torch::Tensor const& scale);
 
 }  // namespace xllm::kernel::cuda

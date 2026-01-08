@@ -376,7 +376,8 @@ class ExtBuild(build_ext):
             cmake_args += ["-DUSE_MLU=ON"]
             set_mlu_envs()
         elif self.device == "cuda":
-            cuda_architectures = "80;89;90"
+            # Use 90a instead of 90 to enable full Hopper features including FP8 Tensor Cores
+            cuda_architectures = "80;89;90a"
             cmake_args += ["-DUSE_CUDA=ON", 
                            f"-DCMAKE_CUDA_ARCHITECTURES={cuda_architectures}"]
             set_cuda_envs()
