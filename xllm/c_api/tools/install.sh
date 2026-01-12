@@ -17,6 +17,14 @@ LOCAL_TARGET_DIR="${LOCAL_INSTALL_DIR}/xllm"
 HEADERS=("${SCRIPT_DIR}/../llm.h" "${SCRIPT_DIR}/../rec.h" "${SCRIPT_DIR}/../default.h" "${SCRIPT_DIR}/../types.h")
 SO_FILES=(
     "${SCRIPT_DIR}/../../../build/xllm/core/server/libxllm.so"
+    "/usr/lib/x86_64-linux-gnu/libibverbs.so.1"
+    "/usr/lib/x86_64-linux-gnu/libnuma.so.1"
+    "/usr/lib/x86_64-linux-gnu/libpython3.11.so.1.0"
+    "/usr/local/lib/python3.11/dist-packages/torch/lib/libtorch.so"
+    "/usr/local/lib/python3.11/dist-packages/torch/lib/libtorch_cpu.so"
+    "/usr/local/lib/python3.11/dist-packages/torch/lib/libtorch_cuda.so"
+    "/usr/local/lib/python3.11/dist-packages/torch/lib/libc10.so"
+    "/usr/local/lib/python3.11/dist-packages/torch/lib/libc10_cuda.so"
 )
 
 error_exit() {

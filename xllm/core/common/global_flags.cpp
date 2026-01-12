@@ -437,7 +437,7 @@ DEFINE_bool(enable_qwen3_reranker, false, "Whether to enable qwen3 reranker.");
 // --- flashinfer config ---
 
 DEFINE_int32(flashinfer_workspace_buffer_size,
-             128 * 1024 * 1024,
+             384 * 1024 * 1024,
              "The user reserved workspace buffer used to store intermediate "
              "attention results in split-k algorithm for flashinfer.");
 

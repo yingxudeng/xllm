@@ -207,6 +207,28 @@ XLLM_CAPI_EXPORT XLLM_Response* xllm_rec_token_completions(
       request_params);
 }
 
+XLLM_CAPI_EXPORT XLLM_Response* xllm_rec_multimodal_completions(
+    XLLM_REC_Handler* handler,
+    const char* model_id,
+    const int32_t* token_ids,
+    size_t token_size,
+    const XLLM_MM_Data* mm_data,
+    uint32_t timeout_ms,
+    const XLLM_RequestParams* request_params) {
+  if (!handler || !model_id || *model_id == '\0' || !token_ids ||
+      token_size == 0) {
+    return xllm::helper::build_error_response(
+        "", XLLM_StatusCode::kInvalidRequest, "Invalid input parameters");
+  }
+
+  if (!mm_data) {
+    return xllm_rec_token_completions(
+        handler, model_id, token_ids, token_size, timeout_ms, request_params);
+  }
+
+  return nullptr;
+}
+
 XLLM_CAPI_EXPORT XLLM_Response* xllm_rec_chat_completions(
     XLLM_REC_Handler* handler,
     const char* model_id,
