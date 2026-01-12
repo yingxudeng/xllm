@@ -13,6 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <glog/logging.h>
+
 #include "cuda_ops_api.h"
 #include "function_factory.h"
 
@@ -33,6 +35,14 @@ void batch_prefill(const std::string& uri,
                    torch::Tensor output,
                    std::optional<torch::Tensor>& output_lse,
                    bool enable_cuda_graph) {
+  // Log plan_info device before use
+  // if (plan_info.defined()) {
+  //   LOG(INFO) << "batch_prefill: plan_info device before kernel call: "
+  //             << plan_info.device() << ", shape=" << plan_info.sizes()
+  //             << ", dtype=" << plan_info.scalar_type()
+  //             << ", uri=" << uri;
+  // }
+
   std::string backend =
       determine_attention_backend(/*pos_encoding_mode=*/0,
                                   /*use_fp16_qk_reduction=*/false,

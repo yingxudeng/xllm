@@ -28,6 +28,8 @@ limitations under the License.
 
 #include <numeric>
 
+#include "layers/common/attention_metadata.h"
+
 namespace xllm::kernel {
 
 void apply_rotary(RotaryParams& params) {
@@ -41,7 +43,7 @@ void apply_rotary(RotaryParams& params) {
                     params.interleaved,
                     params.discrete,
                     params.dynamic_ntk,
-                    params.max_query_len);
+                    params.attn_metadata.max_query_len);
 #elif defined(USE_NPU)
   npu::apply_rotary(
       params.q, params.k, params.cos_sin, params.position_ids.value());
@@ -121,28 +123,35 @@ void reshape_paged_cache(ReshapePagedCacheParams& params) {
 
 void batch_prefill(AttentionParams& params) {
 #if defined(USE_MLU)
-  mlu::batch_prefill(params.query,
-                     params.key,
-                     params.value,
-                     params.output,
-                     params.output_lse,
-                     /*query_start_loc=*/params.q_cu_seq_lens,
-                     /*seq_start_loc=*/params.kv_cu_seq_lens,
-                     params.alibi_slope,
-                     params.attn_bias,
-                     params.q_quant_scale,
-                     params.k_quant_scale,
-                     params.v_quant_scale,
-                     params.out_quant_scale,
-                     params.block_table,
-                     params.max_query_len,
-                     params.max_seq_len,
-                     params.scale,
-                     params.is_causal,
-                     params.window_size_left,
-                     params.window_size_right,
-                     params.compute_dtype,
-                     params.return_lse);
+  mlu::batch_prefill(
+      params.query,
+      params.key,
+      params.value,
+      params.output,
+      params.output_lse,
+      /*query_start_loc=*/params.attn_metadata.q_cu_seq_lens.defined()
+          ? std::optional<torch::Tensor>(params.attn_metadata.q_cu_seq_lens)
+          : std::nullopt,
+      /*seq_start_loc=*/params.attn_metadata.kv_cu_seq_lens.defined()
+          ? std::optional<torch::Tensor>(params.attn_metadata.kv_cu_seq_lens)
+          : std::nullopt,
+      params.alibi_slope,
+      params.attn_bias,
+      params.q_quant_scale,
+      params.k_quant_scale,
+      params.v_quant_scale,
+      params.out_quant_scale,
+      params.attn_metadata.block_table.defined()
+          ? std::optional<torch::Tensor>(params.attn_metadata.block_table)
+          : std::nullopt,
+      params.attn_metadata.max_query_len,
+      params.attn_metadata.max_seq_len,
+      params.scale,
+      params.attn_metadata.is_causal,
+      params.window_size_left,
+      params.window_size_right,
+      params.attn_metadata.compute_dtype,
+      params.return_lse);
 #elif defined(USE_NPU)
   npu::batch_prefill(params.query,
                      params.key,
@@ -152,42 +161,47 @@ void batch_prefill(AttentionParams& params) {
                      params.scale,
                      params.output);
 #elif defined(USE_CUDA)
-  cuda::batch_prefill(params.uri,
-                      params.plan_info,
+  cuda::batch_prefill(params.attn_metadata.plan_info->uri,
+                      params.attn_metadata.plan_info->plan_info,
                       params.float_workspace_buffer,
                       params.int_workspace_buffer,
                       params.page_locked_int_workspace_buffer,
                       params.query,
                       params.key,
                       params.value,
-                      params.q_cu_seq_lens.value(),
-                      params.kv_cu_seq_lens.value(),
+                      params.attn_metadata.q_cu_seq_lens,
+                      params.attn_metadata.kv_cu_seq_lens,
                       params.window_size_left,
                       params.scale,
                       params.output,
                       params.output_lse,
-                      params.enable_cuda_graph);
+                      params.attn_metadata.enable_cuda_graph);
 #elif defined(USE_ILU)
-  ilu::batch_prefill(params.query,
-                     params.key,
-                     params.value,
-                     params.output,
-                     params.output_lse,
-                     params.q_cu_seq_lens,
-                     params.kv_cu_seq_lens,
-                     params.alibi_slope,
-                     params.attn_bias,
-                     params.q_quant_scale,
-                     params.k_quant_scale,
-                     params.v_quant_scale,
-                     params.max_query_len,
-                     params.max_seq_len,
-                     params.scale,
-                     params.is_causal,
-                     params.window_size_left,
-                     params.window_size_right,
-                     params.compute_dtype,
-                     params.return_lse);
+  ilu::batch_prefill(
+      params.query,
+      params.key,
+      params.value,
+      params.output,
+      params.output_lse,
+      params.attn_metadata.q_cu_seq_lens.defined()
+          ? std::optional<torch::Tensor>(params.attn_metadata.q_cu_seq_lens)
+          : std::nullopt,
+      params.attn_metadata.kv_cu_seq_lens.defined()
+          ? std::optional<torch::Tensor>(params.attn_metadata.kv_cu_seq_lens)
+          : std::nullopt,
+      params.alibi_slope,
+      params.attn_bias,
+      params.q_quant_scale,
+      params.k_quant_scale,
+      params.v_quant_scale,
+      params.attn_metadata.max_query_len,
+      params.attn_metadata.max_seq_len,
+      params.scale,
+      params.attn_metadata.is_causal,
+      params.window_size_left,
+      params.window_size_right,
+      params.attn_metadata.compute_dtype,
+      params.return_lse);
 #else
   LOG(FATAL) << "batch_prefill not implemented";
 #endif
@@ -195,75 +209,90 @@ void batch_prefill(AttentionParams& params) {
 
 void batch_decode(AttentionParams& params) {
 #if defined(USE_MLU)
-  mlu::batch_decode(params.query,
-                    params.k_cache,
-                    params.output,
-                    params.block_table.value(),
-                    params.kv_seq_lens,
-                    params.v_cache,
-                    params.output_lse,
-                    params.q_quant_scale,
-                    params.k_cache_quant_scale,
-                    params.v_cache_quant_scale,
-                    params.out_quant_scale,
-                    params.alibi_slope,
-                    params.mask,
-                    params.compute_dtype,
-                    params.max_seq_len,
-                    params.window_size_left,
-                    params.window_size_right,
-                    params.scale,
-                    params.return_lse,
-                    params.kv_cache_quant_bit_size);
+  mlu::batch_decode(
+      params.query,
+      params.k_cache,
+      params.output,
+      params.attn_metadata.block_table.defined()
+          ? std::optional<torch::Tensor>(params.attn_metadata.block_table)
+                .value()
+          : torch::Tensor(),
+      params.attn_metadata.kv_seq_lens,
+      params.v_cache,
+      params.output_lse,
+      params.q_quant_scale,
+      params.k_cache_quant_scale,
+      params.v_cache_quant_scale,
+      params.out_quant_scale,
+      params.alibi_slope,
+      params.mask,
+      params.attn_metadata.compute_dtype,
+      params.attn_metadata.max_seq_len,
+      params.window_size_left,
+      params.window_size_right,
+      params.scale,
+      params.return_lse,
+      params.kv_cache_quant_bit_size);
 #elif defined(USE_NPU)
-  npu::batch_decode(params.query,
-                    params.k_cache,
-                    params.v_cache.value_or(torch::Tensor()),
-                    params.scale,
-                    params.block_table.value(),
-                    params.seq_lens,
-                    params.output);
+  npu::batch_decode(
+      params.query,
+      params.k_cache,
+      params.v_cache.value_or(torch::Tensor()),
+      params.scale,
+      params.attn_metadata.block_table.defined()
+          ? std::optional<torch::Tensor>(params.attn_metadata.block_table)
+                .value()
+          : torch::Tensor(),
+      params.seq_lens,
+      params.output);
 #elif defined(USE_CUDA)
-  cuda::batch_decode(params.uri,
-                     params.plan_info,
+  cuda::batch_decode(params.attn_metadata.plan_info->uri,
+                     params.attn_metadata.plan_info->plan_info,
                      params.float_workspace_buffer,
                      params.int_workspace_buffer,
                      params.page_locked_int_workspace_buffer,
                      params.query,
                      params.k_cache,
                      params.v_cache.value_or(torch::Tensor()),
-                     params.paged_kv_indptr,
-                     params.paged_kv_indices,
-                     params.paged_kv_last_page_len,
+                     params.attn_metadata.paged_kv_indptr,
+                     params.attn_metadata.paged_kv_indices,
+                     params.attn_metadata.paged_kv_last_page_len,
                      params.window_size_left,
                      params.scale,
                      params.output,
                      params.output_lse,
-                     params.enable_cuda_graph,
-                     params.use_tensor_core,
-                     params.kv_seq_lens);
+                     params.attn_metadata.enable_cuda_graph,
+                     params.attn_metadata.use_tensor_core,
+                     params.attn_metadata.kv_seq_lens,
+                     params.attn_metadata.qo_indptr.defined()
+                         ? std::make_optional(params.attn_metadata.qo_indptr)
+                         : std::nullopt);
 #elif defined(USE_ILU)
-  ilu::batch_decode(params.query,
-                    params.k_cache,
-                    params.output,
-                    params.block_table.value(),
-                    params.kv_seq_lens,
-                    params.v_cache,
-                    params.output_lse,
-                    params.q_quant_scale,
-                    params.k_cache_quant_scale,
-                    params.v_cache_quant_scale,
-                    params.out_quant_scale,
-                    params.alibi_slope,
-                    params.mask,
-                    params.compute_dtype,
-                    params.max_seq_len,
-                    params.window_size_left,
-                    params.window_size_right,
-                    params.scale,
-                    params.return_lse,
-                    params.is_causal,
-                    params.kv_cache_quant_bit_size);
+  ilu::batch_decode(
+      params.query,
+      params.k_cache,
+      params.output,
+      params.attn_metadata.block_table.defined()
+          ? std::optional<torch::Tensor>(params.attn_metadata.block_table)
+                .value()
+          : torch::Tensor(),
+      params.attn_metadata.kv_seq_lens,
+      params.v_cache,
+      params.output_lse,
+      params.q_quant_scale,
+      params.k_cache_quant_scale,
+      params.v_cache_quant_scale,
+      params.out_quant_scale,
+      params.alibi_slope,
+      params.mask,
+      params.attn_metadata.compute_dtype,
+      params.attn_metadata.max_seq_len,
+      params.window_size_left,
+      params.window_size_right,
+      params.scale,
+      params.return_lse,
+      params.attn_metadata.is_causal,
+      params.kv_cache_quant_bit_size);
 #else
   LOG(FATAL) << "batch_decode not implemented";
 #endif

@@ -80,28 +80,27 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> XAttentionImpl::forward(
 
     xllm::kernel::cuda::prefill_reshape_and_cache(
         key, value, attn_metadata.full_k_cache, attn_metadata.full_v_cache);
-    xllm::kernel::AttentionParams attention_params;
+    xllm::kernel::AttentionParams attention_params(attn_metadata);
     attention_params.query = query;
     attention_params.output = output_tensor;
     attention_params.output_lse = output_lse;
     attention_params.window_size_left = sliding_window_;
     attention_params.scale = scale_;
-    attention_params.compute_dtype = attn_metadata.compute_dtype;
     // for flashinfer
-    attention_params.float_workspace_buffer =
-        FlashinferWorkspace::get_instance().get_float_workspace_buffer();
-    attention_params.int_workspace_buffer =
-        FlashinferWorkspace::get_instance().get_int_workspace_buffer();
-    attention_params.page_locked_int_workspace_buffer =
-        FlashinferWorkspace::get_instance()
-            .get_page_locked_int_workspace_buffer();
-    attention_params.kv_cu_seq_lens = attn_metadata.kv_cu_seq_lens;
-    attention_params.q_cu_seq_lens = attn_metadata.q_cu_seq_lens;
+    // attention_params.float_workspace_buffer =
+    //     FlashinferWorkspace::get_instance().get_float_workspace_buffer();
+    // attention_params.int_workspace_buffer =
+    //     FlashinferWorkspace::get_instance().get_int_workspace_buffer();
+    // attention_params.page_locked_int_workspace_buffer =
+    //     FlashinferWorkspace::get_instance()
+    //         .get_page_locked_int_workspace_buffer();
+    // attention_params.kv_cu_seq_lens = attn_metadata.kv_cu_seq_lens;
+    // attention_params.q_cu_seq_lens = attn_metadata.q_cu_seq_lens;
 
     attention_params.key = key;
     attention_params.value = value;
-    attention_params.uri = attn_metadata.plan_info->uri;
-    attention_params.plan_info = attn_metadata.plan_info->plan_info;
+    // attention_params.uri = attn_metadata.plan_info->uri;
+    // attention_params.plan_info = attn_metadata.plan_info->plan_info;
     xllm::kernel::batch_prefill(attention_params);
   } else {
     // uint32_t batch_size = attn_metadata.paged_kv_last_page_len.numel();
@@ -144,7 +143,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> XAttentionImpl::forward(
                                  /*causal*/ false,
                                  /*use_tensor_core*/ false);
 
-    xllm::kernel::AttentionParams attention_params;
+    xllm::kernel::AttentionParams attention_params(attn_metadata);
     auto unshared_lse = std::nullopt;
 
     attention_params.return_lse = false;
@@ -152,15 +151,15 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> XAttentionImpl::forward(
 
     attention_params.window_size_left = sliding_window_;
     attention_params.scale = scale_;
-    attention_params.compute_dtype = attn_metadata.compute_dtype;
+    // attention_params.compute_dtype = attn_metadata.compute_dtype;
     // for flashinfer
-    attention_params.float_workspace_buffer =
-        FlashinferWorkspace::get_instance().get_float_workspace_buffer();
-    attention_params.int_workspace_buffer =
-        FlashinferWorkspace::get_instance().get_int_workspace_buffer();
-    attention_params.page_locked_int_workspace_buffer =
-        FlashinferWorkspace::get_instance()
-            .get_page_locked_int_workspace_buffer();
+    // attention_params.float_workspace_buffer =
+    //     FlashinferWorkspace::get_instance().get_float_workspace_buffer();
+    // attention_params.int_workspace_buffer =
+    //     FlashinferWorkspace::get_instance().get_int_workspace_buffer();
+    // attention_params.page_locked_int_workspace_buffer =
+    //     FlashinferWorkspace::get_instance()
+    //         .get_page_locked_int_workspace_buffer();
     // TODO: support chunked prefill
     CHECK(!attn_metadata.is_chunked_prefill)
         << "chunked prefill is not supported";
@@ -171,13 +170,15 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> XAttentionImpl::forward(
     attention_params.k_cache = full_k_cache;
     attention_params.v_cache = full_v_cache;
 
-    attention_params.paged_kv_indices = attn_metadata.paged_kv_indices;
-    attention_params.paged_kv_indptr = attn_metadata.paged_kv_indptr;
-    attention_params.paged_kv_last_page_len =
-        attn_metadata.paged_kv_last_page_len;
-    attention_params.uri = attn_metadata.plan_info->uri;
-    attention_params.plan_info = attn_metadata.plan_info->plan_info;
-    attention_params.use_tensor_core = false;
+    // attention_params.paged_kv_indices = attn_metadata.paged_kv_indices;
+    // attention_params.paged_kv_indptr = attn_metadata.paged_kv_indptr;
+    // attention_params.paged_kv_last_page_len =
+    //     attn_metadata.paged_kv_last_page_len;
+    // attention_params.uri = attn_metadata.plan_info->uri;
+    // attention_params.plan_info = attn_metadata.plan_info->plan_info;
+    // attention_params.use_tensor_core = false;
+    const_cast<AttentionMetadata&>(attention_params.attn_metadata)
+        .use_tensor_core = false;
     xllm::kernel::batch_decode(attention_params);
   }
   output_tensor = output_tensor.view({-1, num_heads_ * head_size_});
