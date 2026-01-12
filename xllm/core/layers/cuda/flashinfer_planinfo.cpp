@@ -15,14 +15,14 @@ limitations under the License.
 
 #include "flashinfer_planinfo.h"
 
+#include <glog/logging.h>
+
+#include "core/common/global_flags.h"
 #include "core/util/utils.h"
 #include "flashinfer_workspace.h"
 #include "kernels/cuda/function_factory.h"
 #include "kernels/cuda/utils.h"
-
-namespace xllm {
-namespace layer {
-namespace flashinfer {
+namespace xllm::layer::flashinfer {
 
 void update_plan_info(std::shared_ptr<PlanInfo> plan_info,
                       const std::string& backend,
@@ -42,6 +42,9 @@ void update_plan_info(std::shared_ptr<PlanInfo> plan_info,
   CHECK(plan_info->layer_id != -1) << "Need to set layer_id to PlanInfo.";
   if (plan_info->layer_id != 0) return;
 
+  VLOG(kGraphExecutorLogVerboseLevel)
+      << "update_plan_info: layer_id=" << plan_info->layer_id
+      << ", enable_cuda_graph=" << enable_cuda_graph;
   // 1. prefill plan info
   if (causal) {
     plan_info->uri = kernel::cuda::get_batch_prefill_uri(
@@ -114,6 +117,28 @@ void update_plan_info(std::shared_ptr<PlanInfo> plan_info,
       torch::Tensor paged_kv_indptr_host =
           attn_meta.paged_kv_indptr.to(torch::kCPU);
       torch::Tensor kv_len_arr_host = attn_meta.kv_seq_lens.to(torch::kCPU);
+      if (VLOG_IS_ON(kGraphExecutorLogVerboseLevel)) {
+        VLOG(kGraphExecutorLogVerboseLevel)
+            << "use_tensor_core: " << use_tensor_core;
+        VLOG(kGraphExecutorLogVerboseLevel) << "batch_size: " << batch_size;
+        VLOG(kGraphExecutorLogVerboseLevel)
+            << "qo_indptr_host: " << qo_indptr_host;
+        VLOG(kGraphExecutorLogVerboseLevel)
+            << "paged_kv_indptr_host: " << paged_kv_indptr_host;
+        VLOG(kGraphExecutorLogVerboseLevel)
+            << "kv_len_arr_host: " << kv_len_arr_host;
+        VLOG(kGraphExecutorLogVerboseLevel)
+            << "enable_cuda_graph: " << enable_cuda_graph;
+        VLOG(kGraphExecutorLogVerboseLevel) << "head_dim_qk: " << head_dim_qk;
+        VLOG(kGraphExecutorLogVerboseLevel) << "head_dim_vo: " << head_dim_vo;
+        VLOG(kGraphExecutorLogVerboseLevel) << "num_qo_heads: " << num_qo_heads;
+        VLOG(kGraphExecutorLogVerboseLevel) << "num_kv_heads: " << num_kv_heads;
+        VLOG(kGraphExecutorLogVerboseLevel) << "block_size: " << block_size;
+        VLOG(kGraphExecutorLogVerboseLevel)
+            << "window_size_left: " << window_size_left;
+        VLOG(kGraphExecutorLogVerboseLevel) << "query_dtype: " << query_dtype;
+        VLOG(kGraphExecutorLogVerboseLevel) << "key_dtype: " << key_dtype;
+      }
       plan_info->plan_info =
           kernel::cuda::FunctionFactory::get_instance()
               .fa2_prefill_plan_func(plan_info->uri)
@@ -174,10 +199,50 @@ void update_plan_info(std::shared_ptr<PlanInfo> plan_info,
                     head_dim_vo,
                     empty_q_data,
                     empty_kv_data);
+      if (VLOG_IS_ON(kGraphExecutorLogVerboseLevel)) {
+        VLOG(kGraphExecutorLogVerboseLevel)
+            << "use_tensor_core: " << use_tensor_core;
+        VLOG(kGraphExecutorLogVerboseLevel) << "batch_size: " << batch_size;
+        VLOG(kGraphExecutorLogVerboseLevel)
+            << "paged_kv_indptr_host: " << paged_kv_indptr_host;
+        VLOG(kGraphExecutorLogVerboseLevel)
+            << "enable_cuda_graph: " << enable_cuda_graph;
+        VLOG(kGraphExecutorLogVerboseLevel) << "head_dim_qk: " << head_dim_qk;
+        VLOG(kGraphExecutorLogVerboseLevel) << "head_dim_vo: " << head_dim_vo;
+        VLOG(kGraphExecutorLogVerboseLevel) << "num_qo_heads: " << num_qo_heads;
+        VLOG(kGraphExecutorLogVerboseLevel) << "num_kv_heads: " << num_kv_heads;
+        VLOG(kGraphExecutorLogVerboseLevel) << "block_size: " << block_size;
+        VLOG(kGraphExecutorLogVerboseLevel)
+            << "window_size_left: " << window_size_left;
+        VLOG(kGraphExecutorLogVerboseLevel) << "query_dtype: " << query_dtype;
+        VLOG(kGraphExecutorLogVerboseLevel) << "key_dtype: " << key_dtype;
+      }
+    }
+  }
+
+  // Log plan_info tensor information
+  if (VLOG_IS_ON(kGraphExecutorLogVerboseLevel)) {
+    if (plan_info->plan_info.defined()) {
+      std::string mode_str;
+      if (causal) {
+        mode_str = "prefill, " + backend;
+      } else if (use_tensor_core) {
+        mode_str = "decode, tensor_core";
+      } else {
+        mode_str = "decode, non_tensor_core";
+      }
+      LOG(INFO) << "plan_info (" << mode_str << "): "
+                << "shape=" << plan_info->plan_info.sizes()
+                << ", dtype=" << plan_info->plan_info.scalar_type()
+                << ", device=" << plan_info->plan_info.device()
+                << ", numel=" << plan_info->plan_info.numel() << ", num_bytes="
+                << plan_info->plan_info.numel() *
+                       plan_info->plan_info.element_size()
+                << ", uri=" << plan_info->uri;
+      VLOG(kGraphExecutorLogVerboseLevel)
+          << "plan_info: " << plan_info->plan_info;
     }
   }
 }
 
-}  // namespace flashinfer
-}  // namespace layer
-}  // namespace xllm
+}  // namespace xllm::layer::flashinfer
