@@ -28,6 +28,7 @@ limitations under the License.
 
 #include "common/metrics.h"
 #include "core/common/global_flags.h"
+#include "core/common/rec_model_utils.h"
 #include "distributed_runtime/engine.h"
 #include "framework/batch/batch.h"
 #include "framework/batch/batch_factory.h"
@@ -35,9 +36,9 @@ limitations under the License.
 #include "framework/request/sequence.h"
 
 namespace xllm {
+
 FixedStepsScheduler::FixedStepsScheduler(Engine* engine, const Options& options)
     : ContinuousScheduler(engine, options) {}
-
 bool FixedStepsScheduler::add_request(std::shared_ptr<Request>& request) {
   CHECK(request != nullptr);
   CHECK(!request->sequences().empty());
@@ -72,8 +73,8 @@ void FixedStepsScheduler::handle_prefill_requests(
          kv_cache_manager_->kv_cache_utilization() <
              FLAGS_prefill_scheduling_memory_usage_threshold) {
     std::shared_ptr<Request> request(waiting_priority_queue_.top());
-    const bool requires_kv_cache =
-        request->state().rec_type == RecType::kLlmRec;
+    const bool requires_kv_cache = scheduler_pipeline_->requires_kv_cache();
+
     if (request->finished() || request->cancelled()) {
       if (requires_kv_cache) {
         kv_cache_manager_->deallocate(request.get());
@@ -219,6 +220,19 @@ std::vector<Batch> FixedStepsScheduler::prepare_batch() {
   running_sequences_.clear();
   running_sequences_budgets_.clear();
 
+  // Lazy initialize pipeline before handle_prefill_requests
+  // Because handle_prefill_requests accesses
+  // scheduler_pipeline_->requires_kv_cache(), we need to initialize it earlier.
+  // Initialize from waiting_priority_queue_ since running_requests_ was just
+  // cleared.
+  if (!scheduler_pipeline_ && !waiting_priority_queue_.empty()) {
+    const std::shared_ptr<Request>& sample_request =
+        waiting_priority_queue_.top();
+    auto rec_type = sample_request->state().rec_type;
+    bool is_pure_device = is_pure_device_mode();
+    scheduler_pipeline_ = create_scheduler_pipeline(rec_type, is_pure_device);
+  }
+
   // remaining budget for the current batch
   size_t remaining_token_budget = options_.max_tokens_per_batch();
   size_t remaining_seq_budget = std::max(options_.max_seqs_per_batch(), 1);
@@ -240,11 +254,8 @@ std::vector<Batch> FixedStepsScheduler::prepare_batch() {
   // Lazy initialize pipeline on first batch with requests
   if (!scheduler_pipeline_ && !running_requests_.empty()) {
     auto rec_type = running_requests_[0]->state().rec_type;
-    if (rec_type == RecType::kLlmRec) {
-      scheduler_pipeline_ = std::make_unique<LlmRecSchedulerPipeline>();
-    } else {
-      scheduler_pipeline_ = std::make_unique<OneRecSchedulerPipeline>();
-    }
+    bool is_pure_device = is_pure_device_mode();
+    scheduler_pipeline_ = create_scheduler_pipeline(rec_type, is_pure_device);
   }
 
   // Use pipeline to create batches
@@ -354,6 +365,29 @@ std::vector<Batch> FixedStepsScheduler::OneRecSchedulerPipeline::create_batches(
       scheduler.running_sequences_,
       scheduler.running_sequences_budgets_,
       scheduler.kv_cache_manager_->get_swap_block_transfer_infos());
+}
+
+std::vector<Batch>
+FixedStepsScheduler::PureDeviceSchedulerPipeline::create_batches(
+    FixedStepsScheduler& scheduler,
+    BatchFactory* batch_factory) {
+  return batch_factory->create_batches(
+      scheduler.running_requests_,
+      scheduler.running_sequences_,
+      scheduler.running_sequences_budgets_,
+      scheduler.kv_cache_manager_->get_swap_block_transfer_infos());
+}
+
+std::unique_ptr<FixedStepsScheduler::SchedulerPipeline>
+FixedStepsScheduler::create_scheduler_pipeline(RecType rec_type,
+                                               bool is_pure_device) {
+  if (is_pure_device) {
+    return std::make_unique<PureDeviceSchedulerPipeline>();
+  }
+  if (rec_type == RecType::kLlmRec) {
+    return std::make_unique<LlmRecSchedulerPipeline>();
+  }
+  return std::make_unique<OneRecSchedulerPipeline>();
 }
 
 }  // namespace xllm
