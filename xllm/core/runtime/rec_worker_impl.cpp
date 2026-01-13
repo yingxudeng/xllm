@@ -483,8 +483,17 @@ std::optional<ForwardOutput> RecWorkerImpl::LlmRecPureDevicePipeline::step(
       mutable_input.input_params.q_seq_lens.max().item().toInt();
   int32_t num_qo_heads = mutable_input.input_params.num_heads;
   int32_t head_dim = mutable_input.input_params.head_dim;
-  mutable_input.input_params.preallocated_output =
-      torch::zeros({max_q_seq_len, num_qo_heads * head_dim}, kv_cache_options);
+
+  if (cached_prefill_preallocated_output_.defined()) {
+    mutable_input.input_params.preallocated_output =
+        cached_prefill_preallocated_output_;
+  } else {
+    mutable_input.input_params.preallocated_output = torch::zeros(
+        {max_q_seq_len, num_qo_heads * head_dim}, kv_cache_options);
+    cached_prefill_preallocated_output_ =
+        mutable_input.input_params.preallocated_output;
+  }
+
   for (int32_t round = 0; round < total_rounds; ++round) {
     const auto& sampling_params = round > 0
                                       ? mutable_input.decoder_sampling_params
@@ -511,8 +520,16 @@ std::optional<ForwardOutput> RecWorkerImpl::LlmRecPureDevicePipeline::step(
     }
 
     if (round == 0) {
-      mutable_input.input_params.preallocated_output = torch::zeros(
-          {batch_size * beam_width, num_qo_heads * head_dim}, kv_cache_options);
+      if (cached_decode_preallocated_output_.defined()) {
+        mutable_input.input_params.preallocated_output =
+            cached_decode_preallocated_output_;
+      } else {
+        mutable_input.input_params.preallocated_output =
+            torch::zeros({batch_size * beam_width, num_qo_heads * head_dim},
+                         kv_cache_options);
+        cached_decode_preallocated_output_ =
+            mutable_input.input_params.preallocated_output;
+      }
     }
 
     if (sampling_params.selected_token_idxes.defined()) {
@@ -825,9 +842,6 @@ void RecWorkerImpl::LlmRecPureDevicePipeline::update_input_for_next_round(
   input.input_params.paged_kv_indices = paged_kv_indices;
   input.input_params.paged_kv_indptr = paged_kv_indptr;
   input.input_params.paged_kv_last_page_len = paged_kv_last_page_len;
-  LOG(INFO) << "paged_kv_indices: " << paged_kv_indices;
-  LOG(INFO) << "paged_kv_indptr: " << paged_kv_indptr;
-  LOG(INFO) << "paged_kv_last_page_len: " << paged_kv_last_page_len;
 }
 
 RecWorkerImpl::RecWorkerImpl(const ParallelArgs& parallel_args,
