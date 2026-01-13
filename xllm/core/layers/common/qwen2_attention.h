@@ -17,7 +17,12 @@ limitations under the License.
 
 #include <torch/torch.h>
 
+#include <variant>
+
 #include "attention.h"
+#if defined(USE_CUDA)
+#include "layers/cuda/xattention.h"
+#endif
 #include "framework/kv_cache/kv_cache.h"
 #include "framework/model/model_args.h"
 #include "framework/parallel_state/parallel_args.h"
@@ -56,7 +61,7 @@ class Qwen2AttentionImpl : public torch::nn::Module {
   RowParallelLinear o_proj_{nullptr};
   RMSNorm q_norm_{nullptr};
   RMSNorm k_norm_{nullptr};
-  Attention attn_{nullptr};
+  std::variant<Attention, XAttention> attn_;
   MRotaryEmbedding rotary_emb_{nullptr};
 };
 TORCH_MODULE(Qwen2Attention);

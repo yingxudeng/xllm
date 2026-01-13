@@ -15,41 +15,22 @@ limitations under the License.
 
 #pragma once
 
-#include <torch/torch.h>
-
-#include <tuple>
-
-#include "framework/kv_cache/kv_cache.h"
-#include "framework/model/model_input_params.h"
-#include "layers/common/attention_metadata.h"
+#include "attention.h"
 
 namespace xllm {
 namespace layer {
-class AttentionImpl : public torch::nn::Module {
+class XAttentionImpl : public AttentionImpl {
  public:
-  AttentionImpl() = default;
+  using AttentionImpl::AttentionImpl;
 
-  AttentionImpl(int num_heads,
-                int head_size,
-                float scale,
-                int num_kv_heads,
-                int sliding_window);
-
-  virtual std::tuple<torch::Tensor, std::optional<torch::Tensor>> forward(
+  std::tuple<torch::Tensor, std::optional<torch::Tensor>> forward(
       const AttentionMetadata& attn_metadata,
       torch::Tensor& query,
       torch::Tensor& key,
       torch::Tensor& value,
-      KVCache& kv_cache);
-
- protected:
-  int num_heads_;
-  int head_size_;
-  float scale_;
-  int num_kv_heads_;
-  int sliding_window_;
+      KVCache& kv_cache) override;
 };
-TORCH_MODULE(Attention);
+TORCH_MODULE(XAttention);
 
 }  // namespace layer
 }  // namespace xllm

@@ -19,6 +19,8 @@ limitations under the License.
 
 #include <tuple>
 
+#include "core/common/rec_model_utils.h"
+
 namespace {
 inline bool is_qwen3_model(const std::string& model_type) {
   static const std::set<std::string> qwen3_type_set = {
@@ -102,12 +104,21 @@ Qwen2AttentionImpl::Qwen2AttentionImpl(const ModelContext& context) {
                                        options));
 
   // 5. Attention
-  attn_ = register_module("attn",
-                          Attention(num_heads_,
-                                    head_dim_,
-                                    scaling_,
-                                    num_kv_heads_,
-                                    args.sliding_window()));
+  if (is_pure_device_mode()) {
+    attn_ = register_module("xattention",
+                            XAttention(num_heads_,
+                                       head_dim_,
+                                       scaling_,
+                                       num_kv_heads_,
+                                       args.sliding_window()));
+  } else {
+    attn_ = register_module("attn",
+                            Attention(num_heads_,
+                                      head_dim_,
+                                      scaling_,
+                                      num_kv_heads_,
+                                      args.sliding_window()));
+  }
 }
 
 torch::Tensor Qwen2AttentionImpl::forward(
@@ -138,7 +149,11 @@ torch::Tensor Qwen2AttentionImpl::forward(
   k = k.view({T, kv_size_});
 
   // 5. store k/v cache and do attention
-  auto out = std::get<0>(attn_->forward(attn_metadata, q, k, v, kv_cache));
+  auto out = std::get<0>(std::visit(
+      [&](auto& attn) {
+        return attn->forward(attn_metadata, q, k, v, kv_cache);
+      },
+      attn_));
 
   // 6. output projection
   return o_proj_->forward(out);

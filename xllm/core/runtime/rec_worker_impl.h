@@ -113,6 +113,120 @@ class RecWorkerImpl : public LLMWorkerImpl {
     RecWorkerImpl& worker_;
   };
 
+  class LlmRecPureDevicePipeline final : public RecWorkPipeline {
+   public:
+    explicit LlmRecPureDevicePipeline(RecWorkerImpl& worker);
+
+    bool create_model(RecWorkerImpl& worker, ModelContext& context) override;
+
+    ForwardInput prepare_inputs(Batch& batch) override;
+
+    void prepare_work_before_execute(const ForwardInput& inputs,
+                                     ForwardInput& processed_inputs) override;
+
+    std::optional<ForwardOutput> step(const ForwardInput& input) override;
+
+   private:
+    // Beam search related tensors
+    struct BeamSearchTensors {
+      torch::Tensor sequence_group;   // [batch_size, beam_width, total_rounds]
+      torch::Tensor acc_logprob;      // [num_seq, 1]
+      torch::Tensor out_log_probs;    // [num_seq, 1]
+      torch::Tensor out_token_ids;    // [num_seq, 1]
+      torch::Tensor out_token_index;  // [num_seq, 1]
+      torch::Tensor out_beam_count_prefix_sums;  // [num_seq, 1]
+      torch::Tensor out_seqgroup;  // [batch_size, beam_width, total_rounds]
+    };
+
+    // Fixed tensors for multi-round decoding
+    struct FixedTensors {
+      torch::Tensor batch_ids;  // [batch_size, beam_width, max_decode_step]
+      torch::Tensor beams_ids;  // [batch_size, beam_width, max_decode_step]
+      torch::Tensor
+          max_decode_step_ids;  // [batch_size, beam_width, max_decode_step]
+    };
+    // Prepare beam search tensors
+    BeamSearchTensors prepare_beam_search_tensors(int32_t batch_size,
+                                                  int32_t beam_width,
+                                                  int32_t total_rounds,
+                                                  const torch::Device& device);
+
+    // Prepare fixed tensors for multi-round decoding
+    FixedTensors prepare_fixed_tensors(
+        int32_t batch_size,
+        int32_t beam_width,
+        int32_t max_decode_step,
+        const torch::TensorOptions& paged_options);
+
+    // Execute beam search kernel
+    void execute_beam_search(const torch::Tensor& top_tokens,
+                             const torch::Tensor& top_logprobs,
+                             BeamSearchTensors& beam_tensors,
+                             int32_t round,
+                             int32_t batch_size);
+
+    // Execute cache select kernel
+    void execute_cache_select(const BeamSearchTensors& beam_tensors,
+                              ForwardInput& input,
+                              int32_t round,
+                              int32_t beam_width,
+                              int32_t layer_num);
+
+    // Build final output from beam search results
+    void build_final_output(const torch::Tensor& logits,
+                            const SampleOutput& sample_output,
+                            const SamplingParameters& sampling_params,
+                            const BeamSearchTensors& beam_tensors,
+                            ForwardOutput& output);
+
+    // Compute shared KV cache related tensors
+    void compute_shared_kv_tensors(const ModelInputParams& input_params,
+                                   int32_t batch_size,
+                                   int32_t beam_size,
+                                   const torch::TensorOptions& paged_options,
+                                   torch::Tensor& shared_kv_len_offsets,
+                                   torch::Tensor& shared_mask,
+                                   torch::Tensor& shared_kv_indices,
+                                   int32_t& shared_kv_len);
+
+    // Compute unshared KV cache related tensors
+    void compute_unshared_kv_tensors(int32_t current_step,
+                                     int32_t batch_size,
+                                     int32_t shared_kv_len,
+                                     const FixedTensors& fixed_tensors,
+                                     torch::Tensor& unshared_kv_indices,
+                                     torch::Tensor& unshared_mask);
+
+    // Build paged KV indices and indptr
+    void build_paged_kv_indices(const torch::Tensor& shared_kv_indices,
+                                const torch::Tensor& unshared_kv_indices,
+                                const torch::Tensor& shared_mask,
+                                const torch::Tensor& unshared_mask,
+                                int32_t batch_size,
+                                int32_t beam_size,
+                                int32_t current_step,
+                                int32_t shared_kv_len,
+                                const torch::TensorOptions& paged_options,
+                                const ModelInputParams& input_params,
+                                torch::Tensor& paged_kv_indices,
+                                torch::Tensor& paged_kv_indptr,
+                                torch::Tensor& paged_kv_last_page_len);
+
+    // Update input for next round in multi-round decoding
+    void update_input_for_next_round(ForwardInput& input,
+                                     int32_t current_step,
+                                     const SampleOutput& sample_output,
+                                     const torch::Tensor& top_tokens,
+                                     const BeamSearchTensors& beam_tensors,
+                                     int32_t batch_size,
+                                     int32_t beam_size,
+                                     int32_t max_decode_step,
+                                     const torch::TensorOptions& paged_options,
+                                     const FixedTensors& fixed_tensors);
+
+    RecWorkerImpl& worker_;
+  };
+
   // Factory method to create pipeline (can access private classes)
   static std::unique_ptr<RecWorkPipeline> create_pipeline(
       RecPipelineType type,
