@@ -30,6 +30,7 @@ limitations under the License.
 #include "framework/model/model_input_params.h"
 #include "framework/request/sequence.h"
 #include "framework/sampling/sampling_params.h"
+#include "multi_step_batch_input_builder.h"
 #include "rec_batch_input_builder.h"
 #include "runtime/params_utils.h"
 #include "util/slice.h"
@@ -126,22 +127,24 @@ ForwardInput Batch::prepare_rec_forward_input(uint32_t num_decoding_tokens,
                                               uint32_t min_decoding_batch_size,
                                               const ModelArgs& args,
                                               ThreadPool* thread_pool) {
-  RecType rec_type = RecType::kNone;
-  if (!sequence_groups_.empty() && !sequence_groups_[0]->sequences().empty()) {
-    rec_type = sequence_groups_[0]->sequences()[0]->rec_type();
-  }
+  return prepare_multi_step_forward_input_forward(args, thread_pool);
+  // RecType rec_type = RecType::kNone;
+  // if (!sequence_groups_.empty() && !sequence_groups_[0]->sequences().empty())
+  // {
+  //   rec_type = sequence_groups_[0]->sequences()[0]->rec_type();
+  // }
 
-  auto builder = RecBatchInputBuilder::create(rec_type,
-                                              sequence_groups_,
-                                              allowed_max_tokens_,
-                                              input_embeddings_vec_,
-                                              mm_data_vec_,
-                                              swap_block_transfer_infos_,
-                                              batch_id_,
-                                              &args,
-                                              thread_pool);
-  return builder->build_rec_forward_input(num_decoding_tokens,
-                                          min_decoding_batch_size);
+  // auto builder = RecBatchInputBuilder::create(rec_type,
+  //                                             sequence_groups_,
+  //                                             allowed_max_tokens_,
+  //                                             input_embeddings_vec_,
+  //                                             mm_data_vec_,
+  //                                             swap_block_transfer_infos_,
+  //                                             batch_id_,
+  //                                             &args,
+  //                                             thread_pool);
+  // return builder->build_rec_forward_input(num_decoding_tokens,
+  //                                         min_decoding_batch_size);
 }
 
 std::vector<Sequence*> Batch::get_sequences() {
@@ -278,6 +281,22 @@ RawForwardInput Batch::prepare_forward_input(const ModelArgs& args,
   return builder.build_raw_forward_input();
 }
 
+ForwardInput Batch::prepare_multi_step_forward_input_forward(
+    const ModelArgs& args,
+    ThreadPool* thread_pool) {
+  dp_balance_shuffle_seqs();
+  MultiStepBatchInputBuilder builder(sequences_,
+                                     allowed_max_tokens_,
+                                     input_embeddings_vec_,
+                                     mm_data_vec_,
+                                     swap_block_transfer_infos_,
+                                     batch_id_,
+                                     &args,
+                                     batch_forward_type_,
+                                     thread_pool);
+  return builder.build_forward_input();
+}
+
 void Batch::process_sample_output(const RawForwardOutput& raw_output,
                                   bool replace_fake_token) {
   int64_t num_seqs;
@@ -356,8 +375,6 @@ void Batch::process_sample_output(const RawForwardOutput& raw_output,
 }
 
 void Batch::process_beam_sequence_group(const ForwardOutput& output) {
-  // TODO. uncomment this in next pr.
-  /*
   if (!output.beam_sequence_group.defined() ||
       output.beam_sequence_group.numel() == 0) {
     return;
@@ -415,7 +432,6 @@ void Batch::process_beam_sequence_group(const ForwardOutput& output) {
                         : sequence_groups_[g]->sequences()[0].get();
     seq->set_beam_result(beam_width, total_rounds, group_flat2d, last_logprobs);
   }
-  */
 }
 
 void Batch::process_sample_output(const SampleOutput& sample_output,
