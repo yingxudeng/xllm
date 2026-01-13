@@ -63,6 +63,22 @@ AttentionMetadata AttentionMetadata::build(
 
   attn_metadata.is_dummy = (params.q_max_seq_len == 0);
 
+  // for xattention
+  attn_metadata.preallocated_output = params.preallocated_output;
+  if (params.current_round >= 0) {
+    attn_metadata.step = params.current_round;
+    CHECK(params.paged_kv_indices.defined())
+        << "paged_kv_indices is not defined";
+    CHECK(params.paged_kv_indptr.defined())
+        << "decode_paged_kv_indptr is not defined";
+    CHECK(params.paged_kv_last_page_len.defined())
+        << "paged_kv_last_page_len is not defined";
+    attn_metadata.paged_kv_indices = params.paged_kv_indices;
+    attn_metadata.paged_kv_indptr = params.paged_kv_indptr;
+    attn_metadata.paged_kv_last_page_len = params.paged_kv_last_page_len;
+    attn_metadata.naive_block_table = params.naive_block_table;
+  }
+
   return attn_metadata;
 }
 
