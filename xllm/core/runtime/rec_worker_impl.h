@@ -224,6 +224,15 @@ class RecWorkerImpl : public LLMWorkerImpl {
                                      const torch::TensorOptions& paged_options,
                                      const FixedTensors& fixed_tensors);
 
+    // Cached tensors for reuse across requests
+    std::vector<torch::Tensor> cached_full_k_caches_;
+    std::vector<torch::Tensor> cached_full_v_caches_;
+    std::vector<torch::Tensor> cached_unshared_k_caches_;
+    std::vector<torch::Tensor> cached_unshared_v_caches_;
+    torch::Tensor cached_beam_width_tensor_;
+    std::vector<torch::Tensor> cached_current_round_tensor_list_;
+    torch::Tensor cached_naive_block_table_;
+
     RecWorkerImpl& worker_;
   };
 
