@@ -136,7 +136,8 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
     if (VLOG_IS_ON(kGraphExecutorLogVerboseLevel)) {
       VLOG(kGraphExecutorLogVerboseLevel) << "=== batch_decode parameters ===";
       VLOG(kGraphExecutorLogVerboseLevel) << "query shape: " << query.sizes();
-      VLOG(kGraphExecutorLogVerboseLevel) << "output shape: " << output.sizes();
+      VLOG(kGraphExecutorLogVerboseLevel)
+          << "output shape: " << output_tensor.sizes();
       VLOG(kGraphExecutorLogVerboseLevel)
           << "k_cache shape: " << k_cache.sizes();
       VLOG(kGraphExecutorLogVerboseLevel)
@@ -280,7 +281,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
     xllm::kernel::batch_decode(attention_params);
     if (VLOG_IS_ON(kGraphExecutorLogVerboseLevel)) {
       VLOG(kGraphExecutorLogVerboseLevel) << "query: " << query;
-      VLOG(kGraphExecutorLogVerboseLevel) << "output: " << output;
+      VLOG(kGraphExecutorLogVerboseLevel) << "output: " << output_tensor;
     }
   }
 

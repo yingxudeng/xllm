@@ -97,6 +97,21 @@ void batch_decode(const std::string& uri,
         /*rope_rcp_theta=*/1.0 / 10000.0,
         /*token_pos_in_items_len=*/0);
   } else {
+    VLOG(50) << "float_workspace_buffer.has_storage: "
+             << float_workspace_buffer.has_storage();
+    VLOG(50) << "int_workspace_buffer.has_storage: "
+             << int_workspace_buffer.has_storage();
+    VLOG(50) << "plan_info.has_storage: " << plan_info.has_storage();
+    VLOG(50) << "query.has_storage: " << query.has_storage();
+    VLOG(50) << "k_cache.has_storage: " << k_cache.has_storage();
+    VLOG(50) << "v_cache.has_storage: " << v_cache.has_storage();
+    VLOG(50) << "paged_kv_indptr.has_storage: "
+             << paged_kv_indptr.has_storage();
+    VLOG(50) << "paged_kv_indices.has_storage: "
+             << paged_kv_indices.has_storage();
+    VLOG(50) << "paged_kv_last_page_len.has_storage: "
+             << paged_kv_last_page_len.has_storage();
+    VLOG(50) << "output.has_storage: " << output.has_storage();
     FunctionFactory::get_instance().decode_run_func(uri).call(
         float_workspace_buffer,
         int_workspace_buffer,

@@ -129,7 +129,7 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
       std::tie(attn_metadata.mrope_cos, attn_metadata.mrope_sin) =
           apply_mrope(positions);
     }
-
+    VLOG(50) << "enable_cuda_graph: " << attn_metadata.enable_cuda_graph;
     std::optional<torch::Tensor> residual;
     for (size_t i = 0; i < layers_.size(); i++) {
       if (is_pure_device_mode()) {

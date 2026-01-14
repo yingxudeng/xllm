@@ -478,8 +478,7 @@ std::optional<ForwardOutput> RecWorkerImpl::LlmRecPureDevicePipeline::step(
   torch::Tensor logits;
   SampleOutput sample_output;
   torch::Tensor top_tokens;
-  LOG(INFO) << "mutable_input.input_params.q_seq_lens:"
-            << mutable_input.input_params.q_seq_lens;
+
   int32_t max_q_seq_len =
       mutable_input.input_params.q_seq_lens.max().item().toInt();
   int32_t num_qo_heads = mutable_input.input_params.num_heads;

@@ -60,7 +60,7 @@ ProfileManager::ProfileManager(Engine* engine, const Options& options)
   // Warmup ACL graph executor if enabled
   if (FLAGS_enable_graph) {
     LOG(INFO) << "Starting ACL Graph/CUDA Graph warmup.";
-    warmup_for_acl_graph();
+    // warmup_for_acl_graph();
   }
 #endif
 }
