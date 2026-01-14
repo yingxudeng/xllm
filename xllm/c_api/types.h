@@ -103,6 +103,15 @@ typedef struct XLLM_CAPI_EXPORT XLLM_InitOptions {
   /** Index ID for internal server ID (unique for multiple models/versions) */
   uint32_t server_idx;
 
+  /** Beam width for beam search decoding (1 for greedy search) */
+  uint32_t beam_width;
+
+  /** Maximum number of decode rounds for each inference request */
+  uint32_t max_decode_rounds;
+
+  /** Maximum number of tokens allowed per inference request */
+  uint32_t max_token_per_req;
+
   /** Maximum GPU memory utilization ratio for model inference */
   float max_memory_utilization;
 
