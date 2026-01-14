@@ -50,13 +50,11 @@ void apply_rotary(RotaryParams& params) {
 #elif defined(USE_CUDA)
   bool is_neox = !params.interleaved;
 
-  auto pos_ids = params.position_ids.value().to(torch::kInt64);
-  auto cos_sin_vec = params.cos_sin.chunk(4, -1);
-  auto cos = cos_sin_vec[0];
-  auto sin = cos_sin_vec[2];
-  auto cos_sin = torch::cat({cos, sin}, -1);
-
-  cuda::rotary_embedding(pos_ids, params.q, params.k, cos_sin, is_neox);
+  // position_ids is already int64 (converted in ForwardInput::to() for CUDA)
+  auto& pos_ids = params.position_ids.value();
+  // Use pre-computed CUDA cache directly, avoiding chunk/cat per layer
+  cuda::rotary_embedding(
+      pos_ids, params.q, params.k, params.cuda_cos_sin, is_neox);
 #elif defined(USE_ILU)
   torch::Tensor long_position_ids = params.position_ids.value().to(at::kLong);
   ilu::apply_rope_pos_ids_cos_sin_cache(params.q,
