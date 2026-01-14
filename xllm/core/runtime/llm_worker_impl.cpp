@@ -32,9 +32,6 @@ limitations under the License.
 #include "framework/kv_cache/kv_cache.h"
 #include "framework/model/model_input_params.h"
 #include "framework/state_dict/state_dict.h"
-#if defined(USE_CUDA) || defined(USE_ILU)
-#include "layers/cuda/flashinfer_workspace.h"
-#endif
 #include "models/model_registry.h"
 #include "util/threadpool.h"
 #include "util/timer.h"
@@ -48,8 +45,7 @@ LLMWorkerImpl::LLMWorkerImpl(const ParallelArgs& parallel_args,
   device_.set_device();
 #if defined(USE_CUDA)
   // initialize flashinfer workspace
-  ::xllm::layer::flashinfer::FlashinferWorkspace::get_instance().initialize(
-      device_);
+  flashinfer_workspace_.initialize(device_);
 #endif
 }
 
@@ -96,6 +92,11 @@ std::optional<ForwardOutput> LLMWorkerImpl::step(const ForwardInput& input) {
                                                  is_spec_draft_));
 #endif
   }
+
+#if defined(USE_CUDA)
+  const_cast<ModelInputParams*>(&(input.input_params))
+      ->set_flashinfer_workspace_buffer(flashinfer_workspace_);
+#endif
 
   if (FLAGS_enable_eplb) {
     eplb_executor_->eplb_execute(input.eplb_info);

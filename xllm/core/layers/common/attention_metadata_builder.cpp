@@ -59,7 +59,7 @@ AttentionMetadata AttentionMetadataBuilder::build(
   attn_metadata.is_chunked_prefill =
       params.batch_forward_type.is_mixed() ||
       params.batch_forward_type.is_chunked_prefill();
-  attn_metadata.is_prefill = params.batch_forward_type.is_prefill();
+  attn_metadata.is_prefill = params.is_prefill;
   if (!attn_metadata.is_prefill || FLAGS_enable_mla) {
     attn_metadata.block_table = params.block_tables;
     attn_metadata.kv_seq_lens = torch::diff(params.kv_seq_lens);  // kv seqlens
@@ -91,6 +91,11 @@ AttentionMetadata AttentionMetadataBuilder::build(
 
   // TODO: set use_tensor_core from options.
   attn_metadata.use_tensor_core = FLAGS_use_tensor_core;
+
+  attn_metadata.float_workspace_buffer = params.float_workspace_buffer;
+  attn_metadata.int_workspace_buffer = params.int_workspace_buffer;
+  attn_metadata.page_locked_int_workspace_buffer =
+      params.page_locked_int_workspace_buffer;
 
   return attn_metadata;
 }

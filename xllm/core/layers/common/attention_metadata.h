@@ -106,6 +106,10 @@ struct AttentionMetadata {
   // for npu
   torch::Tensor attn_mask;
   torch::Tensor kv_seq_lens_host;
+
+  torch::Tensor float_workspace_buffer;
+  torch::Tensor int_workspace_buffer;
+  torch::Tensor page_locked_int_workspace_buffer;
 };
 
 }  // namespace xllm::layer

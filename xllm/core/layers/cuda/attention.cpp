@@ -110,14 +110,10 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
   attention_params.scale = scale_;
   // for flashinfer
   attention_params.float_workspace_buffer =
-      ::xllm::layer::flashinfer::FlashinferWorkspace::get_instance()
-          .get_float_workspace_buffer();
-  attention_params.int_workspace_buffer =
-      ::xllm::layer::flashinfer::FlashinferWorkspace::get_instance()
-          .get_int_workspace_buffer();
+      attn_metadata.float_workspace_buffer;
+  attention_params.int_workspace_buffer = attn_metadata.int_workspace_buffer;
   attention_params.page_locked_int_workspace_buffer =
-      ::xllm::layer::flashinfer::FlashinferWorkspace::get_instance()
-          .get_page_locked_int_workspace_buffer();
+      attn_metadata.page_locked_int_workspace_buffer;
 
   // TODO: support chunked prefill
   CHECK(!attn_metadata.is_chunked_prefill)

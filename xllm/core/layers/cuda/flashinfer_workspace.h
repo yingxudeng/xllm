@@ -25,10 +25,8 @@ namespace xllm::layer::flashinfer {
 
 class FlashinferWorkspace {
  public:
-  static FlashinferWorkspace& get_instance() {
-    static FlashinferWorkspace instance;
-    return instance;
-  };
+  FlashinferWorkspace() = default;
+  ~FlashinferWorkspace() = default;
 
   void initialize(const torch::Device& device);
 
@@ -37,10 +35,6 @@ class FlashinferWorkspace {
   torch::Tensor get_page_locked_int_workspace_buffer();
 
  private:
-  FlashinferWorkspace() = default;
-  ~FlashinferWorkspace() = default;
-  DISALLOW_COPY_AND_ASSIGN(FlashinferWorkspace);
-
   torch::Tensor float_workspace_buffer_;
   torch::Tensor int_workspace_buffer_;
   torch::Tensor page_locked_int_workspace_buffer_;

@@ -494,6 +494,12 @@ DEFINE_bool(enable_constrained_decoding,
             "that the output meets specific format or structural requirements "
             "through pre-defined rules.");
 
+// --- concurrent rec worker config ---
+DEFINE_uint32(rec_worker_max_concurrency,
+              1,
+              "Concurrency for rec worker parallel execution. Less than or "
+              "equal to 1 means disable concurrent rec worker.");
+
 #if defined(USE_NPU)
 DEFINE_string(
     npu_kernel_backend,

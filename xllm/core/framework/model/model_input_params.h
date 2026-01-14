@@ -25,6 +25,11 @@ limitations under the License.
 #if defined(USE_NPU)
 #include "platform/npu/npu_layer_synchronizer.h"
 #endif
+
+#if defined(USE_CUDA) || defined(USE_ILU)
+#include "layers/cuda/flashinfer_workspace.h"
+#endif
+
 #include "framework/batch/batch_forward_type.h"
 #include "framework/request/mm_batch_data.h"
 #include "npu_dp_ep_padding.h"
@@ -518,6 +523,21 @@ struct ModelInputParams {
 
   // Flag for CUDA graph capture mode
   bool enable_cuda_graph = false;
+
+#if defined(USE_CUDA)
+
+  torch::Tensor float_workspace_buffer;
+  torch::Tensor int_workspace_buffer;
+  torch::Tensor page_locked_int_workspace_buffer;
+
+  void set_flashinfer_workspace_buffer(
+      layer::flashinfer::FlashinferWorkspace& flashinfer_workspace) {
+    float_workspace_buffer = flashinfer_workspace.get_float_workspace_buffer();
+    int_workspace_buffer = flashinfer_workspace.get_int_workspace_buffer();
+    page_locked_int_workspace_buffer =
+        flashinfer_workspace.get_page_locked_int_workspace_buffer();
+  }
+#endif
 };
 
 }  // namespace xllm

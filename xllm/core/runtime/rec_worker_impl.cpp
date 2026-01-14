@@ -344,6 +344,11 @@ std::optional<ForwardOutput> RecWorkerImpl::LlmRecPureDevicePipeline::step(
 
   ForwardInput& mutable_input = const_cast<ForwardInput&>(input);
 
+#if defined(USE_CUDA)
+  mutable_input.input_params.set_flashinfer_workspace_buffer(
+      worker_.flashinfer_workspace_);
+#endif
+
   int32_t total_rounds = mutable_input.total_round;
   int32_t max_decode_step = total_rounds - 1;
   int32_t batch_size =
@@ -381,6 +386,7 @@ std::optional<ForwardOutput> RecWorkerImpl::LlmRecPureDevicePipeline::step(
                                       ? mutable_input.decoder_sampling_params
                                       : mutable_input.sampling_params;
     mutable_input.input_params.is_prefill = round == 0;
+    mutable_input.input_params.attn_metadata = nullptr;
     mutable_input.input_params.current_round = round - 1;
 
     // Start async computation for next round input (overlap with GPU

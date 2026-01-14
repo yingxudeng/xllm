@@ -45,7 +45,8 @@ CudaGraphPersistentParam::CudaGraphPersistentParam(
   // Use max_tokens_per_batch for first dimension size
   const int64_t max_tokens_per_batch = FLAGS_max_tokens_per_batch;
   // num_sequences
-  const int64_t max_seqs_per_batch = options.max_seqs_per_batch();
+  const int64_t max_seqs_per_batch =
+      options.max_seqs_per_batch() * FLAGS_beam_width;
   auto tensor_options = torch::TensorOptions().device(device);
 
   const int64_t max_seq_len = FLAGS_max_seq_len_for_graph_mode > 0

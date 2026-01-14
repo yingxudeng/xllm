@@ -23,6 +23,7 @@ cc_library(
     worker.h
     worker_impl.h
     llm_worker_impl.h
+    concurrent_rec_worker_impl.h
     vlm_worker_impl.h
     dit_worker.h
     embed_worker_impl.h
@@ -45,6 +46,7 @@ cc_library(
     worker.cpp
     worker_impl.cpp
     llm_worker_impl.cpp
+    concurrent_rec_worker_impl.cpp
     vlm_worker_impl.cpp
     dit_worker.cpp
     embed_worker_impl.cpp

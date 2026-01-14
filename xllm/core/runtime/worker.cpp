@@ -26,9 +26,11 @@ limitations under the License.
 #include <utility>
 
 #include "common/metrics.h"
+#include "core/common/global_flags.h"
 #include "framework/kv_cache/kv_cache.h"
 #include "framework/model/model_input_params.h"
 #include "framework/state_dict/state_dict.h"
+#include "runtime/concurrent_rec_worker_impl.h"
 #include "runtime/embed_vlm_worker_impl.h"
 #include "runtime/embed_worker_impl.h"
 #include "runtime/llm_worker_impl.h"
@@ -54,7 +56,12 @@ Worker::Worker(const ParallelArgs& parallel_args,
   } else if (worker_type == WorkerType::EVLM) {
     impl_ = new EmbedVLMWorkerImpl(parallel_args, device, options);
   } else if (worker_type == WorkerType::REC) {
-    impl_ = new RecWorkerImpl(parallel_args, device, options);
+    if (FLAGS_rec_worker_max_concurrency > 1) {
+      impl_ = new ConcurrentRecWorkerImpl(parallel_args, device, options);
+    } else {
+      impl_ = new RecWorkerImpl(parallel_args, device, options);
+    }
+
   } else if (worker_type == WorkerType::MMEVLM) {
     impl_ = new MMEmbedVLMWorkerImpl(parallel_args, device, options);
   } else {

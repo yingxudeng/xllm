@@ -29,6 +29,10 @@ limitations under the License.
 #include "options.h"
 #include "runtime/worker_impl.h"
 
+#if defined(USE_CUDA) || defined(USE_ILU)
+#include "layers/cuda/flashinfer_workspace.h"
+#endif
+
 namespace xllm {
 
 class LLMWorkerImpl : public WorkerImpl {
@@ -74,8 +78,12 @@ class LLMWorkerImpl : public WorkerImpl {
 
 #endif
 
- private:
+ protected:
   std::unique_ptr<BeamSearcher> beam_searcher_;
+
+#if defined(USE_CUDA)
+  layer::flashinfer::FlashinferWorkspace flashinfer_workspace_;
+#endif
 };
 
 }  // namespace xllm

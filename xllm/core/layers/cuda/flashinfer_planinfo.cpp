@@ -68,23 +68,21 @@ void update_plan_info(std::shared_ptr<PlanInfo> plan_info,
     const int64_t total_num_rows = qo_indptr_host[-1].item<int64_t>();
     const int64_t batch_size = qo_indptr_host.size(0) - 1;
     auto call_plan_func = [&](auto&& func) {
-      return func.call(
-          FlashinferWorkspace::get_instance().get_float_workspace_buffer(),
-          FlashinferWorkspace::get_instance().get_int_workspace_buffer(),
-          FlashinferWorkspace::get_instance()
-              .get_page_locked_int_workspace_buffer(),
-          qo_indptr_host,
-          kv_cu_seq_lens_host,
-          kv_len_arr_host,
-          total_num_rows,
-          batch_size,
-          num_qo_heads,
-          num_kv_heads,
-          /*page_size=*/1,
-          enable_cuda_graph,
-          head_dim_qk,
-          head_dim_vo,
-          causal);
+      return func.call(attn_meta.float_workspace_buffer,
+                       attn_meta.int_workspace_buffer,
+                       attn_meta.page_locked_int_workspace_buffer,
+                       qo_indptr_host,
+                       kv_cu_seq_lens_host,
+                       kv_len_arr_host,
+                       total_num_rows,
+                       batch_size,
+                       num_qo_heads,
+                       num_kv_heads,
+                       /*page_size=*/1,
+                       enable_cuda_graph,
+                       head_dim_qk,
+                       head_dim_vo,
+                       causal);
     };
     if (backend == "fa2") {
       plan_info->plan_info = call_plan_func(
@@ -142,12 +140,9 @@ void update_plan_info(std::shared_ptr<PlanInfo> plan_info,
       plan_info->plan_info =
           kernel::cuda::FunctionFactory::get_instance()
               .fa2_prefill_plan_func(plan_info->uri)
-              .call(FlashinferWorkspace::get_instance()
-                        .get_float_workspace_buffer(),
-                    FlashinferWorkspace::get_instance()
-                        .get_int_workspace_buffer(),
-                    FlashinferWorkspace::get_instance()
-                        .get_page_locked_int_workspace_buffer(),
+              .call(attn_meta.float_workspace_buffer,
+                    attn_meta.int_workspace_buffer,
+                    attn_meta.page_locked_int_workspace_buffer,
                     qo_indptr_host,
                     paged_kv_indptr_host,
                     kv_len_arr_host,
@@ -181,12 +176,9 @@ void update_plan_info(std::shared_ptr<PlanInfo> plan_info,
       plan_info->plan_info =
           kernel::cuda::FunctionFactory::get_instance()
               .decode_plan_func(plan_info->uri)
-              .call(FlashinferWorkspace::get_instance()
-                        .get_float_workspace_buffer(),
-                    FlashinferWorkspace::get_instance()
-                        .get_int_workspace_buffer(),
-                    FlashinferWorkspace::get_instance()
-                        .get_page_locked_int_workspace_buffer(),
+              .call(attn_meta.float_workspace_buffer,
+                    attn_meta.int_workspace_buffer,
+                    attn_meta.page_locked_int_workspace_buffer,
                     paged_kv_indptr_host,
                     batch_size,
                     num_qo_heads,
