@@ -40,7 +40,8 @@ class AttentionImpl : public torch::nn::Module {
       torch::Tensor& query,
       torch::Tensor& key,
       torch::Tensor& value,
-      KVCache& kv_cache);
+      KVCache& kv_cache,
+      std::optional<torch::Tensor> output = std::nullopt);
 
  protected:
   int num_heads_;

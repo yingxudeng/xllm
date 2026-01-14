@@ -64,7 +64,6 @@ AttentionMetadata AttentionMetadata::build(
   attn_metadata.is_dummy = (params.q_max_seq_len == 0);
 
   // for xattention
-  attn_metadata.preallocated_output = params.preallocated_output;
   if (params.current_round >= 0) {
     attn_metadata.step = params.current_round;
     CHECK(params.paged_kv_indices.defined())

@@ -30,18 +30,22 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> XAttentionImpl::forward(
     torch::Tensor& query,
     torch::Tensor& key,
     torch::Tensor& value,
-    KVCache& kv_cache) {
-  auto output = attn_metadata.preallocated_output;
+    KVCache& kv_cache,
+    std::optional<torch::Tensor> output) {
+  if (!output.has_value()) {
+    output = torch::empty_like(query);
+  }
+  auto output_tensor = output.value();
   auto output_lse = std::nullopt;
   if (attn_metadata.max_seq_len == 0) {
-    output = output.view({-1, num_heads_ * head_size_});
-    return std::make_tuple(output, output_lse);
+    output_tensor = output_tensor.view({-1, num_heads_ * head_size_});
+    return std::make_tuple(output_tensor, output_lse);
   }
 
   query = query.view({-1, num_heads_, head_size_});
   key = key.view({-1, num_kv_heads_, head_size_});
   value = value.view({-1, num_kv_heads_, head_size_});
-  output = output.view({-1, num_heads_, head_size_});
+  output_tensor = output_tensor.view({-1, num_heads_, head_size_});
 
   torch::Tensor k_cache = kv_cache.get_k_cache();
   torch::Tensor v_cache = kv_cache.get_v_cache();
@@ -63,7 +67,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> XAttentionImpl::forward(
         attn_metadata,
         query.scalar_type(),
         key.scalar_type(),
-        output.scalar_type(),
+        output_tensor.scalar_type(),
         head_size_,
         head_size_,
         num_heads_,
@@ -78,7 +82,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> XAttentionImpl::forward(
         key, value, attn_metadata.full_k_cache, attn_metadata.full_v_cache);
     xllm::kernel::AttentionParams attention_params;
     attention_params.query = query;
-    attention_params.output = output;
+    attention_params.output = output_tensor;
     attention_params.output_lse = output_lse;
     attention_params.window_size_left = sliding_window_;
     attention_params.scale = scale_;
@@ -129,7 +133,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> XAttentionImpl::forward(
                                  attn_metadata,
                                  query.scalar_type(),
                                  key.scalar_type(),
-                                 output.scalar_type(),
+                                 output_tensor.scalar_type(),
                                  head_size_,
                                  head_size_,
                                  num_heads_,
@@ -162,7 +166,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> XAttentionImpl::forward(
         << "chunked prefill is not supported";
 
     attention_params.query = query;
-    attention_params.output = output;
+    attention_params.output = output_tensor;
 
     attention_params.k_cache = full_k_cache;
     attention_params.v_cache = full_v_cache;
@@ -176,8 +180,8 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> XAttentionImpl::forward(
     attention_params.use_tensor_core = false;
     xllm::kernel::batch_decode(attention_params);
   }
-  output = output.view({-1, num_heads_ * head_size_});
-  return {output, output_lse};
+  output_tensor = output_tensor.view({-1, num_heads_ * head_size_});
+  return {output_tensor, output_lse};
 }
 
 }  // namespace layer

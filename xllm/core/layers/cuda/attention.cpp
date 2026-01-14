@@ -40,18 +40,22 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
     torch::Tensor& query,
     torch::Tensor& key,
     torch::Tensor& value,
-    KVCache& kv_cache) {
-  auto output = torch::empty_like(query);
+    KVCache& kv_cache,
+    std::optional<torch::Tensor> output) {
+  if (!output.has_value()) {
+    output = torch::empty_like(query);
+  }
+  auto output_tensor = output.value();
   auto output_lse = std::nullopt;
   if (attn_metadata.max_seq_len == 0) {
-    output = output.view({-1, num_heads_ * head_size_});
-    return std::make_tuple(output, output_lse);
+    output_tensor = output_tensor.view({-1, num_heads_ * head_size_});
+    return std::make_tuple(output_tensor, output_lse);
   }
 
   query = query.view({-1, num_heads_, head_size_});
   key = key.view({-1, num_kv_heads_, head_size_});
   value = value.view({-1, num_kv_heads_, head_size_});
-  output = output.view({-1, num_heads_, head_size_});
+  output_tensor = output_tensor.view({-1, num_heads_, head_size_});
 
   torch::Tensor k_cache = kv_cache.get_k_cache();
   torch::Tensor v_cache = kv_cache.get_v_cache();
@@ -69,7 +73,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
       attn_metadata,
       query.scalar_type(),
       key.scalar_type(),
-      output.scalar_type(),
+      output_tensor.scalar_type(),
       head_size_,
       head_size_,
       num_heads_,
@@ -90,7 +94,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
 
   xllm::kernel::AttentionParams attention_params;
   attention_params.query = query;
-  attention_params.output = output;
+  attention_params.output = output_tensor;
   attention_params.output_lse = output_lse;
   // attention_params.max_seq_len = attn_metadata.max_seq_len;
   attention_params.window_size_left = sliding_window_;
@@ -118,7 +122,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
     xllm::kernel::batch_prefill(attention_params);
   } else {
     attention_params.query = query;
-    attention_params.output = output;
+    attention_params.output = output_tensor;
     attention_params.k_cache = k_cache;
     attention_params.v_cache = v_cache;
 
@@ -131,8 +135,8 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> AttentionImpl::forward(
     xllm::kernel::batch_decode(attention_params);
   }
 
-  output = output.view({-1, num_heads_ * head_size_});
-  return {output, output_lse};
+  output_tensor = output_tensor.view({-1, num_heads_ * head_size_});
+  return {output_tensor, output_lse};
 }
 
 }  // namespace layer
