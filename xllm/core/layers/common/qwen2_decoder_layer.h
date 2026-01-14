@@ -57,6 +57,10 @@ class Qwen2DecoderLayerImpl : public torch::nn::Module {
   RMSNorm post_norm_{nullptr};
 
   ParallelArgs parallel_args_;
+  QuantArgs quant_args_;
+
+  // Helper method to get FP8 input scale for fused quantization
+  std::optional<torch::Tensor> get_fp8_input_scale() const;
 };
 
 using Qwen3DecoderLayerImpl = Qwen2DecoderLayerImpl;
