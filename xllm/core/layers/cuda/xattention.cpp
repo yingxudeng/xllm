@@ -83,13 +83,15 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> XAttentionImpl::forward(
     attention_params.window_size_left = sliding_window_;
     attention_params.scale = scale_;
     // for flashinfer
-    // attention_params.float_workspace_buffer =
-    //     FlashinferWorkspace::get_instance().get_float_workspace_buffer();
-    // attention_params.int_workspace_buffer =
-    //     FlashinferWorkspace::get_instance().get_int_workspace_buffer();
-    // attention_params.page_locked_int_workspace_buffer =
-    //     FlashinferWorkspace::get_instance()
-    //         .get_page_locked_int_workspace_buffer();
+    attention_params.float_workspace_buffer =
+        ::xllm::layer::flashinfer::FlashinferWorkspace::get_instance()
+            .get_float_workspace_buffer();
+    attention_params.int_workspace_buffer =
+        ::xllm::layer::flashinfer::FlashinferWorkspace::get_instance()
+            .get_int_workspace_buffer();
+    attention_params.page_locked_int_workspace_buffer =
+        ::xllm::layer::flashinfer::FlashinferWorkspace::get_instance()
+            .get_page_locked_int_workspace_buffer();
     // attention_params.kv_cu_seq_lens = attn_metadata.kv_cu_seq_lens;
     // attention_params.q_cu_seq_lens = attn_metadata.q_cu_seq_lens;
 

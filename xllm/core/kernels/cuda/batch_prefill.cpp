@@ -76,6 +76,40 @@ void batch_prefill(const std::string& uri,
         /*rope_rcp_theta=*/1.0 / 10000.0,
         /*token_pos_in_items_len=*/0);
   } else if (backend == "fa3") {
+    VLOG(50) << "plan_info: " << plan_info.sizes();
+    VLOG(50) << "batch_prefill: fa3 backend";
+    VLOG(50) << "query.shape=" << query.sizes();
+    VLOG(50) << "key.shape=" << key.sizes();
+    VLOG(50) << "value.shape=" << value.sizes();
+    VLOG(50) << "q_cu_seq_lens.shape=" << q_cu_seq_lens.sizes();
+    VLOG(50) << "kv_cu_seq_lens.shape=" << kv_cu_seq_lens.sizes();
+    VLOG(50) << "output.shape=" << output.sizes();
+
+    // Check if tensors have storage
+    CHECK(query.has_storage()) << "query tensor doesn't have storage";
+    CHECK(key.has_storage()) << "key tensor doesn't have storage";
+    CHECK(value.has_storage()) << "value tensor doesn't have storage";
+    CHECK(q_cu_seq_lens.has_storage())
+        << "q_cu_seq_lens tensor doesn't have storage";
+    CHECK(kv_cu_seq_lens.has_storage())
+        << "kv_cu_seq_lens tensor doesn't have storage";
+    CHECK(output.has_storage()) << "output tensor doesn't have storage";
+    CHECK(plan_info.has_storage()) << "plan_info tensor doesn't have storage";
+    CHECK(float_workspace_buffer.has_storage())
+        << "float_workspace_buffer tensor doesn't have storage";
+    CHECK(int_workspace_buffer.has_storage())
+        << "int_workspace_buffer tensor doesn't have storage";
+
+    // Check output_lse: if it has a value, it must have storage
+    // If output_lse is defined but doesn't have storage, set it to nullopt
+    if (output_lse.has_value()) {
+      if (!output_lse.value().has_storage()) {
+        LOG(WARNING) << "output_lse tensor is defined but doesn't have "
+                        "storage, setting to nullopt";
+        output_lse = std::nullopt;
+      }
+    }
+
     FunctionFactory::get_instance().fa3_prefill_ragged_run_func(uri).call(
         float_workspace_buffer,
         int_workspace_buffer,
