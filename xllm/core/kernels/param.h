@@ -53,6 +53,9 @@ struct RotaryParams {
   // Precomputed cos_sin tensor. Not used in current MLU implementation
   // (rope.cpp).
   torch::Tensor cos_sin;
+  // Pre-formatted cos_sin cache for CUDA kernel.
+  // Avoids chunk/cat operations per layer and improves performance.
+  torch::Tensor cuda_cos_sin;
   // Optional position IDs tensor. Type must be int32.
   // Shape: [total_seqlen] if discrete=true, or [batch_size] if discrete=false.
   // If discrete=true, position_ids must be provided.
