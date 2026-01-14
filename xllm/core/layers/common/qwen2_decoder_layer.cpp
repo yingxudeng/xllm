@@ -21,7 +21,8 @@ namespace xllm {
 namespace layer {
 
 Qwen2DecoderLayerImpl::Qwen2DecoderLayerImpl(const ModelContext& context)
-    : parallel_args_(context.get_parallel_args()) {
+    : parallel_args_(context.get_parallel_args()),
+      quant_args_(context.get_quant_args()) {
   const auto& model_args = context.get_model_args();
   const auto& quant_args = context.get_quant_args();
   const auto& parallel_args = context.get_parallel_args();
@@ -68,24 +69,63 @@ torch::Tensor Qwen2DecoderLayerImpl::forward(
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
     const ModelInputParams& input_params) {
+  // Check if using FP8 static quantization with fusion enabled
+  bool use_fp8_fusion = quant_args_.quant_method() == kQuantMethodFp8 &&
+                        !quant_args_.activation_dynamic();
+
   // Pre-attention norm
+  // Get FP8 scale from attention's qkv_proj for pre-attention norm
+  std::optional<torch::Tensor> pre_fp8_scale;
+  if (use_fp8_fusion && attention_) {
+    pre_fp8_scale = attention_->get_fp8_input_scale();
+  }
+
   if (!residual.has_value()) {
     residual = x;
-    x = std::get<0>(input_norm_->forward(x));
+    if (use_fp8_fusion && pre_fp8_scale.has_value()) {
+      // Use fused RMSNorm + FP8 quantization (no residual for first layer)
+      x = std::get<0>(input_norm_->forward_fp8(x, pre_fp8_scale.value()));
+    } else {
+      x = std::get<0>(input_norm_->forward(x));
+    }
   } else {
-    std::tie(x, residual) = input_norm_->forward(x, residual);
+    if (use_fp8_fusion && pre_fp8_scale.has_value()) {
+      // Use fused Add + RMSNorm + FP8 quantization
+      std::tie(x, residual) =
+          input_norm_->forward_fp8(x, pre_fp8_scale.value(), residual);
+    } else {
+      std::tie(x, residual) = input_norm_->forward(x, residual);
+    }
   }
 
   // Attention
   x = attention_->forward(positions, x, attn_metadata, kv_cache);
 
   // Post-attention norm
-  std::tie(x, residual) = post_norm_->forward(x, residual);
+  // Get FP8 scale for post-attention norm (from MLP gate_up_proj)
+  auto post_fp8_scale = use_fp8_fusion ? get_fp8_input_scale() : std::nullopt;
+  if (use_fp8_fusion && post_fp8_scale.has_value()) {
+    // Use fused Add + RMSNorm + FP8 quantization
+    std::tie(x, residual) =
+        post_norm_->forward_fp8(x, post_fp8_scale.value(), residual);
+  } else {
+    std::tie(x, residual) = post_norm_->forward(x, residual);
+  }
 
   // MLP forward
   x = mlp_->forward(x);
 
   return x;
+}
+
+std::optional<torch::Tensor> Qwen2DecoderLayerImpl::get_fp8_input_scale()
+    const {
+  // Get input_scale from MLP's gate_up_proj (first linear layer after
+  // post_norm) This is the scale used for quantizing activations after RMSNorm
+  if (mlp_) {
+    return mlp_->get_fp8_input_scale();
+  }
+  return std::nullopt;
 }
 
 }  // namespace layer
