@@ -28,7 +28,8 @@ class XAttentionImpl : public AttentionImpl {
       torch::Tensor& query,
       torch::Tensor& key,
       torch::Tensor& value,
-      KVCache& kv_cache) override;
+      KVCache& kv_cache,
+      std::optional<torch::Tensor> output = std::nullopt) override;
 };
 TORCH_MODULE(XAttention);
 

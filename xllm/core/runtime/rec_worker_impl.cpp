@@ -478,21 +478,27 @@ std::optional<ForwardOutput> RecWorkerImpl::LlmRecPureDevicePipeline::step(
   torch::Tensor logits;
   SampleOutput sample_output;
   torch::Tensor top_tokens;
-
+  LOG(INFO) << "mutable_input.input_params.q_seq_lens:"
+            << mutable_input.input_params.q_seq_lens;
   int32_t max_q_seq_len =
       mutable_input.input_params.q_seq_lens.max().item().toInt();
   int32_t num_qo_heads = mutable_input.input_params.num_heads;
   int32_t head_dim = mutable_input.input_params.head_dim;
 
-  if (cached_prefill_preallocated_output_.defined()) {
-    mutable_input.input_params.preallocated_output =
-        cached_prefill_preallocated_output_;
-  } else {
-    mutable_input.input_params.preallocated_output = torch::zeros(
-        {max_q_seq_len, num_qo_heads * head_dim}, kv_cache_options);
-    cached_prefill_preallocated_output_ =
-        mutable_input.input_params.preallocated_output;
-  }
+  // if (cached_prefill_preallocated_output_.defined()) {
+  //   LOG(INFO) << "max_q_seq_len: " << max_q_seq_len;
+  //   torch::Tensor prefill_preallocated_output =
+  //       cached_prefill_preallocated_output_.slice(0, 0, max_q_seq_len);
+  //   mutable_input.input_params.preallocated_output =
+  //       prefill_preallocated_output;
+  //   LOG(INFO) << "mutable_input.input_params.preallocated_output.shape: "
+  //             << mutable_input.input_params.preallocated_output.sizes();
+  // } else {
+  //   mutable_input.input_params.preallocated_output = torch::zeros(
+  //       {max_q_seq_len, num_qo_heads * head_dim}, kv_cache_options);
+  //   cached_prefill_preallocated_output_ =
+  //       mutable_input.input_params.preallocated_output;
+  // }
 
   for (int32_t round = 0; round < total_rounds; ++round) {
     const auto& sampling_params = round > 0
@@ -519,18 +525,23 @@ std::optional<ForwardOutput> RecWorkerImpl::LlmRecPureDevicePipeline::step(
       return std::nullopt;
     }
 
-    if (round == 0) {
-      if (cached_decode_preallocated_output_.defined()) {
-        mutable_input.input_params.preallocated_output =
-            cached_decode_preallocated_output_;
-      } else {
-        mutable_input.input_params.preallocated_output =
-            torch::zeros({batch_size * beam_width, num_qo_heads * head_dim},
-                         kv_cache_options);
-        cached_decode_preallocated_output_ =
-            mutable_input.input_params.preallocated_output;
-      }
-    }
+    // if (round == 0) {
+    //   if (cached_decode_preallocated_output_.defined()) {
+    //     torch::Tensor decode_preallocated_output =
+    //         cached_decode_preallocated_output_.slice(
+    //             0, 0, batch_size * beam_width);
+    //     mutable_input.input_params.preallocated_output =
+    //         decode_preallocated_output;
+    //     LOG(INFO) << "mutable_input.input_params.preallocated_output.shape: "
+    //               << mutable_input.input_params.preallocated_output.sizes();
+    //   } else {
+    //     mutable_input.input_params.preallocated_output =
+    //         torch::zeros({batch_size * beam_width, num_qo_heads * head_dim},
+    //                      kv_cache_options);
+    //     cached_decode_preallocated_output_ =
+    //         mutable_input.input_params.preallocated_output;
+    //   }
+    // }
 
     if (sampling_params.selected_token_idxes.defined()) {
       logits = worker_.model_->logits(hidden_states,

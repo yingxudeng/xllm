@@ -292,7 +292,7 @@ struct ModelInputParams {
     for (const auto& t : decode_positions_tensor_list) {
       params.decode_positions_tensor_list.push_back(safe_to(t, device));
     }
-    params.preallocated_output = safe_to(preallocated_output, device);
+    // params.preallocated_output = safe_to(preallocated_output, device);
     params.beam_width = beam_width;
     params.current_round = current_round;
     params.total_round = total_round;
@@ -506,7 +506,7 @@ struct ModelInputParams {
   torch::Tensor current_round_tensor;
   std::vector<torch::Tensor> current_round_tensor_list;
   std::vector<torch::Tensor> decode_positions_tensor_list;
-  torch::Tensor preallocated_output;
+  // torch::Tensor preallocated_output;
   // beam width for step-level decode
   int32_t beam_width = 1;
   // current round for step-level decode

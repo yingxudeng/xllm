@@ -129,18 +129,19 @@ torch::Tensor Qwen2AttentionImpl::forward(
   // 1. qkv projection
   auto qkv = qkv_proj_->forward(hidden_states);
 
-  auto q = qkv.slice(/*dim=*/-1, 0, q_size_);
-  auto k = qkv.slice(/*dim=*/-1, q_size_, q_size_ + kv_size_);
+  auto sliced_q = qkv.slice(/*dim=*/-1, 0, q_size_);
+  auto sliced_k = qkv.slice(/*dim=*/-1, q_size_, q_size_ + kv_size_);
   auto v = qkv.slice(/*dim=*/-1, q_size_ + kv_size_, q_size_ + 2 * kv_size_);
 
-  const int64_t T = q.size(0);
+  const int64_t T = sliced_q.size(0);
 
+  torch::Tensor q, k;
   if (is_qwen3_style_) {
     // 2. q-norm
-    q = std::get<0>(q_norm_->forward(q));
+    q = std::get<0>(q_norm_->forward(sliced_q));
 
     // 3. k-norm
-    k = std::get<0>(k_norm_->forward(k));
+    k = std::get<0>(k_norm_->forward(sliced_k));
   }
 
   // 4. rope
@@ -151,7 +152,7 @@ torch::Tensor Qwen2AttentionImpl::forward(
   // 5. store k/v cache and do attention
   auto out = std::get<0>(std::visit(
       [&](auto& attn) {
-        return attn->forward(attn_metadata, q, k, v, kv_cache);
+        return attn->forward(attn_metadata, q, k, v, kv_cache, sliced_q);
       },
       attn_));
 
