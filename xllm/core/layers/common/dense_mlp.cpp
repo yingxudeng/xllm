@@ -125,5 +125,12 @@ void DenseMLPImpl::load_state_dict(const StateDict& state_dict,
   down_proj_->load_state_dict(state_dict.get_dict_with_prefix(down_name));
 }
 
+std::optional<torch::Tensor> DenseMLPImpl::get_fp8_input_scale() const {
+  if (gate_up_proj_) {
+    return gate_up_proj_->get_input_scale();
+  }
+  return std::nullopt;
+}
+
 }  // namespace layer
 }  // namespace xllm

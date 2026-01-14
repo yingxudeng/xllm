@@ -19,6 +19,7 @@ limitations under the License.
 
 #include <functional>
 #include <optional>
+#include <tuple>
 
 #include "attention.h"
 #include "dense_mlp.h"
@@ -57,6 +58,19 @@ class Qwen2DecoderLayerImpl : public torch::nn::Module {
   RMSNorm post_norm_{nullptr};
 
   ParallelArgs parallel_args_;
+  QuantArgs quant_args_;
+
+  // Helper method to get FP8 input scale for fused quantization
+  std::optional<torch::Tensor> get_fp8_input_scale() const;
+
+  // Helper method to apply RMSNorm with optional FP8 fusion
+  // Handles both first layer (no residual input) and subsequent layers
+  // Returns (normalized_output, residual)
+  std::tuple<torch::Tensor, std::optional<torch::Tensor>> apply_norm(
+      RMSNorm& norm,
+      torch::Tensor& x,
+      std::optional<torch::Tensor>& residual,
+      const std::optional<torch::Tensor>& fp8_scale);
 };
 
 using Qwen3DecoderLayerImpl = Qwen2DecoderLayerImpl;
