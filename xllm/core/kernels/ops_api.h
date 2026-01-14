@@ -87,4 +87,19 @@ std::tuple<torch::Tensor, torch::Tensor> fp8_scaled_quantize(
 // Performs: c = (a @ b.T) with scales applied
 torch::Tensor fp8_scaled_matmul(Fp8ScaledMatmulParams& params);
 
+// ============================================================================
+// Fused RMSNorm + Static FP8 Quantization
+// ============================================================================
+// These fused operations combine RMSNorm and FP8 quantization to reduce memory
+// bandwidth by avoiding the intermediate write-back to global memory.
+
+// Fused RMSNorm + Static FP8 Quantization (without residual)
+// Returns: FP8 quantized output tensor
+torch::Tensor rms_norm_static_fp8_quant(RmsNormStaticFp8QuantParams& params);
+
+// Fused Add + RMSNorm + Static FP8 Quantization (with residual)
+// Returns: tuple of (FP8 quantized output, updated residual)
+std::tuple<torch::Tensor, torch::Tensor> fused_add_rms_norm_static_fp8_quant(
+    FusedAddRmsNormStaticFp8QuantParams& params);
+
 }  // namespace xllm::kernel

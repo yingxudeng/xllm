@@ -74,6 +74,15 @@ class ColumnParallelLinearImpl : public torch::nn::Module {
 
   bool is_weight_loaded() const { return weight_is_loaded_; }
 
+  // Get FP8 input scale for fused RMSNorm+FP8 quantization
+  std::optional<torch::Tensor> get_input_scale() const {
+    if (quant_args_.quant_method() == kQuantMethodFp8 &&
+        !quant_args_.activation_dynamic() && input_scale_.defined()) {
+      return input_scale_;
+    }
+    return std::nullopt;
+  }
+
  private:
   // parameter members, must be registered
   // we allocate the transpose since linear performs XA^T.
@@ -130,6 +139,20 @@ class QKVParallelLinearImpl : public torch::nn::Module {
 
   // return the weight (for testing)
   torch::Tensor weight() const { return weight_; }
+
+  // Get FP8 input scale for fused RMSNorm+FP8 quantization
+  // For QKV, returns max of Q/K/V scales (per-tensor)
+  std::optional<torch::Tensor> get_input_scale() const {
+    if (quant_args_.quant_method() == kQuantMethodFp8 &&
+        !quant_args_.activation_dynamic() && input_scale_.defined()) {
+      // QKV has {3} scales for Q/K/V, use max for per-tensor quantization
+      if (input_scale_.numel() > 1) {
+        return input_scale_.max().view({1});
+      }
+      return input_scale_;
+    }
+    return std::nullopt;
+  }
 
  private:
   // parameter members, must be registered
