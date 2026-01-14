@@ -295,6 +295,12 @@ typedef struct XLLM_CAPI_EXPORT XLLM_Choice {
    */
   XLLM_ChatMessage* message;
 
+  /** Generated token ids */
+  int32_t* token_ids;
+
+  /** Generated token ids size */
+  size_t token_size;
+
   /** Token log probabilities */
   XLLM_LogProbs logprobs;
 

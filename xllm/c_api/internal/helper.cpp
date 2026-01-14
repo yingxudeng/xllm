@@ -280,6 +280,15 @@ XLLM_Response* build_success_response(const InferenceType& inference_type,
                                  seq_output.finish_reason.value());
     }
 
+    if (seq_output.token_ids.size() > 0) {
+      choice.token_size = seq_output.token_ids.size();
+      choice.token_ids = new int32_t[choice.token_size];
+      CHECK(nullptr != choice.token_ids);
+      for (int j = 0; j < choice.token_size; j++) {
+        choice.token_ids[j] = seq_output.token_ids[j];
+      }
+    }
+
     if (seq_output.logprobs.has_value()) {
       choice.logprobs.entries_size = seq_output.logprobs.value().size();
       choice.logprobs.entries =
@@ -441,6 +450,12 @@ void xllm_free_response(XLLM_Response* resp) {
         }
         delete choice.message;
         choice.message = nullptr;
+      }
+
+      if (nullptr != choice.token_ids) {
+        delete[] choice.token_ids;
+        choice.token_ids = nullptr;
+        choice.token_size = 0;
       }
 
       if (nullptr != choice.logprobs.entries) {
