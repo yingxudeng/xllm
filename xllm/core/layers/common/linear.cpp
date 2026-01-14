@@ -114,6 +114,14 @@ torch::Tensor load_max_input_scale(const StateDict& state_dict,
 // ============================================================================
 // Performs FP8 W8A8 quantized linear: input quantization + scaled matmul.
 // Consolidates repeated logic from Column/QKV/RowParallelLinear forward paths.
+//
+// Performance Optimization:
+// - If input is already FP8 (from fused RMSNorm+FP8 quantization), skip
+//   quantization step and use input_scale directly. This avoids redundant
+//   memory reads/writes.
+// - For non-FP8 inputs, quantization is performed based on input_scale:
+//   - input_scale provided: static quantization (faster, no absmax compute)
+//   - input_scale not provided: dynamic quantization (computes absmax)
 
 torch::Tensor fp8_linear_forward(
     const torch::Tensor& input,
@@ -122,17 +130,31 @@ torch::Tensor fp8_linear_forward(
     const std::optional<torch::Tensor>& input_scale,
     const std::optional<torch::Tensor>& bias,
     at::ScalarType output_dtype) {
-  // Flatten input to 2D for quantization
+  // Flatten input to 2D for matmul
   auto input_2d = input.view({-1, input.size(-1)});
 
-  // Quantize input to FP8 (static or dynamic based on input_scale presence)
-  xllm::kernel::Fp8ScaledQuantizeParams quantize_params;
-  quantize_params.input = input_2d;
-  quantize_params.output = std::nullopt;
-  quantize_params.scale = input_scale;
+  torch::Tensor quantized_input;
+  torch::Tensor a_scale;
 
-  auto [quantized_input, a_scale] =
-      xllm::kernel::fp8_scaled_quantize(quantize_params);
+  // Check if input is already FP8 quantized (from fused RMSNorm+FP8)
+  if (input.dtype() == torch::kFloat8_e4m3fn) {
+    // Input is already FP8, use directly (skip quantization)
+    // This is the fast path when using fused RMSNorm+FP8 quantization
+    CHECK(input_scale.has_value())
+        << "input_scale must be provided when input is already FP8";
+    quantized_input = input_2d;
+    a_scale = input_scale.value();
+  } else {
+    // Input is not FP8, perform quantization
+    // (static if input_scale provided, dynamic otherwise)
+    xllm::kernel::Fp8ScaledQuantizeParams quantize_params;
+    quantize_params.input = input_2d;
+    quantize_params.output = std::nullopt;
+    quantize_params.scale = input_scale;
+
+    std::tie(quantized_input, a_scale) =
+        xllm::kernel::fp8_scaled_quantize(quantize_params);
+  }
 
   // FP8 scaled matmul
   xllm::kernel::Fp8ScaledMatmulParams matmul_params;

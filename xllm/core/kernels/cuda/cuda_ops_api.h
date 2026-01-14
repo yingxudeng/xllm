@@ -176,6 +176,33 @@ std::tuple<torch::Tensor, torch::Tensor> fp8_scaled_quantize(
     const std::optional<torch::Tensor>& output = std::nullopt,
     const std::optional<torch::Tensor>& scale = std::nullopt);
 
+// ============================================================================
+// Fused RMSNorm + Static FP8 Quantization
+// ============================================================================
+// These functions combine RMSNorm and FP8 quantization to reduce memory
+// bandwidth by avoiding the intermediate write-back to global memory.
+
+// Fused RMSNorm + Static FP8 Quantization (without residual)
+// Combines RMSNorm normalization and FP8 quantization in a single kernel.
+// This is optimal for the first layer where no residual connection exists.
+void rms_norm_static_fp8_quant(
+    torch::Tensor& out,     // [..., hidden_size], FP8 output
+    torch::Tensor& input,   // [..., hidden_size], input tensor
+    torch::Tensor& weight,  // [hidden_size], RMSNorm weight
+    torch::Tensor& scale,   // [1], FP8 quantization scale
+    double epsilon);        // RMSNorm epsilon
+
+// Fused Add + RMSNorm + Static FP8 Quantization (with residual)
+// Combines residual addition, RMSNorm, and FP8 quantization in a single kernel.
+// The residual tensor is updated in-place with the sum of input and residual.
+void fused_add_rms_norm_static_fp8_quant(
+    torch::Tensor& out,       // [..., hidden_size], FP8 output
+    torch::Tensor& input,     // [..., hidden_size], input tensor
+    torch::Tensor& residual,  // [..., hidden_size], residual (updated in-place)
+    torch::Tensor& weight,    // [hidden_size], RMSNorm weight
+    torch::Tensor& scale,     // [1], FP8 quantization scale
+    double epsilon);          // RMSNorm epsilon
+
 // FP8 scaled matmul for W8A8 quantization using CUTLASS kernels
 // Performs: c = (a @ b.T) with scales applied
 torch::Tensor fp8_scaled_matmul(
