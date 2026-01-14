@@ -639,4 +639,74 @@ torch::Tensor fp8_scaled_matmul(Fp8ScaledMatmulParams& params) {
 #endif
 }
 
+// ============================================================================
+// Fused RMSNorm + Static FP8 Quantization
+// ============================================================================
+
+torch::Tensor rms_norm_static_fp8_quant(RmsNormStaticFp8QuantParams& params) {
+#if defined(USE_CUDA)
+  auto org_shape = params.input.sizes().vec();
+  auto hidden_size = params.input.size(-1);
+
+  // Flatten input to 2D
+  auto input_2d = params.input.view({-1, hidden_size});
+
+  // Prepare output tensor
+  torch::Tensor output;
+  if (params.output.has_value() && params.output.value().defined()) {
+    output = params.output.value().view({-1, hidden_size});
+  } else {
+    output = torch::empty_like(input_2d,
+                               input_2d.options().dtype(torch::kFloat8_e4m3fn));
+  }
+
+  // Call fused kernel
+  cuda::rms_norm_static_fp8_quant(
+      output, input_2d, params.weight, params.scale, params.epsilon);
+
+  return output.view(org_shape);
+#else
+  LOG(FATAL) << "rms_norm_static_fp8_quant is only supported on CUDA";
+  return torch::Tensor();
+#endif
+}
+
+std::tuple<torch::Tensor, torch::Tensor> fused_add_rms_norm_static_fp8_quant(
+    FusedAddRmsNormStaticFp8QuantParams& params) {
+#if defined(USE_CUDA)
+  auto org_shape = params.input.sizes().vec();
+  auto hidden_size = params.input.size(-1);
+
+  // Flatten tensors to 2D
+  auto input_2d = params.input.view({-1, hidden_size});
+  auto residual_2d = params.residual.view({-1, hidden_size});
+
+  // Prepare output tensor
+  torch::Tensor output;
+  if (params.output.has_value() && params.output.value().defined()) {
+    output = params.output.value().view({-1, hidden_size});
+  } else {
+    output = torch::empty_like(input_2d,
+                               input_2d.options().dtype(torch::kFloat8_e4m3fn));
+  }
+
+  // Call fused kernel (residual is updated in-place)
+  cuda::fused_add_rms_norm_static_fp8_quant(output,
+                                            input_2d,
+                                            residual_2d,
+                                            params.weight,
+                                            params.scale,
+                                            params.epsilon);
+
+  // Reshape outputs
+  auto output_reshaped = output.view(org_shape);
+  auto residual_reshaped = residual_2d.view(org_shape);
+
+  return std::make_tuple(output_reshaped, residual_reshaped);
+#else
+  LOG(FATAL) << "fused_add_rms_norm_static_fp8_quant is only supported on CUDA";
+  return std::make_tuple(torch::Tensor(), torch::Tensor());
+#endif
+}
+
 }  // namespace xllm::kernel
