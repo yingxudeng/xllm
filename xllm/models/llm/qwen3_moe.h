@@ -15,6 +15,7 @@ limitations under the License.
 
 #pragma once
 
+#include "core/common/rec_model_utils.h"
 #include "core/layers/qwen3_moe_decoder_layer.h"
 #include "llm_model_base.h"
 
@@ -181,8 +182,28 @@ class Qwen3MoeModelImpl : public LlmModelImplBase<Qwen3MoeDecoderLayer> {
           apply_mrope(positions);
     }
 
+    const bool pure_device = is_pure_device_mode();
+    if (pure_device) {
+      CHECK_EQ(modified_input_params.full_k_caches.size(), layers_.size())
+          << "PureDevice mode requires full_k_caches per layer.";
+      CHECK_EQ(modified_input_params.full_v_caches.size(), layers_.size())
+          << "PureDevice mode requires full_v_caches per layer.";
+      CHECK_EQ(modified_input_params.unshared_k_caches.size(), layers_.size())
+          << "PureDevice mode requires unshared_k_caches per layer.";
+      CHECK_EQ(modified_input_params.unshared_v_caches.size(), layers_.size())
+          << "PureDevice mode requires unshared_v_caches per layer.";
+    }
+
     std::optional<torch::Tensor> residual;
     for (size_t i = 0; i < layers_.size(); i++) {
+      if (pure_device) {
+        attn_metadata.full_k_cache = modified_input_params.full_k_caches[i];
+        attn_metadata.full_v_cache = modified_input_params.full_v_caches[i];
+        attn_metadata.unshared_k_cache =
+            modified_input_params.unshared_k_caches[i];
+        attn_metadata.unshared_v_cache =
+            modified_input_params.unshared_v_caches[i];
+      }
       attn_metadata.plan_info->layer_id = i;
       auto& layer = layers_[i];
       h = layer(h,
