@@ -50,8 +50,9 @@ void apply_rotary(RotaryParams& params) {
 #elif defined(USE_CUDA)
   bool is_neox = !params.interleaved;
 
-  // position_ids is already int64 (converted in ForwardInput::to() for CUDA)
-  auto& pos_ids = params.position_ids.value();
+  // Ensure position_ids is int64 (CUDA kernel requires int64 for position
+  // indexing)
+  auto pos_ids = params.position_ids.value().to(torch::kInt64);
   // Use pre-computed CUDA cache directly, avoiding chunk/cat per layer
   cuda::rotary_embedding(
       pos_ids, params.q, params.k, params.cuda_cos_sin, is_neox);
