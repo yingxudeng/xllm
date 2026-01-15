@@ -142,6 +142,10 @@ torch::Tensor Qwen2AttentionImpl::forward(
 
     // 3. k-norm
     k = std::get<0>(k_norm_->forward(sliced_k));
+  } else {
+    // Qwen2 does not use q/k norm, use sliced tensors directly
+    q = sliced_q;
+    k = sliced_k;
   }
 
   // 4. rope
