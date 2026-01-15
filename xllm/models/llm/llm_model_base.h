@@ -22,6 +22,7 @@ limitations under the License.
 #include <vector>
 
 #include "core/common/interruption_bus.h"
+#include "core/common/rec_model_utils.h"
 #include "core/framework/kv_cache/kv_cache.h"
 #include "core/framework/model/model_input_params.h"
 #include "core/framework/model_context.h"
@@ -125,6 +126,18 @@ class LlmModelImplBase : public torch::nn::Module {
     std::optional<torch::Tensor> residual;
     for (size_t i = 0; i < layers_.size(); i++) {
       attn_metadata.plan_info->layer_id = i;
+
+      // Set per-layer KV cache for pure device mode (XAttention)
+      if (is_pure_device_mode() &&
+          i < modified_input_params.full_k_caches.size()) {
+        attn_metadata.full_k_cache = modified_input_params.full_k_caches[i];
+        attn_metadata.full_v_cache = modified_input_params.full_v_caches[i];
+        attn_metadata.unshared_k_cache =
+            modified_input_params.unshared_k_caches[i];
+        attn_metadata.unshared_v_cache =
+            modified_input_params.unshared_v_caches[i];
+      }
+
       auto& layer = layers_[i];
       h = layer(h,
                 residual,

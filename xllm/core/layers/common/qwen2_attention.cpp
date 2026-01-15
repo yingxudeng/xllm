@@ -154,10 +154,24 @@ torch::Tensor Qwen2AttentionImpl::forward(
   q = q.view({T, q_size_});
   k = k.view({T, kv_size_});
 
+  // Prepare the output buffer.
+  // We initially try to reuse the memory of 'sliced_q' (part of qkv buffer) as
+  // the output to save memory allocation. However, we must ensure 'q' (input)
+  // and 'attn_output' (output) do not overlap, otherwise the attention kernel
+  // will overwrite the query while reading it.
+  torch::Tensor attn_output = sliced_q;
+
+  // Check if 'q' and 'attn_output' share the same storage/memory.
+  // If they do (e.g. in Qwen2 path), we must allocate a new empty tensor for
+  // output.
+  if (q.is_alias_of(attn_output)) {
+    attn_output = torch::empty_like(q);
+  }
+
   // 5. store k/v cache and do attention
   auto out = std::get<0>(std::visit(
       [&](auto& attn) {
-        return attn->forward(attn_metadata, q, k, v, kv_cache, sliced_q);
+        return attn->forward(attn_metadata, q, k, v, kv_cache, attn_output);
       },
       attn_));
 
