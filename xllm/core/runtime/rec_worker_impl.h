@@ -96,23 +96,6 @@ class RecWorkerImpl : public LLMWorkerImpl {
     RecWorkerImpl& worker_;
   };
 
-  class LlmRecWithMmDataWorkPipeline final : public RecWorkPipeline {
-   public:
-    explicit LlmRecWithMmDataWorkPipeline(RecWorkerImpl& worker);
-
-    bool create_model(RecWorkerImpl& worker, ModelContext& context) override;
-
-    ForwardInput prepare_inputs(Batch& batch) override;
-
-    void prepare_work_before_execute(const ForwardInput& inputs,
-                                     ForwardInput& processed_inputs) override;
-
-    std::optional<ForwardOutput> step(const ForwardInput& input) override;
-
-   private:
-    RecWorkerImpl& worker_;
-  };
-
   class LlmRecPureDevicePipeline final : public RecWorkPipeline {
    public:
     explicit LlmRecPureDevicePipeline(RecWorkerImpl& worker);
@@ -242,6 +225,8 @@ class RecWorkerImpl : public LLMWorkerImpl {
       const torch::Tensor& input_tokens_embedding,
       const torch::Tensor& input_embedding,
       const std::vector<int64_t>& input_indices);
+
+  void prepare_multi_modal_data(ForwardInput& processed_inputs);
 
   std::unique_ptr<RecWorkPipeline> work_pipeline_;
 

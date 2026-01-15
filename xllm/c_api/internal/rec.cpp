@@ -180,6 +180,7 @@ XLLM_CAPI_EXPORT XLLM_Response* xllm_rec_text_completions(
       xllm::helper::InferenceType::REC_COMPLETIONS,
       model_id,
       prompt,
+      nullptr,
       timeout_ms,
       request_params);
 }
@@ -207,6 +208,7 @@ XLLM_CAPI_EXPORT XLLM_Response* xllm_rec_token_completions(
       xllm::helper::InferenceType::REC_COMPLETIONS,
       model_id,
       token_ids_vec,
+      nullptr,
       timeout_ms,
       request_params);
 }
@@ -230,7 +232,34 @@ XLLM_CAPI_EXPORT XLLM_Response* xllm_rec_multimodal_completions(
         handler, model_id, token_ids, token_size, timeout_ms, request_params);
   }
 
-  return nullptr;
+  xllm::MMData internal_mm_data;
+  try {
+    bool ret = xllm::helper::convert_xllm_mm_data_to_internal(mm_data,
+                                                              internal_mm_data);
+    if (!ret) {
+      return xllm::helper::build_error_response(
+          "", XLLM_StatusCode::kInternalError, "Fail in mm_data conversion");
+    }
+  } catch (...) {
+    return xllm::helper::build_error_response(
+        "",
+        XLLM_StatusCode::kInternalError,
+        "Critical error in mm_data conversion");
+  }
+
+  std::vector<int> token_ids_vec;
+  for (int i = 0; i < token_size; i++) {
+    token_ids_vec.push_back(token_ids[i]);
+  }
+
+  return xllm::helper::handle_inference_request(
+      handler,
+      xllm::helper::InferenceType::REC_COMPLETIONS,
+      model_id,
+      token_ids_vec,
+      static_cast<void*>(&internal_mm_data),
+      timeout_ms,
+      request_params);
 }
 
 XLLM_CAPI_EXPORT XLLM_Response* xllm_rec_chat_completions(
@@ -257,6 +286,7 @@ XLLM_CAPI_EXPORT XLLM_Response* xllm_rec_chat_completions(
       xllm::helper::InferenceType::REC_CHAT_COMPLETIONS,
       model_id,
       xllm_messages,
+      nullptr,
       timeout_ms,
       request_params);
 }

@@ -56,8 +56,8 @@ void RecWorkerImpl::LlmRecWorkPipeline::prepare_work_before_execute(
     const ForwardInput& inputs,
     ForwardInput& processed_inputs) {
   worker_.WorkerImpl::prepare_work_before_execute(inputs, processed_inputs);
-  // LlmRecDefault (pure qwen3) does not process mm_data.
-  // For mm_data processing, use LlmRecWithMmDataWorkPipeline.
+
+  worker_.prepare_multi_modal_data(processed_inputs);
 }
 
 std::optional<ForwardOutput> RecWorkerImpl::LlmRecWorkPipeline::step(
@@ -190,98 +190,6 @@ std::optional<ForwardOutput> RecWorkerImpl::OneRecWorkPipeline::step(
   return output;
 }
 
-// ============================================================
-// LlmRecWithMmDataWorkPipeline Implementation (qwen3 with embedding)
-// ============================================================
-
-RecWorkerImpl::LlmRecWithMmDataWorkPipeline::LlmRecWithMmDataWorkPipeline(
-    RecWorkerImpl& worker)
-    : worker_(worker) {}
-
-bool RecWorkerImpl::LlmRecWithMmDataWorkPipeline::create_model(
-    RecWorkerImpl& worker,
-    ModelContext& context) {
-  return worker.LLMWorkerImpl::init_model(context);
-}
-
-ForwardInput RecWorkerImpl::LlmRecWithMmDataWorkPipeline::prepare_inputs(
-    Batch& batch) {
-  return worker_.WorkerImpl::prepare_inputs(batch);
-}
-
-void RecWorkerImpl::LlmRecWithMmDataWorkPipeline::prepare_work_before_execute(
-    const ForwardInput& inputs,
-    ForwardInput& processed_inputs) {
-  worker_.WorkerImpl::prepare_work_before_execute(inputs, processed_inputs);
-
-  if (!inputs.input_params.mm_data.valid()) {
-    return;
-  }
-
-  torch::Tensor input_embedding;
-  torch::Tensor input_tokens_tensor;
-  torch::Tensor input_indices_tensor;
-
-  const auto& mm_data = inputs.input_params.mm_data;
-  const auto& processed_mm_data = processed_inputs.input_params.mm_data;
-
-  if (auto res = processed_mm_data.get<torch::Tensor>(LLM_REC_INPUT_TOKENS)) {
-    input_tokens_tensor = res.value();
-  }
-
-  // Input indices are generated on host side.
-  if (auto res = mm_data.get<torch::Tensor>(LLM_REC_INPUT_INDICES)) {
-    input_indices_tensor = res.value();
-  }
-
-  if (auto res =
-          processed_mm_data.get<torch::Tensor>(LLM_REC_INPUT_EMBEDDING)) {
-    input_embedding = res.value();
-  }
-
-  if (input_embedding.defined()) {
-    input_embedding = input_embedding.to(worker_.dtype());
-  }
-
-  if (input_indices_tensor.defined()) {
-    CHECK(input_tokens_tensor.defined())
-        << "LLM_REC_INPUT_TOKENS is required when LLM_REC_INPUT_INDICES is "
-           "set.";
-
-#if defined(USE_NPU)
-    layer::NpuWordEmbedding npu_word_embedding =
-        worker_.get_npu_word_embedding();
-    torch::Tensor input_tokens_embedding =
-        npu_word_embedding(input_tokens_tensor, 0);
-#else
-    layer::WordEmbedding word_embedding = worker_.get_word_embedding();
-    torch::Tensor input_tokens_embedding =
-        word_embedding->forward(input_tokens_tensor);
-#endif
-
-    if (input_embedding.defined()) {
-      torch::Tensor input_indices_cpu =
-          input_indices_tensor.to(torch::kCPU).to(torch::kInt64).contiguous();
-      const auto* input_indices_ptr = input_indices_cpu.data_ptr<int64_t>();
-      std::vector<int64_t> input_indices(
-          input_indices_ptr, input_indices_ptr + input_indices_cpu.numel());
-
-      processed_inputs.input_params.input_embedding =
-          worker_.merge_embeddings_by_indices(
-              input_tokens_embedding, input_embedding, input_indices);
-    } else {
-      processed_inputs.input_params.input_embedding = input_tokens_embedding;
-    }
-  } else if (input_embedding.defined()) {
-    processed_inputs.input_params.input_embedding = input_embedding;
-  }
-}
-
-std::optional<ForwardOutput> RecWorkerImpl::LlmRecWithMmDataWorkPipeline::step(
-    const ForwardInput& input) {
-  return worker_.LLMWorkerImpl::step(input);
-}
-
 RecWorkerImpl::LlmRecPureDevicePipeline::LlmRecPureDevicePipeline(
     RecWorkerImpl& worker)
     : worker_(worker) {}
@@ -310,6 +218,8 @@ void RecWorkerImpl::LlmRecPureDevicePipeline::prepare_work_before_execute(
   auto dtype = worker_.dtype();
   auto device = worker_.device();
   worker_.WorkerImpl::prepare_work_before_execute(inputs, processed_inputs);
+
+  worker_.prepare_multi_modal_data(processed_inputs);
 
 #if defined(USE_NPU) || defined(USE_CUDA)
   // step-level decode full cache: allocate/attach by step_uid metadata
@@ -824,6 +734,9 @@ void RecWorkerImpl::LlmRecPureDevicePipeline::update_input_for_next_round(
   input.input_params.paged_kv_indices = paged_kv_indices;
   input.input_params.paged_kv_indptr = paged_kv_indptr;
   input.input_params.paged_kv_last_page_len = paged_kv_last_page_len;
+
+  torch::Tensor input_imbedding;
+  input.input_params.input_embedding = input_imbedding;
 }
 
 RecWorkerImpl::RecWorkerImpl(const ParallelArgs& parallel_args,
@@ -849,7 +762,6 @@ bool RecWorkerImpl::init_model(ModelContext& context) {
   // Create work pipeline first
   auto pipeline_type = get_rec_pipeline_type(rec_model_kind_);
   work_pipeline_ = create_pipeline(pipeline_type, *this);
-
   // Let pipeline create model
   return work_pipeline_->create_model(*this, context);
 }
@@ -866,45 +778,45 @@ void RecWorkerImpl::prepare_work_before_execute(
   work_pipeline_->prepare_work_before_execute(inputs, processed_inputs);
 }
 
-torch::Tensor RecWorkerImpl::merge_embeddings_by_indices(
-    const torch::Tensor& input_tokens_embedding,
-    const torch::Tensor& input_embedding,
-    const std::vector<int64_t>& input_indices) {
-  CHECK_EQ(input_embedding.dim(), 2);
-  CHECK_EQ(input_tokens_embedding.dim(), 2);
-  CHECK_EQ(input_tokens_embedding.size(1), input_embedding.size(1));
-  CHECK_EQ(input_tokens_embedding.dtype(), input_embedding.dtype());
-  CHECK_EQ(input_tokens_embedding.device(), input_embedding.device());
-
-  const int64_t total_rows =
-      input_tokens_embedding.size(0) + input_embedding.size(0);
-  const int64_t cols = input_embedding.size(1);
-
-  torch::Device device = input_embedding.device();
-  torch::Tensor merged = torch::empty(
-      {total_rows, cols}, torch::dtype(input_embedding.dtype()).device(device));
-
-  std::vector<int64_t> input_embedding_indices;
-  for (int64_t i = 0; i < total_rows; ++i) {
-    if (std::find(input_indices.begin(), input_indices.end(), i) ==
-        input_indices.end()) {
-      input_embedding_indices.push_back(i);
-    }
+void RecWorkerImpl::prepare_multi_modal_data(ForwardInput& processed_inputs) {
+  if (!processed_inputs.input_params.mm_data.valid()) {
+    return;
   }
 
-  CHECK_EQ(input_embedding_indices.size(), input_embedding.size(0));
+  torch::Tensor multi_modal_values;
+  torch::Tensor multi_modal_indices;
 
-  torch::Tensor input_embedding_indices_tensor =
-      torch::tensor(input_embedding_indices, torch::kInt64).to(device);
-  merged.index_put_({input_embedding_indices_tensor, torch::indexing::Ellipsis},
-                    input_embedding);
+  const auto& processed_mm_data = processed_inputs.input_params.mm_data;
+  if (auto res = processed_mm_data.get<torch::Tensor>("MULTI_MODAL_VALUES")) {
+    multi_modal_values = res.value();
+  }
 
-  torch::Tensor input_indices_tensor =
-      torch::tensor(input_indices, torch::kInt64).to(device);
-  merged.index_put_({input_indices_tensor, torch::indexing::Ellipsis},
-                    input_tokens_embedding);
+  if (auto res = processed_mm_data.get<torch::Tensor>("MULTI_MODAL_INDICES")) {
+    multi_modal_indices = res.value();
+  }
 
-  return merged;
+  if (!multi_modal_values.defined() || !multi_modal_indices.defined()) {
+    return;
+  }
+
+#if defined(USE_NPU)
+  layer::NpuWordEmbedding npu_word_embedding = get_npu_word_embedding();
+  torch::Tensor input_tokens_embedding =
+      npu_word_embedding(processed_inputs.token_ids, 0);
+#else
+  layer::WordEmbedding word_embedding = get_word_embedding();
+  torch::Tensor input_tokens_embedding =
+      word_embedding->forward(processed_inputs.token_ids);
+#endif
+
+  std::vector<torch::indexing::TensorIndex> indices = {
+      torch::indexing::TensorIndex(multi_modal_indices),
+      torch::indexing::Slice()};
+
+  input_tokens_embedding.index_put_(indices, multi_modal_values);
+  processed_inputs.input_params.input_embedding = input_tokens_embedding;
+
+  return;
 }
 
 std::optional<ForwardOutput> RecWorkerImpl::step(const ForwardInput& input) {
@@ -921,8 +833,6 @@ std::unique_ptr<RecWorkerImpl::RecWorkPipeline> RecWorkerImpl::create_pipeline(
   switch (type) {
     case RecPipelineType::kLlmRecDefault:
       return std::make_unique<LlmRecWorkPipeline>(worker);
-    case RecPipelineType::kLlmRecWithMmData:
-      return std::make_unique<LlmRecWithMmDataWorkPipeline>(worker);
     case RecPipelineType::kOneRecDefault:
       return std::make_unique<OneRecWorkPipeline>(worker);
     case RecPipelineType::kLlmRecPureDevicePipeline:

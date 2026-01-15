@@ -91,6 +91,82 @@ bool process_onerec_inputs(
 
   return true;
 }
+
+bool process_llmrec_with_mm_data_inputs(
+    const std::vector<int>& prompt_tokens,
+    std::optional<MMData> mm_data,
+    std::vector<int32_t>* local_prompt_tokens,
+    MMData* processed_mm_data,
+    OutputCallback callback) {
+  local_prompt_tokens->assign(prompt_tokens.begin(), prompt_tokens.end());
+
+  if (!mm_data.has_value()) {
+    return true;
+  }
+
+  std::vector<torch::Tensor> all_indices_list;
+  std::vector<torch::Tensor> all_values_list;
+
+  MMData mm_data_s = mm_data.value();
+  if (!mm_data_s.hold<MMItemVec>()) {
+    CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT,
+                        "MMData need be item vec type");
+    return false;
+  }
+
+  int64_t last_end = 0;
+  MMItemVec mm_items = mm_data_s.items<MMItemVec>();
+  for (auto& mm_item : mm_items) {
+    const MMItemState::TokenPos token_pos = mm_item.state().token_pos();
+    std::optional<torch::Tensor> mm_value =
+        mm_item.get<torch::Tensor>("tensor");
+
+    if (!mm_value.has_value()) {
+      CALLBACK_WITH_ERROR(
+          StatusCode::INVALID_ARGUMENT,
+          "Rec model requires embedding in mm data to be provided");
+      return false;
+    }
+
+    int64_t start = static_cast<int64_t>(token_pos.offset);
+    int64_t end = static_cast<int64_t>(token_pos.offset + token_pos.length);
+    torch::Tensor tensor = mm_value.value();
+
+    if (start < last_end || end >= local_prompt_tokens->size()) {
+      CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT,
+                          "Token pos in mm data is wrong");
+      return false;
+    }
+
+    last_end = end;
+
+    if (tensor.dim() != 2) {
+      CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT,
+                          "Embedding in mm data is invalid");
+      return false;
+    }
+
+    if (tensor.size(0) != token_pos.length) {
+      CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT,
+                          "Token length is not match to embedding");
+      return false;
+    }
+
+    torch::Tensor range_indices = torch::arange(start, end);
+    all_indices_list.push_back(range_indices);
+    all_values_list.push_back(tensor);
+  }
+
+  torch::Tensor total_indices = torch::cat(all_indices_list, 0);
+  torch::Tensor total_values = torch::cat(all_values_list, 0);
+
+  MMDict mm_dict;
+  mm_dict["MULTI_MODAL_INDICES"] = total_indices;
+  mm_dict["MULTI_MODAL_VALUES"] = total_values;
+  *processed_mm_data = MMData(MMType::EMBEDDING, mm_dict);
+
+  return true;
+}
 }  // namespace
 
 // ============================================================
@@ -185,9 +261,16 @@ RecMaster::LlmRecWithMmDataMasterPipeline::generate_request(
     const RequestParams& sp,
     OutputCallback callback) {
   std::vector<int32_t> local_prompt_tokens;
-  local_prompt_tokens.assign(prompt_tokens.begin(), prompt_tokens.end());
+  MMData processed_mm_data;
 
-  MMData processed_mm_data = mm_data.value();
+  bool ret = process_llmrec_with_mm_data_inputs(prompt_tokens,
+                                                mm_data,
+                                                &local_prompt_tokens,
+                                                &processed_mm_data,
+                                                callback);
+  if (!ret) {
+    return nullptr;
+  }
 
   return master_.build_request_common(std::string(""),
                                       std::move(local_prompt_tokens),

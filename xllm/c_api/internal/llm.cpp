@@ -176,6 +176,7 @@ XLLM_CAPI_EXPORT XLLM_Response* xllm_llm_completions(
       xllm::helper::InferenceType::LLM_COMPLETIONS,
       model_id,
       prompt,
+      nullptr,
       timeout_ms,
       request_params);
 }
@@ -204,6 +205,7 @@ XLLM_CAPI_EXPORT XLLM_Response* xllm_llm_chat_completions(
       xllm::helper::InferenceType::LLM_CHAT_COMPLETIONS,
       model_id,
       xllm_messages,
+      nullptr,
       timeout_ms,
       request_params);
 }
