@@ -36,6 +36,8 @@ limitations under the License.
 #include "util/env_var.h"
 #include "util/timer.h"
 
+DEFINE_int32(max_batch_size, 20, "max batch size");
+
 namespace xllm {
 
 RecWorkerImpl::LlmRecWorkPipeline::LlmRecWorkPipeline(RecWorkerImpl& worker)
@@ -326,30 +328,55 @@ void RecWorkerImpl::LlmRecPureDevicePipeline::prepare_work_before_execute(
     // auto kv_seq_lens = processed_inputs.input_params.kv_seq_lens;
     // auto max_seq_len_tensor = kv_seq_lens.max();
     // int32_t max_seq_len = max_seq_len_tensor.item().toInt();
-    int32_t max_seq_len = FLAGS_max_token_per_req;
-    int64_t num_tokens = max_seq_len * batch_size;
+    int32_t full_kv_len = shape[0];
     int64_t num_kv_heads = shape[1];
     int64_t head_dim = shape[2];
     auto kv_cache_options = torch::TensorOptions().dtype(dtype).device(device);
     int32_t num_layers = worker_.context_.get_model_args().n_layers();
-    // shared_kv_len is the length of shared KV cache (prefill part)
-    int32_t shared_kv_len = max_seq_len;
-    // unshared_offset is where unshared KV cache starts (after shared part)
-    int32_t unshared_offset = shared_kv_len * batch_size;
-    // full_kv_len should include both shared and unshared parts
     // unshared part: batch_size * beam_width * max_decode_step
     int32_t max_decode_step = total_round - 1;
-    int32_t unshared_kv_len = batch_size * beam_width * max_decode_step;
-    int32_t full_kv_len = num_tokens + unshared_kv_len;
+
+    auto max_seq_len_tensor = processed_inputs.input_params.kv_seq_lens.max();
+    int32_t max_seq_len = max_seq_len_tensor.item().toInt();
+    int32_t real_shared_kv_len = max_seq_len * batch_size;
+    int32_t real_unshared_kv_len = batch_size * beam_width * max_decode_step;
+    int32_t real_full_kv_len = real_shared_kv_len + real_unshared_kv_len;
+
+    int32_t unshared_offset = real_shared_kv_len;
 
     if (!cached_full_k_caches_.empty() && cached_full_k_caches_[0].defined()) {
-      mip.full_k_caches = cached_full_k_caches_;
-      mip.full_v_caches = cached_full_v_caches_;
-      mip.unshared_k_caches = cached_unshared_k_caches_;
-      mip.unshared_v_caches = cached_unshared_v_caches_;
-      mip.beam_width_tensor = cached_beam_width_tensor_;
-      mip.current_round_tensor_list = cached_current_round_tensor_list_;
-      mip.naive_block_table = cached_naive_block_table_;
+      for (int32_t layer_id = 0; layer_id < num_layers; ++layer_id) {
+        auto target_layer_full_k_cache = cached_full_k_caches_[layer_id];
+        auto target_layer_full_v_cache = cached_full_v_caches_[layer_id];
+        auto target_layer_sliced_full_k_cache =
+            target_layer_full_k_cache.slice(0, 0, real_full_kv_len);
+        auto target_layer_sliced_full_v_cache =
+            target_layer_full_v_cache.slice(0, 0, real_full_kv_len);
+
+        auto target_layer_unshared_k_cache =
+            target_layer_sliced_full_k_cache.slice(
+                0, unshared_offset, real_full_kv_len);
+        auto target_layer_unshared_v_cache =
+            target_layer_sliced_full_v_cache.slice(
+                0, unshared_offset, real_full_kv_len);
+
+        target_layer_unshared_k_cache = target_layer_unshared_k_cache.view(
+            {static_cast<int64_t>(batch_size),
+             static_cast<int64_t>(beam_width),
+             static_cast<int64_t>(max_decode_step),
+             num_kv_heads,
+             head_dim});
+        target_layer_unshared_v_cache = target_layer_unshared_v_cache.view(
+            {static_cast<int64_t>(batch_size),
+             static_cast<int64_t>(beam_width),
+             static_cast<int64_t>(max_decode_step),
+             num_kv_heads,
+             head_dim});
+        mip.full_k_caches.emplace_back(target_layer_sliced_full_k_cache);
+        mip.full_v_caches.emplace_back(target_layer_sliced_full_v_cache);
+        mip.unshared_k_caches.emplace_back(target_layer_unshared_k_cache);
+        mip.unshared_v_caches.emplace_back(target_layer_unshared_v_cache);
+      }
     } else {
       mip.full_k_caches.clear();
       mip.full_v_caches.clear();
@@ -365,13 +392,17 @@ void RecWorkerImpl::LlmRecPureDevicePipeline::prepare_work_before_execute(
         auto target_layer_full_v_cache = torch::zeros(
             {full_kv_len, num_kv_heads, head_dim}, kv_cache_options);
 
-        auto target_layer_unshared_k_cache =
-            target_layer_full_k_cache.slice(0, unshared_offset, full_kv_len);
-        auto target_layer_unshared_v_cache =
-            target_layer_full_v_cache.slice(0, unshared_offset, full_kv_len);
+        auto target_layer_sliced_full_k_cache =
+            target_layer_full_k_cache.slice(0, 0, real_full_kv_len);
+        auto target_layer_sliced_full_v_cache =
+            target_layer_full_v_cache.slice(0, 0, real_full_kv_len);
 
-        int64_t expected_view_size =
-            batch_size * beam_width * max_decode_step * num_kv_heads * head_dim;
+        auto target_layer_unshared_k_cache =
+            target_layer_sliced_full_k_cache.slice(
+                0, unshared_offset, real_full_kv_len);
+        auto target_layer_unshared_v_cache =
+            target_layer_sliced_full_v_cache.slice(
+                0, unshared_offset, real_full_kv_len);
 
         target_layer_unshared_k_cache = target_layer_unshared_k_cache.view(
             {static_cast<int64_t>(batch_size),
@@ -385,27 +416,15 @@ void RecWorkerImpl::LlmRecPureDevicePipeline::prepare_work_before_execute(
              static_cast<int64_t>(max_decode_step),
              num_kv_heads,
              head_dim});
-        mip.full_k_caches.emplace_back(target_layer_full_k_cache);
-        mip.full_v_caches.emplace_back(target_layer_full_v_cache);
+
+        mip.full_k_caches.emplace_back(target_layer_sliced_full_k_cache);
+        mip.full_v_caches.emplace_back(target_layer_sliced_full_v_cache);
         mip.unshared_k_caches.emplace_back(target_layer_unshared_k_cache);
         mip.unshared_v_caches.emplace_back(target_layer_unshared_v_cache);
-      }
-      cached_full_k_caches_ = mip.full_k_caches;
-      cached_full_v_caches_ = mip.full_v_caches;
-      cached_unshared_k_caches_ = mip.unshared_k_caches;
-      cached_unshared_v_caches_ = mip.unshared_v_caches;
 
-      // scalar metadata tensors (int32 on device)
-      mip.beam_width_tensor = torch::tensor({beam_width}, int_options);
-      cached_beam_width_tensor_ = mip.beam_width_tensor;
-
-      mip.current_round_tensor_list.clear();
-      for (int r = 0; r < total_round; ++r) {
-        mip.current_round_tensor_list.push_back(
-            torch::tensor({r}, int_options));
+        cached_full_k_caches_.emplace_back(target_layer_full_k_cache);
+        cached_full_v_caches_.emplace_back(target_layer_full_v_cache);
       }
-      cached_current_round_tensor_list_ = mip.current_round_tensor_list;
-      // beam batch-level tensors are constructed in WorkerService
     }
     {
       const auto& dec_pos = processed_inputs.decode_positions_vec;
@@ -428,13 +447,15 @@ void RecWorkerImpl::LlmRecPureDevicePipeline::prepare_work_before_execute(
     }
     // init naive block table
     if (!cached_naive_block_table_.defined()) {
-      mip.naive_block_table =
-          torch::arange(batch_size, int_options).unsqueeze(1);
-      cached_naive_block_table_ = mip.naive_block_table;
+      auto naive_block_table =
+          torch::arange(FLAGS_max_batch_size, int_options).unsqueeze(1);
+      cached_naive_block_table_ = naive_block_table;
+      mip.naive_block_table = naive_block_table.slice(0, 0, batch_size);
     } else {
-      mip.naive_block_table = cached_naive_block_table_;
+      mip.naive_block_table = cached_naive_block_table_.slice(0, 0, batch_size);
     }
   }
+
 #endif
 }
 
@@ -479,26 +500,6 @@ std::optional<ForwardOutput> RecWorkerImpl::LlmRecPureDevicePipeline::step(
   SampleOutput sample_output;
   torch::Tensor top_tokens;
 
-  int32_t max_q_seq_len =
-      mutable_input.input_params.q_seq_lens.max().item().toInt();
-  int32_t num_qo_heads = mutable_input.input_params.num_heads;
-  int32_t head_dim = mutable_input.input_params.head_dim;
-
-  // if (cached_prefill_preallocated_output_.defined()) {
-  //   LOG(INFO) << "max_q_seq_len: " << max_q_seq_len;
-  //   torch::Tensor prefill_preallocated_output =
-  //       cached_prefill_preallocated_output_.slice(0, 0, max_q_seq_len);
-  //   mutable_input.input_params.preallocated_output =
-  //       prefill_preallocated_output;
-  //   LOG(INFO) << "mutable_input.input_params.preallocated_output.shape: "
-  //             << mutable_input.input_params.preallocated_output.sizes();
-  // } else {
-  //   mutable_input.input_params.preallocated_output = torch::zeros(
-  //       {max_q_seq_len, num_qo_heads * head_dim}, kv_cache_options);
-  //   cached_prefill_preallocated_output_ =
-  //       mutable_input.input_params.preallocated_output;
-  // }
-
   for (int32_t round = 0; round < total_rounds; ++round) {
     const auto& sampling_params = round > 0
                                       ? mutable_input.decoder_sampling_params
@@ -523,24 +524,6 @@ std::optional<ForwardOutput> RecWorkerImpl::LlmRecPureDevicePipeline::step(
     if (!hidden_states.defined()) {
       return std::nullopt;
     }
-
-    // if (round == 0) {
-    //   if (cached_decode_preallocated_output_.defined()) {
-    //     torch::Tensor decode_preallocated_output =
-    //         cached_decode_preallocated_output_.slice(
-    //             0, 0, batch_size * beam_width);
-    //     mutable_input.input_params.preallocated_output =
-    //         decode_preallocated_output;
-    //     LOG(INFO) << "mutable_input.input_params.preallocated_output.shape: "
-    //               << mutable_input.input_params.preallocated_output.sizes();
-    //   } else {
-    //     mutable_input.input_params.preallocated_output =
-    //         torch::zeros({batch_size * beam_width, num_qo_heads * head_dim},
-    //                      kv_cache_options);
-    //     cached_decode_preallocated_output_ =
-    //         mutable_input.input_params.preallocated_output;
-    //   }
-    // }
 
     if (sampling_params.selected_token_idxes.defined()) {
       logits = worker_.model_->logits(hidden_states,
@@ -714,9 +697,9 @@ void RecWorkerImpl::LlmRecPureDevicePipeline::compute_shared_kv_tensors(
     torch::Tensor& shared_kv_indices,
     int32_t& shared_kv_len) {
   auto kv_cu_seq_lens = input_params.kv_seq_lens;
-  // auto max_val = kv_cu_seq_lens.max();
-  // shared_kv_len = max_val.item().toInt();
-  shared_kv_len = FLAGS_max_token_per_req;
+  auto max_val = kv_cu_seq_lens.max();
+  shared_kv_len = max_val.item().toInt();
+  // shared_kv_len = FLAGS_max_token_per_req;
   auto batch_shared_kv_lens = torch::diff(kv_cu_seq_lens);
 
   shared_kv_len_offsets = torch::arange(0, shared_kv_len, paged_options)
