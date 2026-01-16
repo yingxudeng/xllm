@@ -15,6 +15,7 @@ limitations under the License.
 
 #pragma once
 
+#include <folly/futures/Future.h>
 #include <torch/torch.h>
 
 #include <cstdint>
@@ -162,6 +163,22 @@ class RecWorkerImpl : public LLMWorkerImpl {
                             const BeamSearchTensors& beam_tensors,
                             ForwardOutput& output);
 
+    // Structure to hold async computation results for next round input
+    struct NextRoundInputResults {
+      torch::Tensor paged_kv_indices;
+      torch::Tensor paged_kv_indptr;
+      torch::Tensor paged_kv_last_page_len;
+    };
+
+    // Compute next round input asynchronously (can overlap with GPU execution)
+    folly::SemiFuture<NextRoundInputResults> compute_next_round_input_async(
+        const torch::Tensor& kv_seq_lens,
+        int32_t current_step,
+        int32_t batch_size,
+        int32_t beam_size,
+        int32_t max_decode_step,
+        const torch::TensorOptions& paged_options);
+
     // Update input for next round in multi-round decoding
     void update_input_for_next_round(ForwardInput& input,
                                      int32_t current_step,
@@ -172,6 +189,15 @@ class RecWorkerImpl : public LLMWorkerImpl {
                                      int32_t beam_size,
                                      int32_t max_decode_step,
                                      const torch::TensorOptions& paged_options);
+
+    // Update input for next round using pre-computed async results
+    void update_input_for_next_round(
+        ForwardInput& input,
+        int32_t current_step,
+        const SampleOutput& sample_output,
+        const torch::Tensor& top_tokens,
+        const BeamSearchTensors& beam_tensors,
+        folly::SemiFuture<NextRoundInputResults>& async_results);
 
     void allocate_kv_caches_related();
     void prepare_kv_caches_related_for_input(const ForwardInput& inputs,
@@ -184,6 +210,9 @@ class RecWorkerImpl : public LLMWorkerImpl {
     torch::Tensor cached_naive_block_table_;
 
     RecWorkerImpl& worker_;
+
+    // for async scheduler
+    ThreadPool threadpool_;
   };
 
   // Factory method to create pipeline (can access private classes)
