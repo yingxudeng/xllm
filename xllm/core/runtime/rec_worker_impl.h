@@ -162,39 +162,6 @@ class RecWorkerImpl : public LLMWorkerImpl {
                             const BeamSearchTensors& beam_tensors,
                             ForwardOutput& output);
 
-    // Compute shared KV cache related tensors
-    void compute_shared_kv_tensors(const ModelInputParams& input_params,
-                                   int32_t batch_size,
-                                   int32_t beam_size,
-                                   const torch::TensorOptions& paged_options,
-                                   torch::Tensor& shared_kv_len_offsets,
-                                   torch::Tensor& shared_mask,
-                                   torch::Tensor& shared_kv_indices,
-                                   int32_t& shared_kv_len);
-
-    // Compute unshared KV cache related tensors
-    void compute_unshared_kv_tensors(int32_t current_step,
-                                     int32_t batch_size,
-                                     int32_t shared_kv_len,
-                                     const FixedTensors& fixed_tensors,
-                                     torch::Tensor& unshared_kv_indices,
-                                     torch::Tensor& unshared_mask);
-
-    // Build paged KV indices and indptr
-    void build_paged_kv_indices(const torch::Tensor& shared_kv_indices,
-                                const torch::Tensor& unshared_kv_indices,
-                                const torch::Tensor& shared_mask,
-                                const torch::Tensor& unshared_mask,
-                                int32_t batch_size,
-                                int32_t beam_size,
-                                int32_t current_step,
-                                int32_t shared_kv_len,
-                                const torch::TensorOptions& paged_options,
-                                const ModelInputParams& input_params,
-                                torch::Tensor& paged_kv_indices,
-                                torch::Tensor& paged_kv_indptr,
-                                torch::Tensor& paged_kv_last_page_len);
-
     // Update input for next round in multi-round decoding
     void update_input_for_next_round(ForwardInput& input,
                                      int32_t current_step,
@@ -204,8 +171,11 @@ class RecWorkerImpl : public LLMWorkerImpl {
                                      int32_t batch_size,
                                      int32_t beam_size,
                                      int32_t max_decode_step,
-                                     const torch::TensorOptions& paged_options,
-                                     const FixedTensors& fixed_tensors);
+                                     const torch::TensorOptions& paged_options);
+
+    void allocate_kv_caches_related();
+    void prepare_kv_caches_related_for_input(const ForwardInput& inputs,
+                                             ForwardInput& processed_inputs);
 
     std::vector<torch::Tensor> cached_full_k_caches_;
     std::vector<torch::Tensor> cached_full_v_caches_;
@@ -229,6 +199,16 @@ class RecWorkerImpl : public LLMWorkerImpl {
   void prepare_multi_modal_data(ForwardInput& processed_inputs);
 
   std::unique_ptr<RecWorkPipeline> work_pipeline_;
+
+  struct FullKvCacheOffsets {
+    FullKvCacheOffsets(const RecWorkerImpl& worker);
+    torch::Tensor full_kv_offsets;
+    torch::Tensor full_kv_mask;
+    torch::Tensor full_kv_indices;
+    torch::Tensor unshared_offsets;
+    torch::Tensor max_decode_step_ids;
+  };
+  std::unique_ptr<FullKvCacheOffsets> full_kv_cache_offsets_;
 
   RecModelKind rec_model_kind_ = RecModelKind::kNone;
 };
