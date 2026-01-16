@@ -129,17 +129,13 @@ std::optional<ModelInputParams> CudaGraphPersistentParam::update(
   // Build attn_metadata with original model_input_params. So we can set actual
   // batch size in plan_info.
   std::shared_ptr<layer::AttentionMetadata> attn_metadata;
-  if (!params.attn_metadata) {
-    attn_metadata = std::make_shared<layer::AttentionMetadata>(
-        layer::AttentionMetadataBuilder::build(params));
-  } else {
-    attn_metadata = params.attn_metadata;
-  }
+  attn_metadata = std::make_shared<layer::AttentionMetadata>(
+      layer::AttentionMetadataBuilder::build(params));
   CHECK(attn_metadata) << "attn_metadata should not be null";
   attn_metadata->enable_cuda_graph = true;
 
   const uint32_t actual_num_tokens = tokens.size(0);
-  const int64_t actual_batch_size = params.num_sequences;
+  const int64_t actual_batch_size = params.paged_kv_last_page_len.numel();
 
   // Copy data from input parameters to persistent graph tensors
   VLOG(kGraphExecutorLogVerboseLevel)
@@ -155,34 +151,38 @@ std::optional<ModelInputParams> CudaGraphPersistentParam::update(
 
   // q_seq_lens is q_cu_seq_lens in GPU Model.
   // kv_seq_lens is kv_cu_seq_lens in GPU Model.
-  VLOG(kGraphExecutorLogVerboseLevel)
-      << "copy_ q_seq_lens: src shape=" << params.q_seq_lens.sizes()
-      << ", dst slice shape=[" << actual_batch_size + 1 << "]";
-  q_seq_lens_.slice(/*dim=*/0, /*start=*/0, /*end=*/actual_batch_size + 1)
-      .copy_(params.q_seq_lens, /*non_blocking=*/true);
-  VLOG(kGraphExecutorLogVerboseLevel)
-      << "copy_ kv_seq_lens: src shape=" << params.kv_seq_lens.sizes()
-      << ", dst slice shape=[" << actual_batch_size + 1 << "]";
-  kv_seq_lens_.slice(/*dim=*/0, /*start=*/0, /*end=*/actual_batch_size + 1)
-      .copy_(params.kv_seq_lens, /*non_blocking=*/true);
-  VLOG(kGraphExecutorLogVerboseLevel)
-      << "copy_ new_cache_slots: src shape=" << params.new_cache_slots.sizes()
-      << ", dst slice shape=[" << actual_num_tokens << "]";
-  persistent_new_cache_slots_
-      .slice(/*dim=*/0, /*start=*/0, /*end=*/actual_num_tokens)
-      .copy_(params.new_cache_slots, /*non_blocking=*/true);
+  // VLOG(kGraphExecutorLogVerboseLevel)
+  //     << "copy_ q_seq_lens: src shape=" << params.q_seq_lens.sizes()
+  //     << ", dst slice shape=[" << actual_batch_size + 1 << "]";
+  // q_seq_lens_.slice(/*dim=*/0, /*start=*/0, /*end=*/actual_batch_size + 1)
+  //     .copy_(params.q_seq_lens, /*non_blocking=*/true);
+  // VLOG(kGraphExecutorLogVerboseLevel)
+  //     << "copy_ kv_seq_lens: src shape=" << params.kv_seq_lens.sizes()
+  //     << ", dst slice shape=[" << actual_batch_size + 1 << "]";
+  // kv_seq_lens_.slice(/*dim=*/0, /*start=*/0, /*end=*/actual_batch_size + 1)
+  //     .copy_(params.kv_seq_lens, /*non_blocking=*/true);
+  if (params.new_cache_slots.numel() > 0) {
+    VLOG(kGraphExecutorLogVerboseLevel)
+        << "copy_ new_cache_slots: src shape=" << params.new_cache_slots.sizes()
+        << ", dst slice shape=[" << actual_num_tokens << "]";
+    persistent_new_cache_slots_
+        .slice(/*dim=*/0, /*start=*/0, /*end=*/actual_num_tokens)
+        .copy_(params.new_cache_slots, /*non_blocking=*/true);
+  }
 
   // Copy block table data
-  const int64_t actual_block_table_len = params.block_tables.size(1);
-  auto slice_persistent_block_tables =
-      persistent_block_tables_
-          .slice(/*dim=*/0, /*start=*/0, /*end=*/actual_batch_size)
-          .slice(/*dim=*/1, /*start=*/0, /*end=*/actual_block_table_len);
-  VLOG(kGraphExecutorLogVerboseLevel)
-      << "copy_ block_tables: src shape=" << params.block_tables.sizes()
-      << ", dst slice shape=" << slice_persistent_block_tables.sizes();
-  slice_persistent_block_tables.copy_(params.block_tables,
-                                      /*non_blocking=*/true);
+  if (params.block_tables.numel() > 0) {
+    const int64_t actual_block_table_len = params.block_tables.size(1);
+    auto slice_persistent_block_tables =
+        persistent_block_tables_
+            .slice(/*dim=*/0, /*start=*/0, /*end=*/actual_batch_size)
+            .slice(/*dim=*/1, /*start=*/0, /*end=*/actual_block_table_len);
+    VLOG(kGraphExecutorLogVerboseLevel)
+        << "copy_ block_tables: src shape=" << params.block_tables.sizes()
+        << ", dst slice shape=" << slice_persistent_block_tables.sizes();
+    slice_persistent_block_tables.copy_(params.block_tables,
+                                        /*non_blocking=*/true);
+  }
 
   // Update persistent embedding from input_embedding if available
   const auto& embedding = params.input_embedding;
