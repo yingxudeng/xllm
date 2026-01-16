@@ -126,22 +126,29 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> XAttentionImpl::forward(
 
     // maybe we need to update shared attn state before execute attention,
     // currently we update flashinfer step_wise_attn_state_ at layer 0.
-    std::string backend = "fa3";
-    flashinfer::update_plan_info(attn_metadata.plan_info,
-                                 backend,
-                                 attn_metadata,
-                                 query.scalar_type(),
-                                 key.scalar_type(),
-                                 output_tensor.scalar_type(),
-                                 head_size_,
-                                 head_size_,
-                                 num_heads_,
-                                 num_kv_heads_,
-                                 /*block_size*/ full_k_cache.size(1),
-                                 /*window_size_left*/ sliding_window_,
-                                 /*enable_cuda_graph*/ false,
-                                 /*causal*/ false,
-                                 /*use_tensor_core*/ false);
+    if (attn_metadata.enable_cuda_graph) {
+      CHECK(attn_metadata.plan_info->plan_info.defined())
+          << "plan_info plan_info should not be null when enable_cuda_graph is "
+             "true";
+      VLOG(50) << "no need to update plan_info for CUDA graph";
+    } else {
+      std::string backend = "fa3";
+      flashinfer::update_plan_info(attn_metadata.plan_info,
+                                   backend,
+                                   attn_metadata,
+                                   query.scalar_type(),
+                                   key.scalar_type(),
+                                   output_tensor.scalar_type(),
+                                   head_size_,
+                                   head_size_,
+                                   num_heads_,
+                                   num_kv_heads_,
+                                   /*block_size*/ full_k_cache.size(1),
+                                   /*window_size_left*/ sliding_window_,
+                                   /*enable_cuda_graph*/ false,
+                                   /*causal*/ false,
+                                   /*use_tensor_core*/ false);
+    }
 
     xllm::kernel::AttentionParams attention_params(attn_metadata);
     auto unshared_lse = std::nullopt;
@@ -153,13 +160,15 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> XAttentionImpl::forward(
     attention_params.scale = scale_;
     // attention_params.compute_dtype = attn_metadata.compute_dtype;
     // for flashinfer
-    // attention_params.float_workspace_buffer =
-    //     FlashinferWorkspace::get_instance().get_float_workspace_buffer();
-    // attention_params.int_workspace_buffer =
-    //     FlashinferWorkspace::get_instance().get_int_workspace_buffer();
-    // attention_params.page_locked_int_workspace_buffer =
-    //     FlashinferWorkspace::get_instance()
-    //         .get_page_locked_int_workspace_buffer();
+    attention_params.float_workspace_buffer =
+        ::xllm::layer::flashinfer::FlashinferWorkspace::get_instance()
+            .get_float_workspace_buffer();
+    attention_params.int_workspace_buffer =
+        ::xllm::layer::flashinfer::FlashinferWorkspace::get_instance()
+            .get_int_workspace_buffer();
+    attention_params.page_locked_int_workspace_buffer =
+        ::xllm::layer::flashinfer::FlashinferWorkspace::get_instance()
+            .get_page_locked_int_workspace_buffer();
     // TODO: support chunked prefill
     CHECK(!attn_metadata.is_chunked_prefill)
         << "chunked prefill is not supported";

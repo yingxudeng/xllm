@@ -19,6 +19,8 @@ limitations under the License.
 #include "core/common/global_flags.h"
 #include "framework/model/model_input_params.h"
 
+DEFINE_bool(use_tensor_core, false, "use_tensor_core");
+
 namespace xllm::layer {
 
 AttentionMetadata AttentionMetadataBuilder::build(
@@ -66,7 +68,6 @@ AttentionMetadata AttentionMetadataBuilder::build(
   attn_metadata.is_dummy = (params.q_max_seq_len == 0);
 
   // for xattention
-  attn_metadata.preallocated_output = params.preallocated_output;
   if (params.current_round >= 0) {
     attn_metadata.step = params.current_round;
     CHECK(params.paged_kv_indices.defined())
@@ -89,6 +90,7 @@ AttentionMetadata AttentionMetadataBuilder::build(
   attn_metadata.enable_cuda_graph = params.enable_cuda_graph;
 
   // TODO: set use_tensor_core from options.
+  attn_metadata.use_tensor_core = FLAGS_use_tensor_core;
 
   return attn_metadata;
 }
