@@ -100,7 +100,7 @@ inline __device__ void apply_rotary_embedding(
 
 template <typename scalar_t, bool IS_NEOX>
 __global__ void rotary_embedding_kernel(
-    const int64_t* __restrict__ positions,  // [batch_size, seq_len] or
+    const int32_t* __restrict__ positions,  // [batch_size, seq_len] or
                                             // [num_tokens]
     scalar_t* __restrict__ query,           // [batch_size, seq_len, num_heads,
                                    // head_size] or [num_tokens, num_heads,
@@ -120,7 +120,7 @@ __global__ void rotary_embedding_kernel(
     const int head_size) {
   // Each thread block is responsible for one token.
   const int token_idx = blockIdx.x;
-  int64_t pos = positions[token_idx];
+  int32_t pos = positions[token_idx];
   const scalar_t* cache_ptr = cos_sin_cache + pos * rot_dim;
 
   apply_rotary_embedding<scalar_t, IS_NEOX>(query,
@@ -221,7 +221,7 @@ void rotary_embedding(
       query.scalar_type(), "apply_rope_pos_ids_cos_sin_cache", [&] {
         if (is_neox) {
           rotary_embedding_kernel<scalar_t, true><<<grid, block, 0, stream>>>(
-              positions.data_ptr<int64_t>(),
+              positions.data_ptr<int32_t>(),
               query.data_ptr<scalar_t>(),
               key.has_value() ? key->data_ptr<scalar_t>() : nullptr,
               cos_sin_cache.data_ptr<scalar_t>(),
@@ -234,7 +234,7 @@ void rotary_embedding(
               head_size);
         } else {
           rotary_embedding_kernel<scalar_t, false><<<grid, block, 0, stream>>>(
-              positions.data_ptr<int64_t>(),
+              positions.data_ptr<int32_t>(),
               query.data_ptr<scalar_t>(),
               key.has_value() ? key->data_ptr<scalar_t>() : nullptr,
               cos_sin_cache.data_ptr<scalar_t>(),
