@@ -135,8 +135,9 @@ TEST_F(DecoderReshapeAndCacheTest, CorrectnessTest) {
 
   // 2) Prepare block table mapping batch index -> request_id (block_id).
   // Here we map the only batch element to request_id=0.
+  // Use kInt (int32) to match production code.
   torch::Tensor block_table =
-      torch::tensor({0}, torch::kInt64).view({batch_size, 1}).to(device_);
+      torch::tensor({0}, torch::kInt).view({batch_size, 1}).to(device_);
 
   // 3) Prepare caches.
   // Layout: [max_num_request, beam_size, max_decode_step, kv_heads, head_dim]
