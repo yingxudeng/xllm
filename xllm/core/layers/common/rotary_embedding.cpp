@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "rotary_embedding.h"
 
+#include <glog/logging.h>
+
 #include "kernels/ops_api.h"
 #include "platform/device.h"
 
@@ -42,6 +44,13 @@ RotaryEmbeddingImpl::RotaryEmbeddingImpl(int64_t rotary_dim,
 
   // Pre-compute CUDA-friendly format
   if (options.device().is_cuda()) {
+    auto chunks = cos_sin_cache_.chunk(4, -1);
+    cuda_cos_sin_cache_ = torch::cat({chunks[0], chunks[2]}, -1).contiguous();
+  }
+}
+
+void RotaryEmbeddingImpl::update_cuda_cos_sin_cache() {
+  if (cos_sin_cache_.device().is_cuda()) {
     auto chunks = cos_sin_cache_.chunk(4, -1);
     cuda_cos_sin_cache_ = torch::cat({chunks[0], chunks[2]}, -1).contiguous();
   }
