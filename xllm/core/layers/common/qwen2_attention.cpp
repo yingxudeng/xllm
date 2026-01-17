@@ -147,9 +147,21 @@ torch::Tensor Qwen2AttentionImpl::forward(
     auto cos_sin_cache = rotary_emb_->get_cuda_cos_sin_cache();
     torch::Tensor position_ids;
     if (positions.dim() == 2) {
-      position_ids = positions[0].to(torch::kInt64);
+      if (positions[0].dtype() == torch::kInt32) {
+        position_ids = positions[0];
+      } else {
+        VLOG(20) << "positions[0].dtype() != torch::kInt32, converting to "
+                    "torch::kInt32";
+        position_ids = positions[0].to(torch::kInt32);
+      }
     } else {
-      position_ids = positions.to(torch::kInt64);
+      if (positions.dtype() == torch::kInt32) {
+        position_ids = positions;
+      } else {
+        VLOG(20) << "positions.dtype() != torch::kInt32, converting to "
+                    "torch::kInt32";
+        position_ids = positions.to(torch::kInt32);
+      }
     }
     xllm::kernel::cuda::fused_qk_norm_rope(qkv,
                                            num_heads_,
