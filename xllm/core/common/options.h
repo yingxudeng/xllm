@@ -202,6 +202,9 @@ class Options {
 
   // Layer wise H2D copy batchs
   PROPERTY(uint32_t, layers_wise_copy_batchs) = 4;
+
+  // max tokens num per request
+  PROPERTY(int32_t, max_token_per_req) = 1024;
 };
 
 }  // namespace xllm

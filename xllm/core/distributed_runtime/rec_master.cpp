@@ -574,8 +574,7 @@ std::shared_ptr<Request> RecMaster::build_request_common(
     bool build_stop_checker) {
   int32_t max_context_len = model_args_.max_position_embeddings();
   if (!options_.enable_chunked_prefill()) {
-    max_context_len =
-        std::min(max_context_len, options_.max_tokens_per_batch());
+    max_context_len = std::min(max_context_len, options_.max_token_per_req());
   }
   if (prompt_tokens.size() >= max_context_len) {
     LOG(ERROR) << "Prompt is too long: " << prompt_tokens.size();
