@@ -45,12 +45,16 @@ class RotaryEmbeddingImpl : public torch::nn::Module {
                bool is_prompt);
 
   const torch::Tensor& get_cos_sin_cache() const { return cos_sin_cache_; }
-  const torch::Tensor& get_cuda_cos_sin_cache() const {
+  const torch::Tensor& get_cuda_cos_sin_cache() {
+    if (!cuda_cos_sin_cache_.defined()) {
+      update_cuda_cos_sin_cache();
+    }
     return cuda_cos_sin_cache_;
   }
 
  protected:
   bool interleaved_;
+  void update_cuda_cos_sin_cache();
 
  private:
   torch::Tensor sin_;
@@ -112,6 +116,7 @@ class DeepseekScalingRotaryEmbeddingImpl : public torch::nn::Module {
   }
 
  private:
+  void update_cuda_cos_sin_cache();
   int64_t head_size_;
   int64_t rotary_dim_;
   bool interleaved_;
