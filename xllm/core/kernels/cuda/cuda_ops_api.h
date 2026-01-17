@@ -102,6 +102,11 @@ void decoder_reshape_and_cache(torch::Tensor proj_k,
                                torch::Tensor block_table,
                                uint32_t step);
 
+void decoder_reshape_and_cache_simple(torch::Tensor proj_k,
+                                      torch::Tensor proj_v,
+                                      torch::Tensor unshared_k_cache,
+                                      torch::Tensor unshared_v_cache);
+
 void cache_select(const torch::Tensor& beam_index,
                   std::vector<torch::Tensor>& unshared_k_cache,
                   std::vector<torch::Tensor>& unshared_v_cache,

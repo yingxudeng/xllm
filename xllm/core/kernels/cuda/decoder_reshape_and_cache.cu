@@ -64,7 +64,7 @@ __global__ void decoder_reshape_and_cache_kernel(
   const int64_t beam_idx = remaining / kv_heads;
   const int64_t kv_head_idx = remaining % kv_heads;
 
-  const int64_t block_id = block_table[batch_idx];
+  const int32_t block_id = block_table[batch_idx];
 
   // Guard invalid block id
   if (block_id < 0 || block_id >= max_num_request) {
@@ -133,10 +133,7 @@ void decoder_reshape_and_cache(torch::Tensor proj_k,
   const at::cuda::OptionalCUDAGuard device_guard(device_of(proj_k));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-  torch::Tensor block_table_flat = block_table.select(1, 0);
-  if (block_table_flat.scalar_type() != torch::kInt32) {
-    block_table_flat = block_table_flat.to(torch::kInt32);
-  }
+  torch::Tensor block_table_flat = block_table.select(1, 0).to(torch::kInt32);
 
   // Launch kernel: one block per (batch, beam, kv_head), threads along
   // head_dim.

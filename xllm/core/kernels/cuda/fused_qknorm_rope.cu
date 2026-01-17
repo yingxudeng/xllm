@@ -88,7 +88,7 @@ __global__ void fusedQKNormRopeKernel(
     void const* q_weight_void,       // RMSNorm weights for query
     void const* k_weight_void,       // RMSNorm weights for key
     void const* cos_sin_cache_void,  // Pre-computed cos/sin cache
-    int64_t const* position_ids,     // Position IDs for RoPE
+    int32_t const* position_ids,     // Position IDs for RoPE
     int const num_tokens,            // Number of tokens
     int const rotary_dim             // Dimension for RoPE
 ) {
@@ -206,7 +206,7 @@ __global__ void fusedQKNormRopeKernel(
     // Apply RoPE to normalized elements
     float elements2[numElemsPerThread];  // Additional buffer required for RoPE.
 
-    int64_t pos_id = position_ids[tokenIdx];
+    int32_t pos_id = position_ids[tokenIdx];
 
     // Calculate cache pointer for this position - similar to
     // pos_encoding_kernels.cu
@@ -307,7 +307,7 @@ void launchFusedQKNormRope(void* qkv,
                            void const* k_weight,
                            void const* cos_sin_cache,
                            bool const interleave,
-                           int64_t const* position_ids,
+                           int32_t const* position_ids,
                            cudaStream_t stream) {
   constexpr int blockSize = 256;
 
@@ -404,10 +404,10 @@ void fused_qk_norm_rope(
   TORCH_CHECK(cos_sin_cache.is_cuda(), "cos_sin_cache must be a CUDA tensor");
   TORCH_CHECK(cos_sin_cache.is_contiguous(),
               "cos_sin_cache must be contiguous");
-  TORCH_CHECK(position_ids.scalar_type() == torch::kInt64,
+  TORCH_CHECK(position_ids.scalar_type() == torch::kInt32,
               "position_ids dtype is ",
               position_ids.scalar_type(),
-              ", while Int64 is expected");
+              ", while Int32 is expected");
 
   TORCH_CHECK(qkv.dim() == 2,
               "QKV tensor must be 2D: [num_tokens, "
@@ -460,7 +460,7 @@ void fused_qk_norm_rope(
               k_weight.data_ptr(),
               cos_sin_cache.data_ptr(),
               interleaved,
-              reinterpret_cast<int64_t const*>(position_ids.data_ptr()),
+              reinterpret_cast<int32_t const*>(position_ids.data_ptr()),
               stream);
         });
   });
