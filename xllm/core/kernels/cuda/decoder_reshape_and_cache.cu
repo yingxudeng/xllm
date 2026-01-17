@@ -43,7 +43,7 @@ __global__ void decoder_reshape_and_cache_kernel(
     scalar_t* __restrict__ unshared_v_cache,  // [max_num_request, beam_size,
                                               // max_decode_step, kv_heads,
                                               // head_dim]
-    const int64_t* __restrict__ block_table,  // [batch_size]
+    const int32_t* __restrict__ block_table,  // [batch_size]
     const int64_t batch_size,
     const int64_t beam_size,
     const int64_t kv_heads,
@@ -133,7 +133,10 @@ void decoder_reshape_and_cache(torch::Tensor proj_k,
   const at::cuda::OptionalCUDAGuard device_guard(device_of(proj_k));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-  torch::Tensor block_table_flat = block_table.select(1, 0).to(torch::kInt64);
+  torch::Tensor block_table_flat = block_table.select(1, 0);
+  if (block_table_flat.scalar_type() != torch::kInt32) {
+    block_table_flat = block_table_flat.to(torch::kInt32);
+  }
 
   // Launch kernel: one block per (batch, beam, kv_head), threads along
   // head_dim.
@@ -150,7 +153,7 @@ void decoder_reshape_and_cache(torch::Tensor proj_k,
                 proj_v.data_ptr<scalar_t>(),
                 unshared_k_cache.data_ptr<scalar_t>(),
                 unshared_v_cache.data_ptr<scalar_t>(),
-                block_table_flat.data_ptr<int64_t>(),
+                block_table_flat.data_ptr<int32_t>(),
                 batch_size,
                 beam_size,
                 kv_heads,
