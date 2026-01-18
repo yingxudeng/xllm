@@ -175,6 +175,7 @@ int run() {
       .enable_prefix_cache(FLAGS_enable_prefix_cache)
       .max_tokens_per_batch(FLAGS_max_tokens_per_batch)
       .max_seqs_per_batch(FLAGS_max_seqs_per_batch)
+      .max_token_per_req(FLAGS_max_token_per_req)
       .max_tokens_per_chunk_for_prefill(FLAGS_max_tokens_per_chunk_for_prefill)
       .num_speculative_tokens(FLAGS_num_speculative_tokens)
       .num_request_handling_threads(FLAGS_num_request_handling_threads)

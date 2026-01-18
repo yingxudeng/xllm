@@ -89,6 +89,7 @@ XLLM_CAPI_EXPORT bool xllm_rec_initialize(
         .enable_prefix_cache(xllm_init_options.enable_prefix_cache)
         .max_tokens_per_batch(xllm_init_options.max_tokens_per_batch)
         .max_seqs_per_batch(xllm_init_options.max_seqs_per_batch)
+        .max_token_per_req(xllm_init_options.max_token_per_req)
         .max_tokens_per_chunk_for_prefill(
             xllm_init_options.max_tokens_per_chunk_for_prefill)
         .num_speculative_tokens(xllm_init_options.num_speculative_tokens)
