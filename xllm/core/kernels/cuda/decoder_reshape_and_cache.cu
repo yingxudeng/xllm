@@ -30,7 +30,7 @@ namespace {
 //   unshared_k_cache : [max_num_request, beam_size, max_decode_step, kv_heads,
 //   head_dim] unshared_v_cache : [max_num_request, beam_size, max_decode_step,
 //   kv_heads, head_dim] block_table      : [batch_size] - block_id per batch
-//   step             : current decode step
+//   step             : [1] - current decode step tensor
 template <typename scalar_t>
 __global__ void decoder_reshape_and_cache_kernel(
     const scalar_t* __restrict__ proj_k,  // [batch_size, beam_size, kv_heads,
@@ -44,19 +44,19 @@ __global__ void decoder_reshape_and_cache_kernel(
                                               // max_decode_step, kv_heads,
                                               // head_dim]
     const int64_t* __restrict__ block_table,  // [batch_size]
+    const int64_t* __restrict__ step,         // [1] - current decode step
     const int64_t batch_size,
     const int64_t beam_size,
     const int64_t kv_heads,
     const int64_t head_dim,
     const int64_t max_decode_step,
-    const int64_t max_num_request,
-    const uint32_t step) {
+    const int64_t max_num_request) {
   const int64_t total_elements = batch_size * beam_size * kv_heads;
   const int64_t idx = static_cast<int64_t>(blockIdx.y);
 
-  if (idx >= total_elements) {
-    return;
-  }
+  // if (idx >= total_elements) {
+  //   return;
+  // }
 
   // Decode flattened index -> (batch, beam, kv_head)
   const int64_t batch_idx = idx / (beam_size * kv_heads);
@@ -67,9 +67,12 @@ __global__ void decoder_reshape_and_cache_kernel(
   const int64_t block_id = block_table[batch_idx];
 
   // Guard invalid block id
-  if (block_id < 0 || block_id >= max_num_request) {
-    return;
-  }
+  // if (block_id < 0 || block_id >= max_num_request) {
+  //   return;
+  // }
+
+  // Read step value from tensor
+  const int64_t current_step = *step;
 
   // Compute base indices.
   // proj_k[batch_idx, beam_idx, kv_head_idx, :]
@@ -78,7 +81,8 @@ __global__ void decoder_reshape_and_cache_kernel(
 
   // unshared_*_cache[block_id, beam_idx, step, kv_head_idx, :]
   const int64_t dst_base =
-      (((block_id * beam_size + beam_idx) * max_decode_step + step) * kv_heads +
+      (((block_id * beam_size + beam_idx) * max_decode_step + current_step) *
+           kv_heads +
        kv_head_idx) *
       head_dim;
 
@@ -98,7 +102,7 @@ void decoder_reshape_and_cache(torch::Tensor proj_k,
                                torch::Tensor unshared_k_cache,
                                torch::Tensor unshared_v_cache,
                                torch::Tensor block_table,
-                               uint32_t step) {
+                               torch::Tensor step) {
   TORCH_CHECK(proj_k.dim() == 4, "proj_k must be 4-dimensional");
   TORCH_CHECK(proj_v.dim() == 4, "proj_v must be 4-dimensional");
   TORCH_CHECK(unshared_k_cache.dim() == 5,
@@ -107,6 +111,8 @@ void decoder_reshape_and_cache(torch::Tensor proj_k,
               "unshared_v_cache must be 5-dimensional");
   TORCH_CHECK(block_table.dim() == 2, "block_table must be 2-dimensional");
   TORCH_CHECK(block_table.size(1) == 1, "block_table second dim must be 1");
+  TORCH_CHECK(step.dim() == 1, "step must be 1-dimensional");
+  TORCH_CHECK(step.size(0) == 1, "step must have shape [1]");
 
   const int64_t batch_size = proj_k.size(0);
   const int64_t beam_size = proj_k.size(1);
@@ -119,8 +125,6 @@ void decoder_reshape_and_cache(torch::Tensor proj_k,
               "proj_v and proj_k must have same shape");
   TORCH_CHECK(block_table.size(0) == batch_size,
               "block_table size must match batch_size");
-  TORCH_CHECK(step >= 0 && step < max_decode_step,
-              "step must be in valid range");
   TORCH_CHECK(unshared_k_cache.size(1) == beam_size,
               "unshared_k_cache beam_size mismatch");
   TORCH_CHECK(unshared_k_cache.size(3) == kv_heads,
@@ -134,6 +138,7 @@ void decoder_reshape_and_cache(torch::Tensor proj_k,
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   torch::Tensor block_table_flat = block_table.select(1, 0).to(torch::kInt64);
+  torch::Tensor step_flat = step.to(torch::kInt64);
 
   // Launch kernel: one block per (batch, beam, kv_head), threads along
   // head_dim.
@@ -151,13 +156,13 @@ void decoder_reshape_and_cache(torch::Tensor proj_k,
                 unshared_k_cache.data_ptr<scalar_t>(),
                 unshared_v_cache.data_ptr<scalar_t>(),
                 block_table_flat.data_ptr<int64_t>(),
+                step_flat.data_ptr<int64_t>(),
                 batch_size,
                 beam_size,
                 kv_heads,
                 head_dim,
                 max_decode_step,
-                max_num_request,
-                step);
+                max_num_request);
       });
 
   C10_CUDA_KERNEL_LAUNCH_CHECK();

@@ -207,6 +207,7 @@ class RecWorkerImpl : public LLMWorkerImpl {
     std::vector<torch::Tensor> cached_unshared_k_caches_;
     std::vector<torch::Tensor> cached_unshared_v_caches_;
     torch::Tensor cached_naive_block_table_;
+    torch::Tensor current_round_;
 
     RecWorkerImpl& worker_;
 

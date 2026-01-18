@@ -334,6 +334,7 @@ ConcurrentRecWorkerImpl::ConcurrentLlmRecPureDevicePipeline::step(
   mutable_input.input_params.num_heads = context_->get_model_args().n_heads();
   mutable_input.input_params.head_dim = context_->get_model_args().head_dim();
   mutable_input.input_params.beam_width = beam_width;
+  mutable_input.input_params.current_round = current_round_;
 
   ForwardOutput output;
   torch::Tensor logits;
@@ -348,12 +349,12 @@ ConcurrentRecWorkerImpl::ConcurrentLlmRecPureDevicePipeline::step(
                                       : mutable_input.sampling_params;
     mutable_input.input_params.is_prefill = round == 0;
     mutable_input.input_params.attn_metadata = nullptr;
-    mutable_input.input_params.current_round = round - 1;
+    current_round_.fill_(round - 1);
 
     // Start async computation for next round input (overlap with GPU
     // logits/sampling)
     // TODO: support async computation for next round input
-    if (round < total_rounds - 1 && false) {
+    if (round < total_rounds - 1 && !FLAGS_enable_graph) {
       next_round_async_result =
           compute_next_round_input_async(mutable_input.input_params.kv_seq_lens,
                                          round,

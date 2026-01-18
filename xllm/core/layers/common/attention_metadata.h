@@ -101,7 +101,7 @@ struct AttentionMetadata {
   torch::Tensor unshared_k_cache;
   torch::Tensor unshared_v_cache;
   torch::Tensor naive_block_table;
-  uint32_t step;
+  torch::Tensor step;
 
   // for npu
   torch::Tensor attn_mask;

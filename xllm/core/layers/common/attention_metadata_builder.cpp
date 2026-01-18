@@ -68,7 +68,7 @@ AttentionMetadata AttentionMetadataBuilder::build(
   attn_metadata.is_dummy = (params.q_max_seq_len == 0);
 
   // for xattention
-  if (params.current_round >= 0) {
+  if (params.current_round.defined() && params.current_round.numel() > 0) {
     attn_metadata.step = params.current_round;
     CHECK(params.paged_kv_indices.defined())
         << "paged_kv_indices is not defined";

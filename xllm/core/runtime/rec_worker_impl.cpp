@@ -258,6 +258,8 @@ void RecWorkerImpl::LlmRecPureDevicePipeline::allocate_kv_caches_related() {
 
   cached_naive_block_table_ =
       torch::arange(FLAGS_max_seqs_per_batch, int_options).unsqueeze(1);
+  current_round_ = torch::tensor(
+      {0}, torch::TensorOptions().dtype(torch::kInt64).device(device));
 }
 
 void RecWorkerImpl::LlmRecPureDevicePipeline::
@@ -373,6 +375,7 @@ std::optional<ForwardOutput> RecWorkerImpl::LlmRecPureDevicePipeline::step(
   mutable_input.input_params.head_dim =
       worker_.context_.get_model_args().head_dim();
   mutable_input.input_params.beam_width = beam_width;
+  mutable_input.input_params.current_round = current_round_;
 
   ForwardOutput output;
   torch::Tensor logits;
@@ -387,7 +390,8 @@ std::optional<ForwardOutput> RecWorkerImpl::LlmRecPureDevicePipeline::step(
                                       : mutable_input.sampling_params;
     mutable_input.input_params.is_prefill = round == 0;
     mutable_input.input_params.attn_metadata = nullptr;
-    mutable_input.input_params.current_round = round - 1;
+    // Update current_round_ tensor value
+    current_round_.fill_(round - 1);
 
     // Start async computation for next round input (overlap with GPU
     // logits/sampling)
@@ -616,8 +620,9 @@ RecWorkerImpl::LlmRecPureDevicePipeline::compute_next_round_input_async(
   auto future = promise.getSemiFuture();
 
   // Launch async computation in thread pool (can overlap with GPU execution)
-  threadpool_.schedule([=, promise = std::move(promise)]() mutable {
+  threadpool_.schedule([=, this, promise = std::move(promise)]() mutable {
     // [batch_size, beam_size, FLAGS_max_token_per_req]
+    c10::StreamGuard streamGuard = worker_.prepare_stream_->set_stream_guard();
     auto shared_kv_offsets =
         full_kv_offsets.slice(2, 0, FLAGS_max_token_per_req)
             .slice(0, 0, batch_size);
@@ -679,6 +684,7 @@ RecWorkerImpl::LlmRecPureDevicePipeline::compute_next_round_input_async(
     auto paged_kv_indices = full_kv_indices.masked_select(full_kv_mask);
     auto paged_kv_last_page_len =
         torch::ones({batch_size * beam_size}, paged_options);
+    auto ret = worker_.prepare_stream_->synchronize();
 
     NextRoundInputResults results;
     results.paged_kv_indices = paged_kv_indices;

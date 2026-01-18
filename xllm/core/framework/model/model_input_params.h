@@ -512,8 +512,8 @@ struct ModelInputParams {
   std::vector<torch::Tensor> decode_positions_tensor_list;
   // beam width for step-level decode
   int32_t beam_width = 1;
-  // current round for step-level decode
-  int32_t current_round = 0;
+  // current round for step-level decode (shape: [1])
+  torch::Tensor current_round;
   int32_t total_round = 0;
   int32_t num_heads = 0;
   int32_t head_dim = 0;

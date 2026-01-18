@@ -124,7 +124,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> XAttentionImpl::forward(
     // currently we update flashinfer step_wise_attn_state_ at layer 0.
     if (attn_metadata.enable_cuda_graph) {
       CHECK(attn_metadata.plan_info->plan_info.defined())
-          << "plan_info plan_info should not be null when enable_cuda_graph is "
+          << "plan_info should not be null when enable_cuda_graph is "
              "true";
       VLOG(50) << "no need to update plan_info for CUDA graph";
     } else {
