@@ -721,6 +721,9 @@ void RecWorkerImpl::LlmRecPureDevicePipeline::update_input_for_next_round(
   }
 
   input.input_params.batch_forward_type = BatchForwardType(2);
+
+  torch::Tensor input_imbedding;
+  input.input_params.input_embedding = input_imbedding;
 }
 
 void RecWorkerImpl::LlmRecPureDevicePipeline::update_input_for_next_round(
@@ -828,6 +831,9 @@ void RecWorkerImpl::LlmRecPureDevicePipeline::update_input_for_next_round(
   }
 
   input.input_params.batch_forward_type = BatchForwardType(2);
+
+  torch::Tensor input_imbedding;
+  input.input_params.input_embedding = input_imbedding;
 }
 
 RecWorkerImpl::FullKvCacheOffsets::FullKvCacheOffsets(
