@@ -43,6 +43,52 @@ SampleOutput Sampler::forward(torch::Tensor& logits,
         logits, params.unique_token_ids, params.repetition_penalties);
   }
 
+  // Fast path for pure-device multi-round REC beam search:
+  // - FLAGS_max_decode_rounds > 0
+  // - no top_p
+  // We only need top_tokens/top_logprobs for beam search scoring, so avoid:
+  // full-vocab apply_top_k_top_p + full-vocab log_softmax + extra topk.
+  if (params.use_beam_search && params.logprobs &&
+      params.max_top_logprobs > 0 && !params.top_p.defined() &&
+      !FLAGS_enable_qwen3_reranker && FLAGS_max_decode_rounds > 0) {
+    torch::Tensor sample_logits = logits;
+    if (params.selected_token_idxes.numel() != params.sample_idxes.numel()) {
+      sample_logits = logits.index_select(/*dim=*/0, params.sample_idxes);
+    }
+
+    // same batch size
+    CHECK_EQ(sample_logits.size(0), params.do_sample.size(0));
+
+    auto [topk_values, topk_indices] =
+        sample_logits.topk(params.max_top_logprobs,
+                           /*dim=*/-1,
+                           /*largest=*/true,
+                           /*sorted=*/false);
+
+    torch::Tensor topk_logits = topk_values.to(torch::kFloat32);
+
+    // Apply temperature on the top-k logits only (temperature does not affect
+    // ordering).
+    if (params.temperatures.defined()) {
+      torch::Tensor temperatures = params.temperatures;
+      if (params.selected_token_idxes.numel() != params.sample_idxes.numel()) {
+        temperatures =
+            temperatures.index_select(/*dim=*/0, params.sample_idxes);
+      }
+      auto unsqueezed_temperatures =
+          temperatures.to(torch::kFloat32).unsqueeze(1);
+      unsqueezed_temperatures =
+          torch::where(unsqueezed_temperatures == 0,
+                       torch::ones_like(unsqueezed_temperatures),
+                       unsqueezed_temperatures);
+      topk_logits.div_(unsqueezed_temperatures);
+    }
+
+    output.top_tokens = topk_indices;
+    output.top_logprobs = torch::log_softmax(topk_logits, /*dim=*/-1);
+    return output;
+  }
+
   // apply temperatures, top-k and top-p
   apply_top_k_top_p(logits, params.temperatures, params.top_k, params.top_p);
 
