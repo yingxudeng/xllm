@@ -115,31 +115,13 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> XAttentionImpl::forward(
     // beam_size
     key = key.view({batch_size, beam_size, num_kv_heads_, head_size_});
     value = value.view({batch_size, beam_size, num_kv_heads_, head_size_});
-    const int64_t T = static_cast<int64_t>(batch_size * beam_size);
-    torch::Tensor proj_k_view = key.view({T, num_kv_heads_, head_size_});
-    torch::Tensor proj_v_view = value.view({T, num_kv_heads_, head_size_});
-
-    // Slice unshared_k_cache at step dimension: [max_num_request, beam_size,
-    // max_decode_step, kv_heads, head_dim]
-    // -> [max_num_request, beam_size, 1, kv_heads, head_dim]
-    torch::Tensor unshared_k_cache_slice = attn_metadata.unshared_k_cache.slice(
-        2, attn_metadata.step, attn_metadata.step + 1);
-    torch::Tensor unshared_v_cache_slice = attn_metadata.unshared_v_cache.slice(
-        2, attn_metadata.step, attn_metadata.step + 1);
-
-    // View and slice to [T, kv_heads, head_dim]
-    unshared_k_cache_slice =
-        unshared_k_cache_slice.view({-1, num_kv_heads_, head_size_})
-            .slice(0, 0, T);
-    unshared_v_cache_slice =
-        unshared_v_cache_slice.view({-1, num_kv_heads_, head_size_})
-            .slice(0, 0, T);
 
     xllm::kernel::cuda::decoder_reshape_and_cache_simple(
-        proj_k_view,
-        proj_v_view,
-        unshared_k_cache_slice,
-        unshared_v_cache_slice);
+        key,
+        value,
+        attn_metadata.unshared_k_cache,
+        attn_metadata.unshared_v_cache,
+        attn_metadata.step);
 
     torch::Tensor full_k_cache = attn_metadata.full_k_cache.unsqueeze(1);
     torch::Tensor full_v_cache = attn_metadata.full_v_cache.unsqueeze(1);
