@@ -21,6 +21,8 @@ limitations under the License.
 
 namespace xllm {
 
+constexpr int DEFAULT_TOP_K_LIMIT = 1024;
+
 void apply_frequency_presence_penalties(
     torch::Tensor& logits,
     const torch::Tensor& unique_token_ids,
@@ -118,39 +120,44 @@ void apply_top_k_top_p(torch::Tensor& logits,
     apply_top_k_top_p_torch_impl(logits, top_k, top_p);
 #endif
   } else {
-    auto [sorted_logits, logits_idx] =
-        logits.sort(/*dim=*/-1, /*descending=*/true);
+    int64_t effective_top_k = DEFAULT_TOP_K_LIMIT;
+    if (top_k.defined()) {
+      effective_top_k = top_k[0].item<int64_t>();
+    }
+
+    auto [top_k_vals, top_k_indices] = logits.topk(
+        effective_top_k, /*dim=*/-1, /*descending=*/true, /*largest=*/true);
 
     float filter_value = -std::numeric_limits<float>::infinity();
 
     if (top_k.defined()) {
       auto processed_top_k = top_k.unsqueeze(1);
       auto max_value = std::numeric_limits<int64_t>::max();
-
       processed_top_k =
           torch::where(processed_top_k <= 0,
                        torch::tensor(max_value).to(processed_top_k.device()),
                        processed_top_k);
 
-      auto vocab_size = logits.size(-1);
-      auto top_k_mask = torch::arange(vocab_size, sorted_logits.device())
-                            .expand_as(sorted_logits);
+      auto vocab_size = top_k_vals.size(-1);
+      auto top_k_mask =
+          torch::arange(vocab_size, top_k_vals.device()).expand_as(top_k_vals);
       top_k_mask = top_k_mask >= processed_top_k;
-      sorted_logits.masked_fill_(top_k_mask, filter_value);
+      top_k_vals.masked_fill_(top_k_mask, filter_value);
     }
 
     if (top_p.defined()) {
       auto processed_top_p = top_p.unsqueeze(1);
-
-      auto probs = sorted_logits.softmax(/*dim=*/-1).to(torch::kFloat32);
+      auto probs = top_k_vals.softmax(/*dim=*/-1).to(torch::kFloat32);
       auto probs_sum = probs.cumsum(/*dim=*/-1);
       auto mask = (probs_sum - probs) > processed_top_p;
-
-      sorted_logits.masked_fill_(mask, filter_value);
+      top_k_vals.masked_fill_(mask, filter_value);
     }
-    logits =
-        torch::empty_like(sorted_logits)
-            .scatter_(/*dim=*/-1, /*index=*/logits_idx, /*core=*/sorted_logits);
+
+    logits.fill_(filter_value);
+    logits.scatter_(/*dim=*/-1, /*index=*/top_k_indices, /*src=*/top_k_vals);
+
+    top_k_vals.reset();
+    top_k_indices.reset();
   }
 }
 
