@@ -45,7 +45,7 @@ std::unique_ptr<ExecutorImpl> ExecutorImplFactory::create_executor_impl(
     const torch::Device& device,
     const runtime::Options& options) {
   std::string backend = "base";
-  if (FLAGS_enable_graph) {
+  if (options.enable_graph()) {
     backend = Device::type_str();
     LOG(INFO) << "Creating Graph Executor for " << backend << " device";
   }

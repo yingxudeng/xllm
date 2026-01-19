@@ -170,7 +170,7 @@ ConcurrentRecWorkerImpl::step_async(const ForwardInput& input) {
   folly::Promise<std::optional<ForwardOutput>> promise;
   auto future = promise.getSemiFuture();
 
-  if (FLAGS_enable_graph) {
+  if (options_.enable_graph()) {
     warmup(input);
   }
   // Use schedule() to assign tasks, letting ThreadPool automatically select

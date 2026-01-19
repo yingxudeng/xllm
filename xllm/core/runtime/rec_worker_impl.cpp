@@ -193,6 +193,7 @@ std::optional<ForwardOutput> RecWorkerImpl::OneRecWorkPipeline::step(
 RecWorkerImpl::LlmRecPureDevicePipeline::LlmRecPureDevicePipeline(
     RecWorkerImpl& worker)
     : worker_(worker) {
+  full_kv_cache_offsets_ = std::make_unique<FullKvCacheOffsets>(this);
   allocate_kv_caches_related();
 }
 
@@ -233,9 +234,9 @@ void RecWorkerImpl::LlmRecPureDevicePipeline::allocate_kv_caches_related() {
   auto int_options = torch::TensorOptions().dtype(torch::kInt32).device(device);
   int32_t num_layers = worker_.context_.get_model_args().n_layers();
 
-  int32_t full_kv_len = FLAGS_max_seqs_per_batch * FLAGS_max_token_per_req +
-                        FLAGS_max_seqs_per_batch * FLAGS_beam_width *
-                            (get_pure_device_decode_rounds() - 1);
+  int32_t full_kv_len =
+      max_tokens_per_batch_ +
+      max_seqs_per_batch_ * beam_width_ * (get_pure_device_decode_rounds() - 1);
   int64_t num_kv_heads =
       worker_.context_.get_model_args().n_kv_heads().value_or(
           worker_.context_.get_model_args().n_heads());
@@ -257,7 +258,7 @@ void RecWorkerImpl::LlmRecPureDevicePipeline::allocate_kv_caches_related() {
   }
 
   cached_naive_block_table_ =
-      torch::arange(FLAGS_max_seqs_per_batch, int_options).unsqueeze(1);
+      torch::arange(max_seqs_per_batch_, int_options).unsqueeze(1);
   current_round_ = torch::tensor(
       {0}, torch::TensorOptions().dtype(torch::kInt64).device(device));
 }
@@ -278,7 +279,7 @@ void RecWorkerImpl::LlmRecPureDevicePipeline::
   int64_t head_dim = shape[2];
   int32_t num_layers = worker_.context_.get_model_args().n_layers();
   int32_t max_decode_step = total_round - 1;
-  int32_t unshared_offset = FLAGS_max_seqs_per_batch * FLAGS_max_token_per_req;
+  int32_t unshared_offset = max_tokens_per_batch_;
   if (!cached_full_k_caches_.empty() && cached_full_k_caches_[0].defined()) {
     mip.full_k_caches.reserve(num_layers);
     mip.full_v_caches.reserve(num_layers);
@@ -295,7 +296,7 @@ void RecWorkerImpl::LlmRecPureDevicePipeline::
 
       target_layer_unshared_k_cache =
           target_layer_unshared_k_cache
-              .view({static_cast<int64_t>(FLAGS_max_seqs_per_batch),
+              .view({static_cast<int64_t>(max_seqs_per_batch_),
                      static_cast<int64_t>(beam_width),
                      static_cast<int64_t>(max_decode_step),
                      num_kv_heads,
@@ -303,7 +304,7 @@ void RecWorkerImpl::LlmRecPureDevicePipeline::
               .slice(0, 0, batch_size);
       target_layer_unshared_v_cache =
           target_layer_unshared_v_cache
-              .view({static_cast<int64_t>(FLAGS_max_seqs_per_batch),
+              .view({static_cast<int64_t>(max_seqs_per_batch_),
                      static_cast<int64_t>(beam_width),
                      static_cast<int64_t>(max_decode_step),
                      num_kv_heads,
@@ -509,27 +510,26 @@ RecWorkerImpl::LlmRecPureDevicePipeline::prepare_fixed_tensors(
     int32_t max_decode_step,
     const torch::TensorOptions& paged_options) {
   FixedTensors tensors;
-  // [FLAGS_max_seqs_per_batch, beam_width, max_decode_step]
-  tensors.batch_ids = torch::arange(0, FLAGS_max_seqs_per_batch, paged_options)
+  // [max_seqs_per_batch_, beam_width, max_decode_step]
+  tensors.batch_ids = torch::arange(0, max_seqs_per_batch_, paged_options)
                           .unsqueeze(1)
                           .unsqueeze(2)
                           .expand({-1, beam_width, max_decode_step}) *
                       (beam_width * max_decode_step);
 
-  // [FLAGS_max_seqs_per_batch, beam_width, max_decode_step]
-  tensors.beams_ids =
-      torch::arange(0, beam_width, paged_options)
-          .unsqueeze(0)
-          .unsqueeze(2)
-          .expand({FLAGS_max_seqs_per_batch, -1, max_decode_step}) *
-      max_decode_step;
+  // [max_seqs_per_batch_, beam_width, max_decode_step]
+  tensors.beams_ids = torch::arange(0, beam_width, paged_options)
+                          .unsqueeze(0)
+                          .unsqueeze(2)
+                          .expand({max_seqs_per_batch_, -1, max_decode_step}) *
+                      max_decode_step;
 
-  // [FLAGS_max_seqs_per_batch, beam_width, max_decode_step]
+  // [max_seqs_per_batch_, beam_width, max_decode_step]
   tensors.max_decode_step_ids =
       torch::arange(0, max_decode_step, paged_options)
           .unsqueeze(0)
           .unsqueeze(1)
-          .expand({FLAGS_max_seqs_per_batch, beam_width, -1});
+          .expand({max_seqs_per_batch_, beam_width, -1});
   return tensors;
 }
 
@@ -606,15 +606,12 @@ RecWorkerImpl::LlmRecPureDevicePipeline::compute_next_round_input_async(
     int32_t max_decode_step,
     const torch::TensorOptions& paged_options) {
   // Capture necessary data for async computation
-  auto full_kv_offsets = worker_.full_kv_cache_offsets_->full_kv_offsets;
-  auto full_kv_mask = worker_.full_kv_cache_offsets_->full_kv_mask;
-  auto full_kv_indices = worker_.full_kv_cache_offsets_->full_kv_indices;
-  auto unshared_full_kv_offsets =
-      worker_.full_kv_cache_offsets_->unshared_offsets;
-  auto real_max_decode_step_ids =
-      worker_.full_kv_cache_offsets_->max_decode_step_ids;
-  uint32_t unshared_kv_begin_offset =
-      FLAGS_max_token_per_req * FLAGS_max_seqs_per_batch;
+  auto full_kv_offsets = full_kv_cache_offsets_->full_kv_offsets;
+  auto full_kv_mask = full_kv_cache_offsets_->full_kv_mask;
+  auto full_kv_indices = full_kv_cache_offsets_->full_kv_indices;
+  auto unshared_full_kv_offsets = full_kv_cache_offsets_->unshared_offsets;
+  auto real_max_decode_step_ids = full_kv_cache_offsets_->max_decode_step_ids;
+  uint32_t unshared_kv_begin_offset = max_tokens_per_batch_;
 
   folly::Promise<NextRoundInputResults> promise;
   auto future = promise.getSemiFuture();
@@ -624,19 +621,18 @@ RecWorkerImpl::LlmRecPureDevicePipeline::compute_next_round_input_async(
     // [batch_size, beam_size, FLAGS_max_token_per_req]
     c10::StreamGuard streamGuard = worker_.prepare_stream_->set_stream_guard();
     auto shared_kv_offsets =
-        full_kv_offsets.slice(2, 0, FLAGS_max_token_per_req)
-            .slice(0, 0, batch_size);
+        full_kv_offsets.slice(2, 0, max_token_per_req_).slice(0, 0, batch_size);
 
     // [batch_size]
     auto shared_kv_lens_each_batch = torch::diff(kv_seq_lens);
 
-    // [batch_size, beam_size, FLAGS_max_token_per_req]
+    // [batch_size, beam_size, max_token_per_req_]
     auto shared_kv_lens_each_batch_broadcast =
         shared_kv_lens_each_batch.unsqueeze(1).unsqueeze(1);
 
-    // [batch_size, beam_size, FLAGS_max_token_per_req]
-    auto shared_mask = full_kv_mask.slice(2, 0, FLAGS_max_token_per_req)
-                           .slice(0, 0, batch_size);
+    // [batch_size, beam_size, max_token_per_req_]
+    auto shared_mask =
+        full_kv_mask.slice(2, 0, max_token_per_req_).slice(0, 0, batch_size);
 
     shared_mask.copy_(shared_kv_offsets < shared_kv_lens_each_batch_broadcast);
     // [batch_size]
@@ -646,8 +642,7 @@ RecWorkerImpl::LlmRecPureDevicePipeline::compute_next_round_input_async(
         kv_lens_batch_offsets.unsqueeze(1).unsqueeze(1);
 
     auto shared_kv_indices =
-        full_kv_indices.slice(2, 0, FLAGS_max_token_per_req)
-            .slice(0, 0, batch_size);
+        full_kv_indices.slice(2, 0, max_token_per_req_).slice(0, 0, batch_size);
 
     shared_kv_indices.copy_(kv_lens_batch_offsets_broadcast +
                             shared_kv_offsets);
@@ -657,17 +652,14 @@ RecWorkerImpl::LlmRecPureDevicePipeline::compute_next_round_input_async(
     int32_t unshared_kv_len = beam_size * max_decode_step;
     auto unshared_kv_indices =
         full_kv_indices
-            .slice(2,
-                   FLAGS_max_token_per_req,
-                   FLAGS_max_token_per_req + unshared_kv_len)
+            .slice(2, max_token_per_req_, max_token_per_req_ + unshared_kv_len)
             .slice(0, 0, batch_size);
     unshared_kv_indices.copy_(unshared_kv_offsets + unshared_kv_begin_offset);
 
-    auto unshared_mask = full_kv_mask
-                             .slice(2,
-                                    FLAGS_max_token_per_req,
-                                    FLAGS_max_token_per_req + unshared_kv_len)
-                             .slice(0, 0, batch_size);
+    auto unshared_mask =
+        full_kv_mask
+            .slice(2, max_token_per_req_, max_token_per_req_ + unshared_kv_len)
+            .slice(0, 0, batch_size);
     auto real_max_decode_step_ids_slice =
         real_max_decode_step_ids.slice(0, 0, batch_size);
     unshared_mask.copy_(real_max_decode_step_ids_slice <= current_step);
@@ -742,29 +734,29 @@ void RecWorkerImpl::LlmRecPureDevicePipeline::update_input_for_next_round(
     int32_t beam_size,
     int32_t max_decode_step,
     const torch::TensorOptions& paged_options) {
-  // [FLAGS_max_seqs_per_batch, beam_size, max_decode_step]
-  auto full_kv_offsets = worker_.full_kv_cache_offsets_->full_kv_offsets;
-  // [FLAGS_max_seqs_per_batch, beam_size, max_decode_step]
-  auto full_kv_mask = worker_.full_kv_cache_offsets_->full_kv_mask;
-  // [FLAGS_max_seqs_per_batch, beam_size, max_decode_step]
-  auto full_kv_indices = worker_.full_kv_cache_offsets_->full_kv_indices;
+  // [max_seqs_per_batch_, beam_size, max_decode_step]
+  auto full_kv_offsets = full_kv_cache_offsets_->full_kv_offsets;
+  // [max_seqs_per_batch_, beam_size, max_decode_step]
+  auto full_kv_mask = full_kv_cache_offsets_->full_kv_mask;
+  // [max_seqs_per_batch_, beam_size, max_decode_step]
+  auto full_kv_indices = full_kv_cache_offsets_->full_kv_indices;
 
-  // [batch_size, beam_size, FLAGS_max_token_per_req]
-  auto shared_kv_offsets = full_kv_offsets.slice(2, 0, FLAGS_max_token_per_req)
-                               .slice(0, 0, batch_size);
+  // [batch_size, beam_size, max_token_per_req_]
+  auto shared_kv_offsets =
+      full_kv_offsets.slice(2, 0, max_token_per_req_).slice(0, 0, batch_size);
 
   auto kv_cu_seq_lens = input.input_params.kv_seq_lens;
 
   // [batch_size]
   auto shared_kv_lens_each_batch = torch::diff(kv_cu_seq_lens);
 
-  // [batch_size, beam_size, FLAGS_max_token_per_req]
+  // [batch_size, beam_size, max_token_per_req_]
   auto shared_kv_lens_each_batch_broadcast =
       shared_kv_lens_each_batch.unsqueeze(1).unsqueeze(1);
 
-  // [batch_size, beam_size, FLAGS_max_token_per_req]
+  // [batch_size, beam_size, max_token_per_req_]
   auto shared_mask =
-      full_kv_mask.slice(2, 0, FLAGS_max_token_per_req).slice(0, 0, batch_size);
+      full_kv_mask.slice(2, 0, max_token_per_req_).slice(0, 0, batch_size);
 
   shared_mask.copy_(shared_kv_offsets < shared_kv_lens_each_batch_broadcast);
   // [batch_size]
@@ -773,35 +765,29 @@ void RecWorkerImpl::LlmRecPureDevicePipeline::update_input_for_next_round(
   auto kv_lens_batch_offsets_broadcast =
       kv_lens_batch_offsets.unsqueeze(1).unsqueeze(1);
 
-  auto shared_kv_indices = full_kv_indices.slice(2, 0, FLAGS_max_token_per_req)
-                               .slice(0, 0, batch_size);
+  auto shared_kv_indices =
+      full_kv_indices.slice(2, 0, max_token_per_req_).slice(0, 0, batch_size);
 
   shared_kv_indices.copy_(kv_lens_batch_offsets_broadcast + shared_kv_offsets);
-  uint32_t unshared_kv_begin_offset =
-      FLAGS_max_token_per_req * FLAGS_max_seqs_per_batch;
+  uint32_t unshared_kv_begin_offset = max_tokens_per_batch_;
 
-  auto unshared_full_kv_offsets =
-      worker_.full_kv_cache_offsets_->unshared_offsets;
+  auto unshared_full_kv_offsets = full_kv_cache_offsets_->unshared_offsets;
 
   // [batch_size, beam_size, max_decode_step]
   auto unshared_kv_offsets = unshared_full_kv_offsets.slice(0, 0, batch_size);
   int32_t unshared_kv_len = beam_size * max_decode_step;
   auto unshared_kv_indices =
       full_kv_indices
-          .slice(2,
-                 FLAGS_max_token_per_req,
-                 FLAGS_max_token_per_req + unshared_kv_len)
+          .slice(2, max_token_per_req_, max_token_per_req_ + unshared_kv_len)
           .slice(0, 0, batch_size);
   unshared_kv_indices.copy_(unshared_kv_offsets + unshared_kv_begin_offset);
 
-  auto unshared_mask = full_kv_mask
-                           .slice(2,
-                                  FLAGS_max_token_per_req,
-                                  FLAGS_max_token_per_req + unshared_kv_len)
-                           .slice(0, 0, batch_size);
+  auto unshared_mask =
+      full_kv_mask
+          .slice(2, max_token_per_req_, max_token_per_req_ + unshared_kv_len)
+          .slice(0, 0, batch_size);
   auto real_max_decode_step_ids =
-      worker_.full_kv_cache_offsets_->max_decode_step_ids.slice(
-          0, 0, batch_size);
+      full_kv_cache_offsets_->max_decode_step_ids.slice(0, 0, batch_size);
   unshared_mask.copy_(real_max_decode_step_ids <= current_step);
 
   torch::Tensor paged_kv_indices, paged_kv_indptr, paged_kv_last_page_len;
@@ -842,45 +828,52 @@ void RecWorkerImpl::LlmRecPureDevicePipeline::update_input_for_next_round(
   input.input_params.input_embedding = input_imbedding;
 }
 
-RecWorkerImpl::FullKvCacheOffsets::FullKvCacheOffsets(
-    const RecWorkerImpl& worker) {
-  auto device = worker.device();
+RecWorkerImpl::LlmRecPureDevicePipeline::FullKvCacheOffsets::FullKvCacheOffsets(
+    LlmRecPureDevicePipeline* pure_device_pipeline) {
+  auto device = pure_device_pipeline->worker_.device();
   auto paged_options =
       torch::TensorOptions().dtype(torch::kInt32).device(device);
   int32_t max_decode_step = get_pure_device_decode_rounds() - 1;
   full_kv_offsets =
-      torch::arange(0, FLAGS_max_token_per_req + max_decode_step, paged_options)
+      torch::arange(0,
+                    pure_device_pipeline->max_token_per_req_ + max_decode_step,
+                    paged_options)
           .unsqueeze(0)
-          .expand({FLAGS_max_seqs_per_batch, -1})
+          .expand({pure_device_pipeline->max_seqs_per_batch_, -1})
           .unsqueeze(1)
-          .expand({-1, FLAGS_beam_width, -1});
-  full_kv_mask = torch::zeros({FLAGS_max_seqs_per_batch,
-                               FLAGS_beam_width,
-                               FLAGS_max_token_per_req + max_decode_step},
-                              paged_options)
-                     .to(torch::kBool);
+          .expand({-1, pure_device_pipeline->beam_width_, -1});
+  full_kv_mask =
+      torch::zeros({pure_device_pipeline->max_seqs_per_batch_,
+                    pure_device_pipeline->beam_width_,
+                    pure_device_pipeline->max_token_per_req_ + max_decode_step},
+                   paged_options)
+          .to(torch::kBool);
   full_kv_indices = torch::zeros_like(full_kv_offsets);
 
-  auto batch_ids = torch::arange(0, FLAGS_max_seqs_per_batch, paged_options)
-                       .unsqueeze(1)
-                       .unsqueeze(2)
-                       .expand({-1, FLAGS_beam_width, max_decode_step}) *
-                   (FLAGS_beam_width * max_decode_step);
+  auto batch_ids =
+      torch::arange(0, pure_device_pipeline->max_seqs_per_batch_, paged_options)
+          .unsqueeze(1)
+          .unsqueeze(2)
+          .expand({-1, pure_device_pipeline->beam_width_, max_decode_step}) *
+      (pure_device_pipeline->beam_width_ * max_decode_step);
 
-  // [FLAGS_max_seqs_per_batch, beam_width, max_decode_step]
+  // [max_seqs_per_batch_, beam_width, max_decode_step]
   auto beams_ids =
-      torch::arange(0, FLAGS_beam_width, paged_options)
+      torch::arange(0, pure_device_pipeline->beam_width_, paged_options)
           .unsqueeze(0)
           .unsqueeze(2)
-          .expand({FLAGS_max_seqs_per_batch, -1, max_decode_step}) *
+          .expand({pure_device_pipeline->max_seqs_per_batch_,
+                   -1,
+                   max_decode_step}) *
       max_decode_step;
 
-  // [FLAGS_max_seqs_per_batch, beam_width, max_decode_step]
-  max_decode_step_ids =
-      torch::arange(0, max_decode_step, paged_options)
-          .unsqueeze(0)
-          .unsqueeze(1)
-          .expand({FLAGS_max_seqs_per_batch, FLAGS_beam_width, -1});
+  // [max_seqs_per_batch_, beam_width, max_decode_step]
+  max_decode_step_ids = torch::arange(0, max_decode_step, paged_options)
+                            .unsqueeze(0)
+                            .unsqueeze(1)
+                            .expand({pure_device_pipeline->max_seqs_per_batch_,
+                                     pure_device_pipeline->beam_width_,
+                                     -1});
   unshared_offsets = batch_ids + beams_ids + max_decode_step_ids;
 }
 
@@ -896,8 +889,6 @@ RecWorkerImpl::RecWorkerImpl(const ParallelArgs& parallel_args,
       1, util::get_int_env("XLLM_REC_INPUT_BUILDER_THREADS", 16));
   input_builder_thread_pool_ =
       std::make_shared<ThreadPool>(static_cast<size_t>(num_threads));
-
-  full_kv_cache_offsets_ = std::make_unique<FullKvCacheOffsets>(*this);
 }
 
 bool RecWorkerImpl::init_model(ModelContext& context) {

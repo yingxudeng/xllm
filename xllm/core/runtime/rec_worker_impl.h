@@ -202,6 +202,17 @@ class RecWorkerImpl : public LLMWorkerImpl {
     void prepare_kv_caches_related_for_input(const ForwardInput& inputs,
                                              ForwardInput& processed_inputs);
 
+    struct FullKvCacheOffsets {
+      explicit FullKvCacheOffsets(
+          LlmRecPureDevicePipeline* pure_device_pipeline);
+      torch::Tensor full_kv_offsets;
+      torch::Tensor full_kv_mask;
+      torch::Tensor full_kv_indices;
+      torch::Tensor unshared_offsets;
+      torch::Tensor max_decode_step_ids;
+    };
+    std::unique_ptr<FullKvCacheOffsets> full_kv_cache_offsets_;
+
     std::vector<torch::Tensor> cached_full_k_caches_;
     std::vector<torch::Tensor> cached_full_v_caches_;
     std::vector<torch::Tensor> cached_unshared_k_caches_;
@@ -213,6 +224,12 @@ class RecWorkerImpl : public LLMWorkerImpl {
 
     // for async scheduler
     ThreadPool threadpool_;
+
+    int32_t max_seqs_per_batch_{worker_.options_.max_seqs_per_batch()};
+    int32_t max_token_per_req_{worker_.options_.max_token_per_req()};
+    int32_t max_tokens_per_batch_{worker_.options_.max_seqs_per_batch() *
+                                  worker_.options_.max_token_per_req()};
+    int32_t beam_width_{worker_.options_.beam_width()};
   };
 
   // Factory method to create pipeline (can access private classes)
@@ -228,16 +245,6 @@ class RecWorkerImpl : public LLMWorkerImpl {
   void prepare_multi_modal_data(ForwardInput& processed_inputs);
 
   std::unique_ptr<RecWorkPipeline> work_pipeline_;
-
-  struct FullKvCacheOffsets {
-    FullKvCacheOffsets(const RecWorkerImpl& worker);
-    torch::Tensor full_kv_offsets;
-    torch::Tensor full_kv_mask;
-    torch::Tensor full_kv_indices;
-    torch::Tensor unshared_offsets;
-    torch::Tensor max_decode_step_ids;
-  };
-  std::unique_ptr<FullKvCacheOffsets> full_kv_cache_offsets_;
 
   RecModelKind rec_model_kind_ = RecModelKind::kNone;
 };
