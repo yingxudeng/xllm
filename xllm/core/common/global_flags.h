@@ -89,6 +89,8 @@ DECLARE_bool(enable_graph);
 
 DECLARE_bool(enable_graph_no_padding);
 
+DECLARE_bool(enable_prefill_piecewise_graph);
+
 DECLARE_int32(max_seq_len_for_graph_mode);
 
 DECLARE_bool(enable_chunked_prefill);

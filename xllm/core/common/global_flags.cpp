@@ -101,6 +101,12 @@ DEFINE_bool(enable_graph_no_padding,
             "Whether to enable graph execution for decode phase without "
             "padding. If true, graph will be caputured with every actual num "
             "tokens, as stride is 1.");
+
+DEFINE_bool(enable_prefill_piecewise_graph,
+            false,
+            "Whether to enable piecewise CUDA graph for prefill phase. "
+            "When enabled, attention operations use eager mode while other "
+            "operations are captured in CUDA graphs.");
 // --- vlm config ---
 
 DEFINE_int32(limit_image_per_prompt,
