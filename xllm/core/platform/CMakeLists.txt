@@ -1,5 +1,9 @@
 include(cc_library)
 
+if(USE_NPU)
+  add_subdirectory(npu)
+endif()
+
 cc_library(
   NAME
     platform
@@ -20,8 +24,7 @@ cc_library(
     $<$<BOOL:${USE_MLU}>:cndrv>
     $<$<OR:$<BOOL:${USE_CUDA}>,$<BOOL:${USE_ILU}>>:cuda>
     $<$<OR:$<BOOL:${USE_CUDA}>,$<BOOL:${USE_ILU}>>:cudart>
+    $<$<BOOL:${USE_NPU}>:platform_npu>
 )
 
-if(USE_NPU)
-  add_subdirectory(npu)
-endif()
+

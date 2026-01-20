@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <c10/core/Device.h>
 #include <c10/core/TensorOptions.h>
+#include <c10/cuda/CUDAGuard.h>
 #include <glog/logging.h>
 #include <torch/torch.h>
 
@@ -24,15 +25,17 @@ limitations under the License.
 
 #include "core/common/global_flags.h"
 #include "core/common/metrics.h"
+#include "core/kernels/cuda/attention_runner.h"
+#include "core/kernels/cuda/global_capture_instance.h"
+#include "core/layers/common/attention_metadata.h"
+#include "core/layers/common/attention_metadata_builder.h"
+#include "core/layers/cuda/flashinfer_planinfo.h"
 #include "core/platform/device.h"
 #include "core/platform/stream.h"
 #include "core/util/utils.h"
 #include "kernels/cuda/utils.h"
-#include "layers/common/attention_metadata.h"
-#include "layers/common/attention_metadata_builder.h"
-#include "layers/cuda/flashinfer_planinfo.h"
 
-namespace xllm {
+namespace xllm::runtime::cuda {
 
 DEFINE_bool(force_graph_eager, false, "force_graph_eager");
 
@@ -266,14 +269,6 @@ std::optional<ModelInputParams> CudaGraphPersistentParam::update(
   // qo_indptr is q_cu_seq_lens in GPU Model.
   attn_metadata->qo_indptr = persistent_decode_qo_indptr(actual_batch_size);
 
-  if (return_capture_params) {
-    // Return ModelInputParams with persistent buffer references for capture
-  }
-
-  // Synchronize CUDA stream to ensure all copy_ operations are completed
-  // before updating plan_info, which requires reading from GPU tensors
-  torch::cuda::synchronize();
-
   // Update plan_info if attn_metadata exists and enable_cuda_graph is true
   // This ensures plan_info is updated before CUDA graph capture/replay
 
@@ -296,23 +291,30 @@ std::optional<ModelInputParams> CudaGraphPersistentParam::update(
     // Get dtype from k_cache
     const auto dtype = k_cache.scalar_type();
 
-    // Determine if causal (prefill mode)
-    // const bool causal =
-    //     attn_metadata->is_prefill || attn_metadata->is_chunked_prefill;
-    constexpr bool causal = false;
+    // Determine if causal (prefill mode) based on attn_metadata
+    // For piecewise capture (prefill), causal should be true
+    // For normal capture (decode), causal should be false
+    const bool causal =
+        attn_metadata->is_prefill || attn_metadata->is_chunked_prefill;
 
-    // Determine backend
-    // const std::string backend =
-    //     causal ? xllm::kernel::cuda::determine_attention_backend(
-    //                  /*pos_encoding_mode=*/0,
-    //                  /*use_fp16_qk_reduction=*/false,
-    //                  /*use_custom_mask=*/false)
-    //            : "fa2";
-    const static std::string backend = "fa2";
+    // Determine backend based on causal mode
+    const std::string backend =
+        causal ? xllm::kernel::cuda::determine_attention_backend(
+                     /*pos_encoding_mode=*/0,
+                     /*use_fp16_qk_reduction=*/false,
+                     /*use_custom_mask=*/false)
+               : "fa2";
 
     // Update plan_info
     // Note: plan_info is only updated at layer 0, so we set layer_id to 0
     attn_metadata->plan_info->layer_id = 0;
+
+    VLOG(kGraphExecutorLogVerboseLevel)
+        << "CudaGraphPersistentParam::update() calling update_plan_info: "
+        << "is_prefill=" << attn_metadata->is_prefill
+        << ", is_chunked_prefill=" << attn_metadata->is_chunked_prefill
+        << ", causal=" << causal << ", backend=" << backend
+        << ", enable_cuda_graph=" << attn_metadata->enable_cuda_graph;
 
     layer::flashinfer::update_plan_info(
         attn_metadata->plan_info,
@@ -377,8 +379,6 @@ bool CudaGraph::capture(CausalLM* model,
   CHECK_GE(padded_num_tokens_, actual_num_tokens)
       << "bucket_num_tokens >= actual_num_tokens";
 
-  // auto& tensor_options = model->options();
-
   // Update persistent parameters with input data before capture
   const torch::Tensor& k_cache = kv_cache[0].get_k_cache();
   const torch::Tensor& v_cache = kv_cache[0].get_v_cache();
@@ -399,50 +399,92 @@ bool CudaGraph::capture(CausalLM* model,
   torch::cuda::synchronize();
 
   LOG(INFO) << "CUDA graph capture begin, bucket_num_tokens: "
-            << bucket_num_tokens
-            << ", actual_num_tokens: " << actual_num_tokens;
+            << bucket_num_tokens << ", actual_num_tokens: " << actual_num_tokens
+            << ", is_piecewise: " << is_piecewise_;
 
   // Use cached capture stream for graph capture
   // capture_stream_ is initialized in constructor
-  bool need_restore_stream = false;
+  // Use optional CUDAStreamGuard for RAII-based stream management
+  std::optional<c10::cuda::CUDAStreamGuard> stream_guard;
 
   // Check if current stream is default stream, if so switch to capture stream
   if (c10::cuda::getCurrentCUDAStream(device_index_) ==
       c10::cuda::getDefaultCUDAStream(device_index_)) {
     c10::cuda::getCurrentCUDAStream(device_index_).synchronize();
-    c10::cuda::setCurrentCUDAStream(capture_stream_.value());
     capture_stream_.value().synchronize();
-    need_restore_stream = true;
+    stream_guard.emplace(capture_stream_.value());
   }
 
-  // Begin graph capture (capture_mode defaults to cudaStreamCaptureModeGlobal)
-  // Use shared pool passed from executor
-  if (!FLAGS_force_graph_eager) {
-    graph_.capture_begin(pool);
+  if (is_piecewise_) {
+    // Piecewise capture mode (for prefill)
+    // Warmup: execute forward once without capture to initialize cuBLAS handles
+    // and other CUDA resources. This is necessary because these resources
+    // cannot be created during CUDA graph capture mode.
+    model->forward(persistent_param_.persistent_tokens(padded_num_tokens_),
+                   persistent_param_.persistent_positions(padded_num_tokens_),
+                   kv_cache,
+                   graph_params_opt.value());
+    torch::cuda::synchronize();
+
+    // Begin piecewise capture via GlobalCaptureInstance
+    GlobalCaptureInstance::get_instance().begin_capture(pool);
+
+    // Execute forward pass - attention operations will be captured separately
+    auto forward_result = model->forward(
+        persistent_param_.persistent_tokens(padded_num_tokens_),
+        persistent_param_.persistent_positions(padded_num_tokens_),
+        kv_cache,
+        graph_params_opt.value());
+
+    // Store result in persistent buffer
+    persistent_param_.set_hidden_states(forward_result);
+    VLOG(kGraphExecutorLogVerboseLevel)
+        << "Piecewise capture forward_result shape: " << forward_result.sizes();
+
+    // End capture and get piecewise graphs
+    auto piecewise_graphs = GlobalCaptureInstance::get_instance().end_capture();
+
+    if (!piecewise_graphs || piecewise_graphs->empty()) {
+      LOG(WARNING) << "Failed to capture piecewise graph: no graphs captured";
+      return false;
+    }
+
+    // Move piecewise graphs to member
+    piecewise_graph_ = std::move(*piecewise_graphs);
+
+    LOG(INFO) << "Piecewise graph capture end, bucket_num_tokens: "
+              << bucket_num_tokens
+              << ", num_graphs: " << piecewise_graph_.size()
+              << ", num_runners: " << piecewise_graph_.num_runners();
+  } else {
+    // Normal capture mode (for decode)
+    // Begin graph capture (capture_mode defaults to
+    // cudaStreamCaptureModeGlobal)
+    if (!FLAGS_force_graph_eager) {
+      // graph_.capture_begin(pool);
+      graph_.capture_begin(pool, cudaStreamCaptureModeThreadLocal);
+    }
+
+    // Execute forward pass - CUDA graph will capture this
+    auto forward_result = model->forward(
+        persistent_param_.persistent_tokens(padded_num_tokens_),
+        persistent_param_.persistent_positions(padded_num_tokens_),
+        kv_cache,
+        graph_params_opt.value());
+
+    // Store result in persistent buffer
+    persistent_param_.set_hidden_states(forward_result);
+
+    // End graph capture
+    if (!FLAGS_force_graph_eager) {
+      graph_.capture_end();
+    }
   }
 
-  // Execute forward pass - CUDA graph will capture this
-  auto forward_result =
-      model->forward(persistent_param_.persistent_tokens(padded_num_tokens_),
-                     persistent_param_.persistent_positions(padded_num_tokens_),
-                     kv_cache,
-                     graph_params_opt.value());
+  // Stream guard will automatically restore stream when going out of scope
+  stream_guard.reset();
 
-  // Store result in persistent buffer
-  persistent_param_.set_hidden_states(forward_result);
-
-  // End graph capture
-  if (!FLAGS_force_graph_eager) {
-    graph_.capture_end();
-  }
-
-  // Restore stream if we switched it
-
-  if (need_restore_stream) {
-    c10::cuda::setCurrentCUDAStream(
-        c10::cuda::getDefaultCUDAStream(device_index_));
-  }
-  if (FLAGS_force_graph_eager) {
+  if (!is_piecewise_ && FLAGS_force_graph_eager) {
     // capture failed. next time will enter this function again.
     return false;
   }
@@ -450,7 +492,26 @@ bool CudaGraph::capture(CausalLM* model,
   // Synchronize and test replay to verify graph capture
   torch::cuda::synchronize();
 
-  graph_.replay();
+  if (is_piecewise_) {
+    // replay piecewise graph
+    CHECK(graph_params_opt->attn_metadata)
+        << "attn_metadata is required for piecewise";
+    CHECK(graph_params_opt->attn_metadata->plan_info)
+        << "plan_info is required for piecewise";
+
+    ::xllm::kernel::cuda::AttentionReplayParams replay_params;
+    replay_params.actual_num_tokens = actual_num_tokens;
+    replay_params.plan_info =
+        graph_params_opt->attn_metadata->plan_info->plan_info;
+    replay_params.q_cu_seq_lens =
+        graph_params_opt->attn_metadata->q_cu_seq_lens;
+    replay_params.kv_cu_seq_lens =
+        graph_params_opt->attn_metadata->kv_cu_seq_lens;
+
+    piecewise_graph_.replay(replay_params);
+  } else {
+    graph_.replay();
+  }
 
   LOG(INFO) << "CUDA graph capture end, bucket_num_tokens: "
             << bucket_num_tokens;
@@ -467,18 +528,53 @@ torch::Tensor CudaGraph::replay(const torch::Tensor& tokens,
       << actual_num_tokens;
 
   // Update persistent parameters with new input data
+  // This updates attn_metadata including plan_info via update_plan_info
   const torch::Tensor& k_cache = kv_cache[0].get_k_cache();
   const torch::Tensor& v_cache = kv_cache[0].get_v_cache();
-  persistent_param_.update(tokens,
-                           k_cache,
-                           v_cache,
-                           positions,
-                           params,
-                           padded_num_tokens_,
-                           /*return_capture_params=*/false);
 
-  // Replay captured graph
-  graph_.replay();
+  if (is_piecewise_) {
+    // Piecewise replay mode (for prefill)
+    // Need to get updated params with attn_metadata for attention replay
+    auto updated_params_opt =
+        persistent_param_.update(tokens,
+                                 k_cache,
+                                 v_cache,
+                                 positions,
+                                 params,
+                                 padded_num_tokens_,
+                                 /*return_capture_params=*/true);
+    CHECK(updated_params_opt.has_value())
+        << "update() should return ModelInputParams for piecewise replay";
+
+    const auto& updated_params = updated_params_opt.value();
+    CHECK(piecewise_graph_.num_runners() > 0)
+        << "Piecewise graph must have attention runners";
+    CHECK(updated_params.attn_metadata)
+        << "attn_metadata is required for piecewise replay";
+    CHECK(updated_params.attn_metadata->plan_info)
+        << "plan_info is required for piecewise replay";
+
+    // Build AttentionReplayParams from updated attn_metadata
+    ::xllm::kernel::cuda::AttentionReplayParams replay_params;
+    replay_params.actual_num_tokens = actual_num_tokens;
+    replay_params.plan_info =
+        updated_params.attn_metadata->plan_info->plan_info;
+    replay_params.q_cu_seq_lens = updated_params.attn_metadata->q_cu_seq_lens;
+    replay_params.kv_cu_seq_lens = updated_params.attn_metadata->kv_cu_seq_lens;
+
+    // Replay piecewise graphs and attention runners
+    piecewise_graph_.replay(replay_params);
+  } else {
+    // Normal replay mode (for decode)
+    persistent_param_.update(tokens,
+                             k_cache,
+                             v_cache,
+                             positions,
+                             params,
+                             padded_num_tokens_,
+                             /*return_capture_params=*/false);
+    graph_.replay();
+  }
 
   // Return only the actual num_tokens portion of hidden states
   return get_hidden_states(actual_num_tokens);
@@ -493,7 +589,8 @@ CudaGraphExecutorImpl::CudaGraphExecutorImpl(CausalLM* model,
       args_(args),
       device_(device),
       options_(options),
-      graph_pool_(at::cuda::graph_pool_handle()) {
+      graph_pool_(at::cuda::graph_pool_handle()),
+      enable_prefill_piecewise_graph_(FLAGS_enable_prefill_piecewise_graph) {
   // Create single persistent parameter object shared by all CudaGraph instances
   persistent_param_ =
       std::make_unique<CudaGraphPersistentParam>(args_, device_, options_);
@@ -508,92 +605,137 @@ torch::Tensor CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
                                          const torch::Tensor& positions,
                                          std::vector<KVCache>& kv_caches,
                                          const ModelInputParams& params) {
-  // Only use CUDA graph in decode phase for performance optimization
-  // Identify decode phase using q_max_seq_len for precise detection
-  // Decode phase: all sequences have q_seq_len == 1 (generating one token at a
-  // time) Prefill phase: sequences have q_seq_len > 1 (processing multiple
-  // prompt tokens) We also check empty_kv_cache to ensure KV cache is not empty
-  // (not first forward pass)
-  const bool in_decoding_phase = params.batch_forward_type.is_decode();
-
-  // If not in decode phase, use eager mode directly without CUDA graph
-  if (!in_decoding_phase) {
-    VLOG(kGraphExecutorLogVerboseLevel)
-        << "CudaGraphExecutorImpl::run() in eager mode";
-    COUNTER_INC(num_model_execution_total_eager);
-    return model_->forward(tokens, positions, kv_caches, params);
-  }
+  const bool is_prefill = params.batch_forward_type.is_prefill();
+  const bool is_decode = params.batch_forward_type.is_decode();
 
   // Get actual num_tokens from tokens shape
   const uint32_t n_tokens = tokens.size(/*dim=*/0);
-  const uint32_t bucket_num_tokens = get_bucket_num_tokens(n_tokens);
+  const uint32_t bucket_num_tokens =
+      get_bucket_num_tokens(n_tokens, is_prefill);
 
-  // Check if conditions are suitable for graph execution (replay or capture)
-  const auto max_seq_len = FLAGS_max_seq_len_for_graph_mode > 0
-                               ? FLAGS_max_seq_len_for_graph_mode
-                               : args_.max_position_embeddings();
-  const bool seq_len_supported = params.kv_max_seq_len <= max_seq_len;
+  // Prefill phase with piecewise graph
+  if (is_prefill && enable_prefill_piecewise_graph_) {
+    // Check if piecewise graph exists for this bucket
+    auto it = prefill_graphs_.find(bucket_num_tokens);
+    if (it != prefill_graphs_.end()) {
+      // Replay existing piecewise graph
+      VLOG(kGraphExecutorLogVerboseLevel)
+          << "CudaGraphExecutorImpl::run() in prefill piecewise replay mode";
+      return it->second->replay(tokens, positions, kv_caches, params);
+    }
 
-  // Combined condition for graph capture support
-  const bool capture_supported = seq_len_supported;
+    // Graph doesn't exist, try to create it lazily with piecewise capture
+    auto graph = std::make_unique<CudaGraph>(
+        *persistent_param_, device_.index(), /*is_piecewise=*/true);
+    VLOG(kGraphExecutorLogVerboseLevel)
+        << "CudaGraphExecutorImpl::run() in prefill piecewise capture mode";
+    bool capture_success = graph->capture(model_,
+                                          args_,
+                                          options_,
+                                          tokens,
+                                          positions,
+                                          params,
+                                          kv_caches,
+                                          bucket_num_tokens,
+                                          graph_pool_);
 
-  // Early return if conditions are not suitable for graph operations
-  if (!capture_supported) {
-    LOG(WARNING) << "Not suitable for CUDA graph operations, falling back to "
-                    "eager mode.";
+    if (capture_success) {
+      LOG(INFO) << "Lazy capturing piecewise CUDA graph for bucket num_tokens: "
+                << bucket_num_tokens << " (actual num_tokens: " << n_tokens
+                << ") done";
+
+      // Save the graph for future reuse
+      prefill_graphs_[bucket_num_tokens] = std::move(graph);
+
+      // Return the output from capture
+      return prefill_graphs_[bucket_num_tokens]->get_hidden_states(n_tokens);
+    }
+
+    // Fallback to eager mode if capture fails
+    LOG(WARNING)
+        << "Failed to capture piecewise graph, falling back to eager mode";
     COUNTER_INC(num_model_execution_total_eager);
     return model_->forward(tokens, positions, kv_caches, params);
   }
 
-  // Check if captured graph exists for this bucket num_tokens
-  auto it = graphs_.find(bucket_num_tokens);
-  if (it != graphs_.end()) {
-    // Replay the existing graph
+  // Prefill without piecewise graph: use eager mode
+  if (is_prefill) {
+    COUNTER_INC(num_model_execution_total_eager);
+    return model_->forward(tokens, positions, kv_caches, params);
+  }
+
+  // Decode phase with full graph
+  if (is_decode) {
+    // Check if conditions are suitable for graph execution (replay or capture)
+    const auto max_seq_len = FLAGS_max_seq_len_for_graph_mode > 0
+                                 ? FLAGS_max_seq_len_for_graph_mode
+                                 : args_.max_position_embeddings();
+    const bool seq_len_supported = params.kv_max_seq_len <= max_seq_len;
+
+    // Early return if conditions are not suitable for graph operations
+    if (!seq_len_supported) {
+      LOG(WARNING) << "Not suitable for CUDA graph operations, falling back to "
+                      "eager mode.";
+      COUNTER_INC(num_model_execution_total_eager);
+      return model_->forward(tokens, positions, kv_caches, params);
+    }
+
+    // Check if captured graph exists for this bucket num_tokens
+    auto it = graphs_.find(bucket_num_tokens);
+    if (it != graphs_.end()) {
+      // Replay the existing graph
+      VLOG(kGraphExecutorLogVerboseLevel)
+          << "CudaGraphExecutorImpl::run() in decode replay mode";
+      return it->second->replay(tokens, positions, kv_caches, params);
+    }
+
+    // Graph doesn't exist for this bucket num_tokens, try to create it lazily
+    auto graph =
+        std::make_unique<CudaGraph>(*persistent_param_, device_.index());
     VLOG(kGraphExecutorLogVerboseLevel)
-        << "CudaGraphExecutorImpl::run() in replay mode";
-    return it->second->replay(tokens, positions, kv_caches, params);
+        << "CudaGraphExecutorImpl::run() in decode capture mode";
+    bool capture_success = graph->capture(model_,
+                                          args_,
+                                          options_,
+                                          tokens,
+                                          positions,
+                                          params,
+                                          kv_caches,
+                                          bucket_num_tokens,
+                                          graph_pool_);
+
+    if (capture_success) {
+      LOG(INFO) << "Lazy capturing CUDA graph for bucket num_tokens: "
+                << bucket_num_tokens << " (actual num_tokens: " << n_tokens
+                << ") done";
+
+      // Save the graph for future reuse
+      graphs_[bucket_num_tokens] = std::move(graph);
+
+      // Return the output from capture (no need to replay since capture
+      // already executed)
+      return graphs_[bucket_num_tokens]->get_hidden_states(n_tokens);
+    } else if (FLAGS_force_graph_eager) {
+      return graph->get_hidden_states(n_tokens);
+    }
+
+    // Fallback to eager mode if capture fails
+    LOG(ERROR) << "Failed to capture CUDA graph for bucket num_tokens: "
+               << bucket_num_tokens;
+    COUNTER_INC(num_model_execution_total_eager);
+    return model_->forward(tokens, positions, kv_caches, params);
   }
 
-  // Graph doesn't exist for this bucket num_tokens, try to create it lazily
-  auto graph = std::make_unique<CudaGraph>(*persistent_param_, device_.index());
-  VLOG(kGraphExecutorLogVerboseLevel)
-      << "CudaGraphExecutorImpl::run() in capture mode";
-  bool capture_success = graph->capture(model_,
-                                        args_,
-                                        options_,
-                                        tokens,
-                                        positions,
-                                        params,
-                                        kv_caches,
-                                        bucket_num_tokens,
-                                        graph_pool_);
-
-  if (capture_success) {
-    LOG(INFO) << "Lazy capturing CUDA graph for bucket num_tokens: "
-              << bucket_num_tokens << " (actual num_tokens: " << n_tokens
-              << ") done";
-
-    // Save the graph for future reuse
-    graphs_[bucket_num_tokens] = std::move(graph);
-
-    // Return the output from capture (no need to replay since capture
-    // already executed)
-    return graphs_[bucket_num_tokens]->get_hidden_states(n_tokens);
-  } else if (FLAGS_force_graph_eager) {
-    return graph->get_hidden_states(n_tokens);
-  }
-
-  // Fallback to eager mode if capture fails
-  LOG(ERROR) << "Failed to capture CUDA graph for bucket num_tokens: "
-             << bucket_num_tokens;
+  // Fallback to eager for unknown batch type
   COUNTER_INC(num_model_execution_total_eager);
   return model_->forward(tokens, positions, kv_caches, params);
 }
 
 // bucket will be [1, 2, 4, 8, 16, 32, 48, 64, ..., max_seqs_per_batch]
-uint32_t CudaGraphExecutorImpl::get_bucket_num_tokens(
-    uint32_t num_tokens) const {
-  if (FLAGS_enable_graph_no_padding) {
+uint32_t CudaGraphExecutorImpl::get_bucket_num_tokens(uint32_t num_tokens,
+                                                      bool is_prefill) const {
+  // no_padding only works for decode, prefill requires padding for graph reuse
+  if (FLAGS_enable_graph_no_padding && !is_prefill) {
     return num_tokens;
   }
   if (num_tokens <= 1) {
@@ -610,4 +752,4 @@ uint32_t CudaGraphExecutorImpl::get_bucket_num_tokens(
   }
 }
 
-}  // namespace xllm
+}  // namespace xllm::runtime::cuda

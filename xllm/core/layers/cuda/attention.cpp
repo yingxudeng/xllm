@@ -18,6 +18,7 @@ limitations under the License.
 #include "core/common/global_flags.h"
 #include "flashinfer_planinfo.h"
 #include "flashinfer_workspace.h"
+#include "kernels/cuda/attention_runner.h"
 #include "kernels/cuda/function_factory.h"
 #include "kernels/cuda/utils.h"
 #include "kernels/ops_api.h"
