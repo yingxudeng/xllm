@@ -120,6 +120,10 @@ XLLM_CAPI_EXPORT bool xllm_rec_initialize(
     FLAGS_max_decode_rounds = xllm_init_options.max_decode_rounds;
     FLAGS_max_token_per_req = xllm_init_options.max_token_per_req;
     FLAGS_max_seqs_per_batch = xllm_init_options.max_seqs_per_batch;
+    FLAGS_enable_graph = true;
+    FLAGS_enable_graph_no_padding = true;
+    FLAGS_rec_worker_max_concurrency = 2;
+    FLAGS_enable_prefill_piecewise_graph = true;
 
     handler->master = std::make_unique<xllm::RecMaster>(options);
     handler->master->run();
