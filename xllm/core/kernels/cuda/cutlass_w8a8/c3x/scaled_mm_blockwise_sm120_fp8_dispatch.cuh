@@ -193,7 +193,7 @@ void cutlass_gemm_blockwise_sm120_fp8_dispatch(torch::Tensor& out,
                                                torch::Tensor const& b_scales) {
   // TODO: better heuristics
   cutlass_gemm_caller_blockwise<cutlass_3x_gemm_fp8_blockwise<
-      OutType, 1, 128, 128, Shape<_128, _128, _128>,
+      OutType, 1, 64, 64, Shape<_128, _64, _64>,
       Shape<_1, _1, _1>, cutlass::epilogue::collective::EpilogueScheduleAuto,
       cutlass::gemm::collective::KernelScheduleAuto>>(
       out, a, b, a_scales, b_scales);
