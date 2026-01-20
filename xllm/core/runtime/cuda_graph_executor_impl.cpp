@@ -418,7 +418,7 @@ bool CudaGraph::capture(CausalLM* model,
   // Begin graph capture (capture_mode defaults to cudaStreamCaptureModeGlobal)
   // Use shared pool passed from executor
   if (!FLAGS_force_graph_eager) {
-    graph_.capture_begin(pool);
+    graph_.capture_begin(pool, cudaStreamCaptureModeThreadLocal);
   }
 
   // Execute forward pass - CUDA graph will capture this
