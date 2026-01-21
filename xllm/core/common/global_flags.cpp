@@ -523,3 +523,8 @@ DEFINE_int32(max_decode_rounds,
 DEFINE_int32(beam_width, 1, "Beam width for beam search.");
 
 DEFINE_int64(max_token_per_req, 1024, "Max token per request.");
+
+DEFINE_bool(enable_xattention_two_stage_decode,
+            false,
+            "Whether to enable two-stage decode in xattention (shared uses "
+            "batch_prefill, unshared uses batch_decode).");

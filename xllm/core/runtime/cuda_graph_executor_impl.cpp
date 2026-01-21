@@ -21,6 +21,7 @@ limitations under the License.
 #include <glog/logging.h>
 #include <torch/torch.h>
 
+#include <algorithm>
 #include <numeric>
 
 #include "core/common/global_flags.h"
@@ -57,12 +58,14 @@ CudaGraphPersistentParam::CudaGraphPersistentParam(
                                   : args_.max_position_embeddings();
 
   // Create persistent tensors with max_tokens_per_batch as first dimension
-  persistent_tokens_ = torch::zeros({max_tokens_per_batch},
+  persistent_tokens_ = torch::zeros({max_tokens_per_batch * FLAGS_beam_width},
                                     torch::dtype(torch::kInt).device(device));
-  persistent_positions_ = torch::zeros(
-      {max_tokens_per_batch}, torch::dtype(torch::kInt).device(device));
-  persistent_new_cache_slots_ = torch::zeros(
-      {max_tokens_per_batch}, torch::dtype(torch::kInt).device(device));
+  persistent_positions_ =
+      torch::zeros({max_tokens_per_batch * FLAGS_beam_width},
+                   torch::dtype(torch::kInt).device(device));
+  persistent_new_cache_slots_ =
+      torch::zeros({max_tokens_per_batch * FLAGS_beam_width},
+                   torch::dtype(torch::kInt).device(device));
 
   // q_seq_lens is q_cu_seq_lens in GPU Model.
   // kv_seq_lens is kv_cu_seq_lens in GPU Model.
@@ -87,8 +90,9 @@ CudaGraphPersistentParam::CudaGraphPersistentParam(
            "dtype: float32. This should not happen in production but for test.";
     dtype = torch::kFloat32;
   }
-  hidden_states_ = torch::zeros({max_tokens_per_batch, args.hidden_size()},
-                                torch::dtype(dtype).device(device));
+  hidden_states_ = torch::zeros(
+      {max_tokens_per_batch * FLAGS_beam_width, args.hidden_size()},
+      torch::dtype(dtype).device(device));
 
   // FlashInfer decode mode parameters
   // paged_kv_indptr: shape [max_seqs_per_batch + 1]
@@ -114,6 +118,52 @@ CudaGraphPersistentParam::CudaGraphPersistentParam(
   // q_seq_lens
   persistent_chunked_prefill_qo_indptr_ = torch::zeros(
       {max_seqs_per_batch + 1}, torch::dtype(torch::kInt).device(device));
+
+  // Pre-allocate two-stage decode cache tensors (stable pointers for CUDA
+  // graph)
+  const int64_t max_total_beam = max_tokens_per_batch * FLAGS_beam_width;
+  const int64_t n_heads = args_.n_heads();
+  const int64_t head_dim = args_.head_dim();
+  auto fp32_options =
+      torch::TensorOptions().dtype(torch::kFloat32).device(device);
+  auto model_options = torch::TensorOptions().dtype(dtype).device(device);
+  auto int32_options =
+      torch::TensorOptions().dtype(torch::kInt32).device(device);
+
+  // Output tensors (shape fixed, values computed per layer)
+  persistent_two_decode_cache_.shared_lse =
+      torch::zeros({max_total_beam, n_heads, 1}, fp32_options);
+  persistent_two_decode_cache_.shared_o =
+      torch::zeros({max_total_beam, n_heads, head_dim}, model_options);
+  persistent_two_decode_cache_.unshared_lse =
+      torch::zeros({max_total_beam, n_heads, 1}, fp32_options);
+  persistent_two_decode_cache_.unshared_o =
+      torch::zeros({max_total_beam, n_heads, head_dim}, model_options);
+
+  // Fixed tensors (values updated per call)
+  // q_cu_seq_lens_shared shape is [batch_size + 1], not (batch_size + 1) *
+  // beam_width
+  persistent_two_decode_cache_.q_cu_seq_lens_shared =
+      torch::zeros({max_seqs_per_batch + 1}, int32_options);
+  persistent_two_decode_cache_.paged_kv_indptr_expanded =
+      torch::zeros({max_total_beam + 1}, int32_options);
+  persistent_two_decode_cache_.paged_kv_indices_expanded =
+      torch::zeros({max_total_beam}, int32_options);
+  persistent_two_decode_cache_.paged_kv_last_page_len_expanded =
+      torch::zeros({max_total_beam}, int32_options);
+
+  // Initialize unshared workspace buffers for two-stage decode
+  // These buffers are independent from shared stage to avoid plan_info conflict
+  if (FLAGS_enable_xattention_two_stage_decode) {
+    unshared_float_workspace_buffer_ =
+        torch::empty({FLAGS_flashinfer_workspace_buffer_size},
+                     torch::dtype(torch::kUInt8).device(device));
+    unshared_int_workspace_buffer_ = torch::empty(
+        {8 * 1024 * 1024}, torch::dtype(torch::kUInt8).device(device));
+    unshared_page_locked_int_workspace_buffer_ = torch::empty(
+        {unshared_int_workspace_buffer_.size(0)},
+        torch::dtype(torch::kUInt8).device(torch::kCPU).pinned_memory(true));
+  }
 }
 
 std::optional<ModelInputParams> CudaGraphPersistentParam::update(
@@ -140,6 +190,8 @@ std::optional<ModelInputParams> CudaGraphPersistentParam::update(
 
   const uint32_t actual_num_tokens = tokens.size(0);
   const int64_t actual_batch_size = params.paged_kv_last_page_len.numel();
+  const int64_t request_batch_size =
+      params.kv_seq_lens.defined() ? (params.kv_seq_lens.numel() - 1) : 0;
 
   // Copy data from input parameters to persistent graph tensors
   VLOG(kGraphExecutorLogVerboseLevel)
@@ -172,6 +224,31 @@ std::optional<ModelInputParams> CudaGraphPersistentParam::update(
     persistent_new_cache_slots_
         .slice(/*dim=*/0, /*start=*/0, /*end=*/actual_num_tokens)
         .copy_(params.new_cache_slots, /*non_blocking=*/true);
+  }
+
+  // Persist q/kv cu_seq_lens so CUDA graph replay can see updated values.
+  // NOTE: In step-level (PureDevice) decode, the number of tokens can be
+  // batch_size * beam_width, while q/kv cu_seq_lens are per-request (size
+  // request_batch_size + 1).
+  if (params.q_seq_lens.defined() && params.q_seq_lens.numel() > 0 &&
+      request_batch_size > 0) {
+    q_seq_lens_
+        .slice(/*dim=*/0,
+               /*start=*/0,
+               /*end=*/request_batch_size + 1)
+        .copy_(params.q_seq_lens, /*non_blocking=*/true);
+    attn_metadata->q_cu_seq_lens = q_seq_lens_.slice(
+        /*dim=*/0, /*start=*/0, /*end=*/request_batch_size + 1);
+  }
+  if (params.kv_seq_lens.defined() && params.kv_seq_lens.numel() > 0 &&
+      request_batch_size > 0) {
+    kv_seq_lens_
+        .slice(/*dim=*/0,
+               /*start=*/0,
+               /*end=*/request_batch_size + 1)
+        .copy_(params.kv_seq_lens, /*non_blocking=*/true);
+    attn_metadata->kv_cu_seq_lens = kv_seq_lens_.slice(
+        /*dim=*/0, /*start=*/0, /*end=*/request_batch_size + 1);
   }
 
   // Copy block table data
@@ -269,29 +346,153 @@ std::optional<ModelInputParams> CudaGraphPersistentParam::update(
   // qo_indptr is q_cu_seq_lens in GPU Model.
   attn_metadata->qo_indptr = persistent_decode_qo_indptr(actual_batch_size);
 
-  // Update plan_info if attn_metadata exists and enable_cuda_graph is true
-  // This ensures plan_info is updated before CUDA graph capture/replay
+  const bool enable_two_stage = FLAGS_enable_xattention_two_stage_decode;
 
-  {
+  if (enable_two_stage) {
+    const int64_t total_beam = request_batch_size * FLAGS_beam_width;
+    CHECK_GT(request_batch_size, 0)
+        << "request_batch_size must be > 0 for two-stage xattention";
+    CHECK_EQ(total_beam % request_batch_size, 0)
+        << "total_beam must be divisible by request_batch_size";
+    const int64_t beam_width = FLAGS_beam_width;
+
     // Get attention parameters from ModelArgs
-    const int32_t head_dim = args_.head_dim();
     const int64_t n_heads = args_.n_heads();
-    const int64_t n_kv_heads = args_.n_kv_heads().value_or(n_heads);
-    const int64_t block_size = options_.block_size();
+    const int32_t head_dim = args_.head_dim();
 
-    // Get sliding_window from ModelArgs (default to -1 if not available)
-    // Note: sliding_window in ModelArgs is the actual window size, but in
-    // attention it's used as window_size_left which is typically sliding_window
-    // - 1. This matches the behavior in attention.cpp where sliding_window_ is
-    // initialized as sliding_window - 1 regardless of the value.
-    int32_t sliding_window = args_.sliding_window();
-    sliding_window =
-        sliding_window - 1;  // Convert to window_size_left (always subtract 1)
+    // Get two-stage decode cache with sliced tensors from persistent buffers
+    layer::TwoStageDecodeCache cache = get_two_stage_decode_cache(
+        total_beam, request_batch_size, beam_width, n_heads, head_dim);
 
-    // Get dtype from k_cache
-    const auto dtype = k_cache.scalar_type();
+    // Update dynamic values in persistent buffers
+    // q_cu_seq_lens_shared: generate values using arange and copy to slice
+    // Shape is [request_batch_size + 1]: [0, beam_width, 2*beam_width, ...,
+    // request_batch_size*beam_width]
+    const int64_t q_cu_seq_lens_size = request_batch_size + 1;
+    auto q_cu_seq_lens_values = torch::arange(
+        0,
+        (request_batch_size + 1) * beam_width,
+        beam_width,
+        torch::TensorOptions().dtype(torch::kInt32).device(tokens.device()));
+    cache.q_cu_seq_lens_shared.copy_(q_cu_seq_lens_values,
+                                     /*non_blocking=*/true);
 
-    // Determine if causal (prefill mode) based on attn_metadata
+    // paged_kv_indptr_expanded: generate values using arange and copy to slice
+    auto paged_kv_indptr_values = torch::arange(
+        total_beam + 1,
+        torch::TensorOptions().dtype(torch::kInt32).device(tokens.device()));
+    cache.paged_kv_indptr_expanded.copy_(paged_kv_indptr_values,
+                                         /*non_blocking=*/true);
+
+    // paged_kv_indices_expanded: generate values using arange and copy to slice
+    auto paged_kv_indices_values = torch::arange(
+        total_beam,
+        torch::TensorOptions().dtype(torch::kInt32).device(tokens.device()));
+    cache.paged_kv_indices_expanded.copy_(paged_kv_indices_values,
+                                          /*non_blocking=*/true);
+
+    // paged_kv_last_page_len_expanded: fill with current_round + 1
+    // This value changes per round, so must be updated on every call (capture
+    // and replay)
+    int32_t current_round_value =
+        params.current_round.defined() && params.current_round.numel() > 0
+            ? params.current_round.item<int32_t>()
+            : 0;
+    cache.paged_kv_last_page_len_expanded.fill_(current_round_value + 1);
+
+    attn_metadata->two_stage_decode_cache = cache;
+  }
+
+  // Update plan_info only before capture. Replay does not invoke model forward,
+  // so updating plan_info here has no effect on graph replay.
+  // Get attention parameters from ModelArgs
+  const int32_t head_dim = args_.head_dim();
+  const int64_t n_heads = args_.n_heads();
+  const int64_t n_kv_heads = args_.n_kv_heads().value_or(n_heads);
+  const int64_t block_size = options_.block_size();
+
+  // Get sliding_window from ModelArgs (default to -1 if not available)
+  // Note: sliding_window in ModelArgs is the actual window size, but in
+  // attention it's used as window_size_left which is typically sliding_window
+  // - 1. This matches the behavior in attention.cpp where sliding_window_ is
+  // initialized as sliding_window - 1 regardless of the value.
+  int32_t sliding_window = args_.sliding_window();
+  sliding_window =
+      sliding_window - 1;  // Convert to window_size_left (always subtract 1)
+
+  // Get dtype from k_cache
+  const auto dtype = k_cache.scalar_type();
+
+  if (enable_two_stage) {
+    // Get cache that was already updated above
+    const layer::TwoStageDecodeCache& cache =
+        attn_metadata->two_stage_decode_cache.value();
+
+    // 1) shared stage (prefill, causal) plan
+    layer::AttentionMetadata shared_attn_meta = *attn_metadata;
+    shared_attn_meta.q_cu_seq_lens = cache.q_cu_seq_lens_shared;
+    attn_metadata->plan_info->layer_id = 0;
+    layer::flashinfer::update_plan_info(
+        attn_metadata->plan_info,
+        xllm::kernel::cuda::determine_attention_backend(
+            /*pos_encoding_mode=*/0,
+            /*use_fp16_qk_reduction=*/false,
+            /*use_custom_mask=*/false),
+        shared_attn_meta,
+        dtype,
+        dtype,
+        dtype,
+        head_dim,
+        head_dim,
+        static_cast<int32_t>(n_heads),
+        static_cast<int32_t>(n_kv_heads),
+        /*block_size*/ 1,
+        sliding_window,
+        /*enable_cuda_graph*/ true,
+        /*causal*/ true,
+        /*use_tensor_core*/ true);
+
+    // 2) unshared stage (decode, non-tensor-core) plan
+    layer::AttentionMetadata unshared_attn_meta = *attn_metadata;
+    unshared_attn_meta.plan_info = attn_metadata->unshared_plan_info;
+    unshared_attn_meta.paged_kv_indptr = cache.paged_kv_indptr_expanded;
+    unshared_attn_meta.paged_kv_indices = cache.paged_kv_indices_expanded;
+    unshared_attn_meta.paged_kv_last_page_len =
+        cache.paged_kv_last_page_len_expanded;
+    unshared_attn_meta.use_tensor_core = false;
+
+    // Use independent workspace buffer for unshared stage to avoid conflict
+    // with shared stage plan_info during CUDA graph capture
+    unshared_attn_meta.float_workspace_buffer =
+        unshared_float_workspace_buffer_;
+    unshared_attn_meta.int_workspace_buffer = unshared_int_workspace_buffer_;
+    unshared_attn_meta.page_locked_int_workspace_buffer =
+        unshared_page_locked_int_workspace_buffer_;
+
+    const int64_t max_decode_step =
+        params.unshared_k_caches.empty()
+            ? 0
+            : static_cast<int64_t>(params.unshared_k_caches[0].size(2));
+    CHECK_GT(max_decode_step, 0)
+        << "max_decode_step must be > 0 for two-stage unshared plan";
+
+    attn_metadata->unshared_plan_info->layer_id = 0;
+    layer::flashinfer::update_plan_info(attn_metadata->unshared_plan_info,
+                                        /*backend*/ "fa3",
+                                        unshared_attn_meta,
+                                        dtype,
+                                        dtype,
+                                        dtype,
+                                        head_dim,
+                                        head_dim,
+                                        static_cast<int32_t>(n_heads),
+                                        static_cast<int32_t>(n_kv_heads),
+                                        static_cast<int32_t>(max_decode_step),
+                                        sliding_window,
+                                        /*enable_cuda_graph*/ true,
+                                        /*causal*/ false,
+                                        /*use_tensor_core*/ false);
+  } else {
     // For piecewise capture (prefill), causal should be true
     // For normal capture (decode), causal should be false
     const bool causal =
@@ -348,6 +549,69 @@ std::optional<ModelInputParams> CudaGraphPersistentParam::update(
   }
 
   return std::nullopt;
+}
+
+layer::TwoStageDecodeCache CudaGraphPersistentParam::get_two_stage_decode_cache(
+    int64_t total_beam,
+    int64_t request_batch_size,
+    int64_t beam_width,
+    int64_t n_heads,
+    int64_t head_dim) const {
+  layer::TwoStageDecodeCache cache;
+
+  // Validate bounds
+  const int64_t max_total_beam = FLAGS_max_tokens_per_batch * FLAGS_beam_width;
+  CHECK_LE(total_beam, max_total_beam)
+      << "total_beam (" << total_beam << ") exceeds max_total_beam ("
+      << max_total_beam << ")";
+  const int64_t max_seqs_per_batch = options_.max_seqs_per_batch();
+  CHECK_LE(request_batch_size, max_seqs_per_batch)
+      << "request_batch_size (" << request_batch_size
+      << ") exceeds max_seqs_per_batch (" << max_seqs_per_batch << ")";
+  CHECK_LE(beam_width, FLAGS_beam_width)
+      << "beam_width (" << beam_width << ") exceeds FLAGS_beam_width ("
+      << FLAGS_beam_width << ")";
+
+  // Get sliced tensors from persistent buffers
+  cache.shared_lse = persistent_two_decode_cache_.shared_lse.slice(
+      /*dim=*/0, /*start=*/0, /*end=*/total_beam);
+  cache.shared_o = persistent_two_decode_cache_.shared_o.slice(
+      /*dim=*/0, /*start=*/0, /*end=*/total_beam);
+  cache.unshared_lse = persistent_two_decode_cache_.unshared_lse.slice(
+      /*dim=*/0, /*start=*/0, /*end=*/total_beam);
+  cache.unshared_o = persistent_two_decode_cache_.unshared_o.slice(
+      /*dim=*/0, /*start=*/0, /*end=*/total_beam);
+
+  // q_cu_seq_lens_shared: slice from persistent buffer
+  // Size is [request_batch_size + 1], not (request_batch_size + 1) * beam_width
+  const int64_t q_cu_seq_lens_size = request_batch_size + 1;
+  cache.q_cu_seq_lens_shared =
+      persistent_two_decode_cache_.q_cu_seq_lens_shared.slice(
+          /*dim=*/0, /*start=*/0, /*end=*/q_cu_seq_lens_size);
+
+  cache.paged_kv_indptr_expanded =
+      persistent_two_decode_cache_.paged_kv_indptr_expanded.slice(
+          /*dim=*/0, /*start=*/0, /*end=*/total_beam + 1);
+  cache.paged_kv_indices_expanded =
+      persistent_two_decode_cache_.paged_kv_indices_expanded.slice(
+          /*dim=*/0, /*start=*/0, /*end=*/total_beam);
+  cache.paged_kv_last_page_len_expanded =
+      persistent_two_decode_cache_.paged_kv_last_page_len_expanded.slice(
+          /*dim=*/0, /*start=*/0, /*end=*/total_beam);
+
+  // Set cached parameters
+  cache.cached_batch_size = static_cast<int32_t>(request_batch_size);
+  cache.cached_beam_size = static_cast<int32_t>(beam_width);
+  cache.cached_num_heads = static_cast<int32_t>(n_heads);
+  cache.cached_head_size = head_dim;
+
+  // Set unshared workspace buffers for CUDA graph mode
+  cache.unshared_float_workspace_buffer = unshared_float_workspace_buffer_;
+  cache.unshared_int_workspace_buffer = unshared_int_workspace_buffer_;
+  cache.unshared_page_locked_int_workspace_buffer =
+      unshared_page_locked_int_workspace_buffer_;
+
+  return cache;
 }
 
 void CudaGraph::initialize_capture_stream(c10::DeviceIndex device_index) {
