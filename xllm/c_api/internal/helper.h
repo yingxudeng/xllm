@@ -109,6 +109,24 @@ void set_init_options(BackendType backend_type,
                       XLLM_InitOptions* xllm_init_options);
 
 /**
+ * @brief Override init options from environment variables
+ * @param env_prefix Environment variable prefix (e.g., "XLLM_REC_" or
+ * "XLLM_LLM_")
+ * @param xllm_init_options Pointer to init options to override
+ */
+void override_init_options_from_env(const std::string& env_prefix,
+                                    XLLM_InitOptions* xllm_init_options);
+
+/**
+ * @brief Override global FLAGS from environment variables
+ * @param env_prefix Environment variable prefix (e.g., "XLLM_REC_" or
+ * "XLLM_LLM_")
+ * @param backend_type Backend type for REC-specific FLAGS
+ */
+void override_global_flags_from_env(const std::string& env_prefix,
+                                    BackendType backend_type);
+
+/**
  * @brief Transfer C API request params to xLLM internal request params
  */
 void transfer_request_params(InferenceType inference_type,
