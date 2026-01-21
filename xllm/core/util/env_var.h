@@ -28,7 +28,19 @@ bool get_bool_env(const std::string& key, bool defaultValue);
 // parsed.
 int64_t get_int_env(const std::string& key, int64_t defaultValue);
 
+// Get a double value from an environment variable.
+// Returns the default value if the environment variable is not set or cannot be
+// parsed.
+double get_double_env(const std::string& key, double defaultValue = -1.0);
+
+// Get a string value from an environment variable.
+// LOG(FATAL) if the environment variable is not set.
 std::string get_string_env(const std::string& name);
+
+// Get a string value from an environment variable with a default value.
+// Returns the default value if the environment variable is not set.
+std::string get_string_env_opt(const std::string& key,
+                               const std::string& defaultValue);
 
 // Get the timeout in seconds for process group test operations.
 // This timeout is used when waiting for process group initialization tests
