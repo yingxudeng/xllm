@@ -22,6 +22,9 @@ limitations under the License.
 #include "common/global_flags.h"
 #include "logits_utils.h"
 #include "sampling_params.h"
+#if defined(USE_CUDA)
+#include "kernels/cuda/cuda_ops_api.h"
+#endif
 
 namespace xllm {
 
@@ -96,8 +99,17 @@ SampleOutput Sampler::forward(torch::Tensor& logits,
     output.logprobs = selected_logprobs.view({-1});
 
     if (params.max_top_logprobs > 0) {
+#if defined(USE_CUDA)
+      auto batch_size = static_cast<uint32_t>(logprobs.size(0));
+      auto vocab_size = static_cast<uint32_t>(logprobs.size(1));
+      uint32_t k = static_cast<uint32_t>(params.max_top_logprobs);
+
+      auto [values, indices] = kernel::cuda::compute_topk_general(
+          logprobs, batch_size, vocab_size, k, logprobs.device());
+#else
       auto [values, indices] =
           logprobs.topk(params.max_top_logprobs, /*dim=*/-1);
+#endif
       output.top_logprobs = values;
       output.top_tokens = indices;
     }

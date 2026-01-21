@@ -156,4 +156,18 @@ void fused_qk_norm_rope(
     torch::Tensor& position_ids  // Position IDs for RoPE [num_tokens]
 );
 
+std::pair<torch::Tensor, torch::Tensor> compute_topk_for_beam_search(
+    torch::Tensor combined_probs,
+    uint32_t batch_size,
+    uint32_t beam_size,
+    uint32_t top_k,
+    torch::Device device);
+
+std::pair<torch::Tensor, torch::Tensor> compute_topk_general(
+    torch::Tensor input,
+    uint32_t batch_size,
+    uint32_t input_length,
+    uint32_t k,
+    torch::Device device);
+
 }  // namespace xllm::kernel::cuda
