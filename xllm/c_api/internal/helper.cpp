@@ -19,6 +19,8 @@ limitations under the License.
 #include <atomic>
 #include <string>
 
+#include "core/common/global_flags.h"
+#include "core/util/env_var.h"
 #include "core/util/uuid.h"
 
 namespace xllm {
@@ -87,6 +89,447 @@ void set_init_options(BackendType backend_type,
   }
 
   return;
+}
+
+namespace {
+// Helper function to override string field from environment variable
+void override_string_field(char* field,
+                           size_t field_size,
+                           const std::string& env_key,
+                           const char* default_value) {
+  std::string value =
+      xllm::util::get_string_env_opt(env_key, std::string(default_value));
+  strncpy(field, value.c_str(), field_size - 1);
+  field[field_size - 1] = '\0';
+}
+}  // namespace
+
+void override_init_options_from_env(const std::string& env_prefix,
+                                    XLLM_InitOptions* opts) {
+  // Boolean options
+  opts->enable_mla =
+      xllm::util::get_bool_env(env_prefix + "ENABLE_MLA", opts->enable_mla);
+  opts->enable_chunked_prefill = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_CHUNKED_PREFILL", opts->enable_chunked_prefill);
+  opts->enable_prefix_cache = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_PREFIX_CACHE", opts->enable_prefix_cache);
+  opts->enable_disagg_pd = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_DISAGG_PD", opts->enable_disagg_pd);
+  opts->enable_pd_ooc = xllm::util::get_bool_env(env_prefix + "ENABLE_PD_OOC",
+                                                 opts->enable_pd_ooc);
+  opts->enable_schedule_overlap = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_SCHEDULE_OVERLAP", opts->enable_schedule_overlap);
+  opts->enable_shm =
+      xllm::util::get_bool_env(env_prefix + "ENABLE_SHM", opts->enable_shm);
+
+  // Integer options
+  opts->transfer_listen_port = static_cast<uint32_t>(xllm::util::get_int_env(
+      env_prefix + "TRANSFER_LISTEN_PORT", opts->transfer_listen_port));
+  opts->nnodes = static_cast<uint32_t>(
+      xllm::util::get_int_env(env_prefix + "NNODES", opts->nnodes));
+  opts->node_rank = static_cast<uint32_t>(
+      xllm::util::get_int_env(env_prefix + "NODE_RANK", opts->node_rank));
+  opts->dp_size = static_cast<uint32_t>(
+      xllm::util::get_int_env(env_prefix + "DP_SIZE", opts->dp_size));
+  opts->ep_size = static_cast<uint32_t>(
+      xllm::util::get_int_env(env_prefix + "EP_SIZE", opts->ep_size));
+  opts->block_size = static_cast<uint32_t>(
+      xllm::util::get_int_env(env_prefix + "BLOCK_SIZE", opts->block_size));
+  opts->max_cache_size = static_cast<uint32_t>(xllm::util::get_int_env(
+      env_prefix + "MAX_CACHE_SIZE", opts->max_cache_size));
+  opts->max_tokens_per_batch = static_cast<uint32_t>(xllm::util::get_int_env(
+      env_prefix + "MAX_TOKENS_PER_BATCH", opts->max_tokens_per_batch));
+  opts->max_seqs_per_batch = static_cast<uint32_t>(xllm::util::get_int_env(
+      env_prefix + "MAX_SEQS_PER_BATCH", opts->max_seqs_per_batch));
+  opts->max_tokens_per_chunk_for_prefill = static_cast<uint32_t>(
+      xllm::util::get_int_env(env_prefix + "MAX_TOKENS_PER_CHUNK_FOR_PREFILL",
+                              opts->max_tokens_per_chunk_for_prefill));
+  opts->num_speculative_tokens = static_cast<uint32_t>(xllm::util::get_int_env(
+      env_prefix + "NUM_SPECULATIVE_TOKENS", opts->num_speculative_tokens));
+  opts->num_request_handling_threads = static_cast<uint32_t>(
+      xllm::util::get_int_env(env_prefix + "NUM_REQUEST_HANDLING_THREADS",
+                              opts->num_request_handling_threads));
+  opts->expert_parallel_degree = static_cast<uint32_t>(xllm::util::get_int_env(
+      env_prefix + "EXPERT_PARALLEL_DEGREE", opts->expert_parallel_degree));
+  opts->server_idx = static_cast<uint32_t>(
+      xllm::util::get_int_env(env_prefix + "SERVER_IDX", opts->server_idx));
+  opts->beam_width = static_cast<uint32_t>(
+      xllm::util::get_int_env(env_prefix + "BEAM_WIDTH", opts->beam_width));
+  opts->max_decode_rounds = static_cast<uint32_t>(xllm::util::get_int_env(
+      env_prefix + "MAX_DECODE_ROUNDS", opts->max_decode_rounds));
+  opts->max_token_per_req = static_cast<uint32_t>(xllm::util::get_int_env(
+      env_prefix + "MAX_TOKEN_PER_REQ", opts->max_token_per_req));
+
+  // Float options
+  opts->max_memory_utilization = static_cast<float>(xllm::util::get_double_env(
+      env_prefix + "MAX_MEMORY_UTILIZATION", opts->max_memory_utilization));
+
+  // String options
+  override_string_field(
+      opts->task, sizeof(opts->task), env_prefix + "TASK", opts->task);
+  override_string_field(opts->communication_backend,
+                        sizeof(opts->communication_backend),
+                        env_prefix + "COMMUNICATION_BACKEND",
+                        opts->communication_backend);
+  override_string_field(opts->device_ip,
+                        sizeof(opts->device_ip),
+                        env_prefix + "DEVICE_IP",
+                        opts->device_ip);
+  override_string_field(opts->master_node_addr,
+                        sizeof(opts->master_node_addr),
+                        env_prefix + "MASTER_NODE_ADDR",
+                        opts->master_node_addr);
+  override_string_field(opts->xservice_addr,
+                        sizeof(opts->xservice_addr),
+                        env_prefix + "XSERVICE_ADDR",
+                        opts->xservice_addr);
+  override_string_field(opts->instance_name,
+                        sizeof(opts->instance_name),
+                        env_prefix + "INSTANCE_NAME",
+                        opts->instance_name);
+  override_string_field(opts->kv_cache_transfer_mode,
+                        sizeof(opts->kv_cache_transfer_mode),
+                        env_prefix + "KV_CACHE_TRANSFER_MODE",
+                        opts->kv_cache_transfer_mode);
+  override_string_field(opts->log_dir,
+                        sizeof(opts->log_dir),
+                        env_prefix + "LOG_DIR",
+                        opts->log_dir);
+  override_string_field(opts->draft_model,
+                        sizeof(opts->draft_model),
+                        env_prefix + "DRAFT_MODEL",
+                        opts->draft_model);
+  override_string_field(opts->draft_devices,
+                        sizeof(opts->draft_devices),
+                        env_prefix + "DRAFT_DEVICES",
+                        opts->draft_devices);
+}
+
+void override_global_flags_from_env(const std::string& env_prefix,
+                                    BackendType backend_type) {
+  // Service config
+  FLAGS_host = xllm::util::get_string_env_opt(env_prefix + "HOST", FLAGS_host);
+  FLAGS_port = static_cast<int32_t>(
+      xllm::util::get_int_env(env_prefix + "PORT", FLAGS_port));
+  FLAGS_rpc_idle_timeout_s = static_cast<int32_t>(xllm::util::get_int_env(
+      env_prefix + "RPC_IDLE_TIMEOUT_S", FLAGS_rpc_idle_timeout_s));
+  FLAGS_rpc_channel_timeout_ms = static_cast<int32_t>(xllm::util::get_int_env(
+      env_prefix + "RPC_CHANNEL_TIMEOUT_MS", FLAGS_rpc_channel_timeout_ms));
+  FLAGS_max_reconnect_count = static_cast<int32_t>(xllm::util::get_int_env(
+      env_prefix + "MAX_RECONNECT_COUNT", FLAGS_max_reconnect_count));
+  FLAGS_num_threads = static_cast<int32_t>(
+      xllm::util::get_int_env(env_prefix + "NUM_THREADS", FLAGS_num_threads));
+  FLAGS_max_concurrent_requests = static_cast<int32_t>(xllm::util::get_int_env(
+      env_prefix + "MAX_CONCURRENT_REQUESTS", FLAGS_max_concurrent_requests));
+
+  // Model config
+  FLAGS_model_id =
+      xllm::util::get_string_env_opt(env_prefix + "MODEL_ID", FLAGS_model_id);
+  FLAGS_model =
+      xllm::util::get_string_env_opt(env_prefix + "MODEL", FLAGS_model);
+  FLAGS_backend =
+      xllm::util::get_string_env_opt(env_prefix + "BACKEND", FLAGS_backend);
+  FLAGS_task =
+      xllm::util::get_string_env_opt(env_prefix + "TASK_FLAG", FLAGS_task);
+  FLAGS_devices =
+      xllm::util::get_string_env_opt(env_prefix + "DEVICES", FLAGS_devices);
+  FLAGS_draft_model = xllm::util::get_string_env_opt(
+      env_prefix + "DRAFT_MODEL_FLAG", FLAGS_draft_model);
+  FLAGS_draft_devices = xllm::util::get_string_env_opt(
+      env_prefix + "DRAFT_DEVICES_FLAG", FLAGS_draft_devices);
+  FLAGS_enable_mla = xllm::util::get_bool_env(env_prefix + "ENABLE_MLA_FLAG",
+                                              FLAGS_enable_mla);
+  FLAGS_enable_customize_mla_kernel =
+      xllm::util::get_bool_env(env_prefix + "ENABLE_CUSTOMIZE_MLA_KERNEL",
+                               FLAGS_enable_customize_mla_kernel);
+
+  // Graph mode execution config
+  FLAGS_max_seq_len_for_graph_mode = static_cast<int32_t>(
+      xllm::util::get_int_env(env_prefix + "MAX_SEQ_LEN_FOR_GRAPH_MODE",
+                              FLAGS_max_seq_len_for_graph_mode));
+
+  // For REC backend, default enable graph modes
+  bool graph_default = (backend_type == BackendType::REC);
+  FLAGS_enable_graph =
+      xllm::util::get_bool_env(env_prefix + "ENABLE_GRAPH", graph_default);
+  FLAGS_enable_graph_no_padding = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_GRAPH_NO_PADDING", graph_default);
+  FLAGS_enable_prefill_piecewise_graph = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_PREFILL_PIECEWISE_GRAPH", graph_default);
+
+  // VLM config
+  FLAGS_limit_image_per_prompt = static_cast<int32_t>(xllm::util::get_int_env(
+      env_prefix + "LIMIT_IMAGE_PER_PROMPT", FLAGS_limit_image_per_prompt));
+
+  // Threading config
+  FLAGS_num_request_handling_threads = static_cast<int32_t>(
+      xllm::util::get_int_env(env_prefix + "NUM_REQUEST_HANDLING_THREADS_FLAG",
+                              FLAGS_num_request_handling_threads));
+  FLAGS_num_response_handling_threads = static_cast<int32_t>(
+      xllm::util::get_int_env(env_prefix + "NUM_RESPONSE_HANDLING_THREADS",
+                              FLAGS_num_response_handling_threads));
+
+  // KVCache config
+  FLAGS_block_size = static_cast<int32_t>(xllm::util::get_int_env(
+      env_prefix + "BLOCK_SIZE_FLAG", FLAGS_block_size));
+  FLAGS_max_cache_size = xllm::util::get_int_env(
+      env_prefix + "MAX_CACHE_SIZE_FLAG", FLAGS_max_cache_size);
+  FLAGS_max_memory_utilization = xllm::util::get_double_env(
+      env_prefix + "MAX_MEMORY_UTILIZATION_FLAG", FLAGS_max_memory_utilization);
+
+  // Scheduler config
+  FLAGS_max_tokens_per_batch = static_cast<int32_t>(xllm::util::get_int_env(
+      env_prefix + "MAX_TOKENS_PER_BATCH_FLAG", FLAGS_max_tokens_per_batch));
+  FLAGS_enable_schedule_overlap =
+      xllm::util::get_bool_env(env_prefix + "ENABLE_SCHEDULE_OVERLAP_FLAG",
+                               FLAGS_enable_schedule_overlap);
+  FLAGS_prefill_scheduling_memory_usage_threshold = xllm::util::get_double_env(
+      env_prefix + "PREFILL_SCHEDULING_MEMORY_USAGE_THRESHOLD",
+      FLAGS_prefill_scheduling_memory_usage_threshold);
+  FLAGS_enable_chunked_prefill = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_CHUNKED_PREFILL_FLAG", FLAGS_enable_chunked_prefill);
+  FLAGS_max_tokens_per_chunk_for_prefill =
+      static_cast<int32_t>(xllm::util::get_int_env(
+          env_prefix + "MAX_TOKENS_PER_CHUNK_FOR_PREFILL_FLAG",
+          FLAGS_max_tokens_per_chunk_for_prefill));
+  FLAGS_chunked_match_frequency = static_cast<int32_t>(xllm::util::get_int_env(
+      env_prefix + "CHUNKED_MATCH_FREQUENCY", FLAGS_chunked_match_frequency));
+  FLAGS_use_zero_evict = xllm::util::get_bool_env(env_prefix + "USE_ZERO_EVICT",
+                                                  FLAGS_use_zero_evict);
+  FLAGS_max_decode_token_per_sequence = static_cast<int32_t>(
+      xllm::util::get_int_env(env_prefix + "MAX_DECODE_TOKEN_PER_SEQUENCE",
+                              FLAGS_max_decode_token_per_sequence));
+  FLAGS_request_queue_size = static_cast<int32_t>(xllm::util::get_int_env(
+      env_prefix + "REQUEST_QUEUE_SIZE", FLAGS_request_queue_size));
+
+  // Parallel config
+  FLAGS_dp_size = static_cast<int32_t>(
+      xllm::util::get_int_env(env_prefix + "DP_SIZE_FLAG", FLAGS_dp_size));
+  FLAGS_ep_size = static_cast<int32_t>(
+      xllm::util::get_int_env(env_prefix + "EP_SIZE_FLAG", FLAGS_ep_size));
+  FLAGS_communication_backend = xllm::util::get_string_env_opt(
+      env_prefix + "COMMUNICATION_BACKEND_FLAG", FLAGS_communication_backend);
+
+  // EP load balance config
+  FLAGS_enable_eplb =
+      xllm::util::get_bool_env(env_prefix + "ENABLE_EPLB", FLAGS_enable_eplb);
+  FLAGS_redundant_experts_num = static_cast<int32_t>(xllm::util::get_int_env(
+      env_prefix + "REDUNDANT_EXPERTS_NUM", FLAGS_redundant_experts_num));
+  FLAGS_eplb_update_interval = xllm::util::get_int_env(
+      env_prefix + "EPLB_UPDATE_INTERVAL", FLAGS_eplb_update_interval);
+  FLAGS_eplb_update_threshold = xllm::util::get_double_env(
+      env_prefix + "EPLB_UPDATE_THRESHOLD", FLAGS_eplb_update_threshold);
+  FLAGS_expert_parallel_degree = static_cast<int32_t>(
+      xllm::util::get_int_env(env_prefix + "EXPERT_PARALLEL_DEGREE_FLAG",
+                              FLAGS_expert_parallel_degree));
+  FLAGS_rank_tablefile = xllm::util::get_string_env_opt(
+      env_prefix + "RANK_TABLEFILE", FLAGS_rank_tablefile);
+
+  // Profile config
+  FLAGS_enable_profile_step_time = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_PROFILE_STEP_TIME", FLAGS_enable_profile_step_time);
+  FLAGS_enable_profile_token_budget =
+      xllm::util::get_bool_env(env_prefix + "ENABLE_PROFILE_TOKEN_BUDGET",
+                               FLAGS_enable_profile_token_budget);
+  FLAGS_enable_latency_aware_schedule =
+      xllm::util::get_bool_env(env_prefix + "ENABLE_LATENCY_AWARE_SCHEDULE",
+                               FLAGS_enable_latency_aware_schedule);
+  FLAGS_profile_max_prompt_length = static_cast<int32_t>(
+      xllm::util::get_int_env(env_prefix + "PROFILE_MAX_PROMPT_LENGTH",
+                              FLAGS_profile_max_prompt_length));
+  FLAGS_enable_profile_kv_blocks = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_PROFILE_KV_BLOCKS", FLAGS_enable_profile_kv_blocks);
+  FLAGS_disable_ttft_profiling = xllm::util::get_bool_env(
+      env_prefix + "DISABLE_TTFT_PROFILING", FLAGS_disable_ttft_profiling);
+  FLAGS_enable_forward_interruption =
+      xllm::util::get_bool_env(env_prefix + "ENABLE_FORWARD_INTERRUPTION",
+                               FLAGS_enable_forward_interruption);
+  FLAGS_max_global_ttft_ms = static_cast<int32_t>(xllm::util::get_int_env(
+      env_prefix + "MAX_GLOBAL_TTFT_MS", FLAGS_max_global_ttft_ms));
+  FLAGS_max_global_tpot_ms = static_cast<int32_t>(xllm::util::get_int_env(
+      env_prefix + "MAX_GLOBAL_TPOT_MS", FLAGS_max_global_tpot_ms));
+
+  // Prefix cache config
+  FLAGS_enable_prefix_cache = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_PREFIX_CACHE_FLAG", FLAGS_enable_prefix_cache);
+  FLAGS_enable_cache_upload = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_CACHE_UPLOAD", FLAGS_enable_cache_upload);
+  FLAGS_murmur_hash3_seed = static_cast<uint32_t>(xllm::util::get_int_env(
+      env_prefix + "MURMUR_HASH3_SEED", FLAGS_murmur_hash3_seed));
+
+  // Multi-nodes config
+  FLAGS_master_node_addr = xllm::util::get_string_env_opt(
+      env_prefix + "MASTER_NODE_ADDR_FLAG", FLAGS_master_node_addr);
+  FLAGS_nnodes = static_cast<int32_t>(
+      xllm::util::get_int_env(env_prefix + "NNODES_FLAG", FLAGS_nnodes));
+  FLAGS_node_rank = static_cast<int32_t>(
+      xllm::util::get_int_env(env_prefix + "NODE_RANK_FLAG", FLAGS_node_rank));
+  FLAGS_enable_shm = xllm::util::get_bool_env(env_prefix + "ENABLE_SHM_FLAG",
+                                              FLAGS_enable_shm);
+  FLAGS_use_contiguous_input_buffer =
+      xllm::util::get_bool_env(env_prefix + "USE_CONTIGUOUS_INPUT_BUFFER",
+                               FLAGS_use_contiguous_input_buffer);
+
+  // Disaggregated PD config
+  FLAGS_xservice_addr = xllm::util::get_string_env_opt(
+      env_prefix + "XSERVICE_ADDR_FLAG", FLAGS_xservice_addr);
+  FLAGS_enable_disagg_pd = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_DISAGG_PD_FLAG", FLAGS_enable_disagg_pd);
+  FLAGS_enable_pd_ooc = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_PD_OOC_FLAG", FLAGS_enable_pd_ooc);
+  FLAGS_disagg_pd_port = static_cast<int32_t>(xllm::util::get_int_env(
+      env_prefix + "DISAGG_PD_PORT", FLAGS_disagg_pd_port));
+  FLAGS_instance_role = xllm::util::get_string_env_opt(
+      env_prefix + "INSTANCE_ROLE", FLAGS_instance_role);
+  FLAGS_kv_cache_transfer_type = xllm::util::get_string_env_opt(
+      env_prefix + "KV_CACHE_TRANSFER_TYPE", FLAGS_kv_cache_transfer_type);
+  FLAGS_kv_cache_transfer_mode = xllm::util::get_string_env_opt(
+      env_prefix + "KV_CACHE_TRANSFER_MODE_FLAG", FLAGS_kv_cache_transfer_mode);
+  FLAGS_npu_phy_id = static_cast<int32_t>(
+      xllm::util::get_int_env(env_prefix + "NPU_PHY_ID", FLAGS_npu_phy_id));
+  FLAGS_transfer_listen_port = static_cast<int32_t>(xllm::util::get_int_env(
+      env_prefix + "TRANSFER_LISTEN_PORT_FLAG", FLAGS_transfer_listen_port));
+
+  // Function call config
+  FLAGS_tool_call_parser = xllm::util::get_string_env_opt(
+      env_prefix + "TOOL_CALL_PARSER", FLAGS_tool_call_parser);
+
+  // Speculative config
+  FLAGS_num_speculative_tokens = static_cast<int32_t>(
+      xllm::util::get_int_env(env_prefix + "NUM_SPECULATIVE_TOKENS_FLAG",
+                              FLAGS_num_speculative_tokens));
+  FLAGS_enable_atb_spec_kernel = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_ATB_SPEC_KERNEL", FLAGS_enable_atb_spec_kernel);
+
+  // Block copy config
+  FLAGS_enable_block_copy_kernel = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_BLOCK_COPY_KERNEL", FLAGS_enable_block_copy_kernel);
+
+  // Service routing config
+  FLAGS_etcd_addr =
+      xllm::util::get_string_env_opt(env_prefix + "ETCD_ADDR", FLAGS_etcd_addr);
+  FLAGS_enable_service_routing = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_SERVICE_ROUTING", FLAGS_enable_service_routing);
+  FLAGS_heart_beat_interval = xllm::util::get_double_env(
+      env_prefix + "HEART_BEAT_INTERVAL", FLAGS_heart_beat_interval);
+  FLAGS_etcd_ttl = static_cast<int32_t>(
+      xllm::util::get_int_env(env_prefix + "ETCD_TTL", FLAGS_etcd_ttl));
+
+  // Priority strategy config
+  FLAGS_priority_strategy = xllm::util::get_string_env_opt(
+      env_prefix + "PRIORITY_STRATEGY", FLAGS_priority_strategy);
+  FLAGS_enable_online_preempt_offline =
+      xllm::util::get_bool_env(env_prefix + "ENABLE_ONLINE_PREEMPT_OFFLINE",
+                               FLAGS_enable_online_preempt_offline);
+
+  // KVCache store config
+  FLAGS_prefetch_timeout = static_cast<uint32_t>(xllm::util::get_int_env(
+      env_prefix + "PREFETCH_TIMEOUT", FLAGS_prefetch_timeout));
+  FLAGS_prefetch_bacth_size = static_cast<uint32_t>(xllm::util::get_int_env(
+      env_prefix + "PREFETCH_BATCH_SIZE", FLAGS_prefetch_bacth_size));
+  FLAGS_layers_wise_copy_batchs = static_cast<uint32_t>(xllm::util::get_int_env(
+      env_prefix + "LAYERS_WISE_COPY_BATCHS", FLAGS_layers_wise_copy_batchs));
+  FLAGS_host_blocks_factor = xllm::util::get_double_env(
+      env_prefix + "HOST_BLOCKS_FACTOR", FLAGS_host_blocks_factor);
+  FLAGS_enable_kvcache_store = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_KVCACHE_STORE", FLAGS_enable_kvcache_store);
+  FLAGS_store_protocol = xllm::util::get_string_env_opt(
+      env_prefix + "STORE_PROTOCOL", FLAGS_store_protocol);
+  FLAGS_store_master_server_address =
+      xllm::util::get_string_env_opt(env_prefix + "STORE_MASTER_SERVER_ADDRESS",
+                                     FLAGS_store_master_server_address);
+  FLAGS_store_metadata_server = xllm::util::get_string_env_opt(
+      env_prefix + "STORE_METADATA_SERVER", FLAGS_store_metadata_server);
+  FLAGS_store_local_hostname = xllm::util::get_string_env_opt(
+      env_prefix + "STORE_LOCAL_HOSTNAME", FLAGS_store_local_hostname);
+
+  // Computation communication parallel config
+  FLAGS_enable_multi_stream_parallel =
+      xllm::util::get_bool_env(env_prefix + "ENABLE_MULTI_STREAM_PARALLEL",
+                               FLAGS_enable_multi_stream_parallel);
+  FLAGS_micro_batch_num = static_cast<int32_t>(xllm::util::get_int_env(
+      env_prefix + "MICRO_BATCH_NUM", FLAGS_micro_batch_num));
+
+  // DIT config
+  FLAGS_max_requests_per_batch = static_cast<int32_t>(xllm::util::get_int_env(
+      env_prefix + "MAX_REQUESTS_PER_BATCH", FLAGS_max_requests_per_batch));
+
+  // Continuous KVCache config
+  FLAGS_enable_continuous_kvcache =
+      xllm::util::get_bool_env(env_prefix + "ENABLE_CONTINUOUS_KVCACHE",
+                               FLAGS_enable_continuous_kvcache);
+  FLAGS_phy_page_granularity_size =
+      xllm::util::get_int_env(env_prefix + "PHY_PAGE_GRANULARITY_SIZE",
+                              FLAGS_phy_page_granularity_size);
+  FLAGS_cache_size_per_token = xllm::util::get_int_env(
+      env_prefix + "CACHE_SIZE_PER_TOKEN", FLAGS_cache_size_per_token);
+  FLAGS_buffer_size_per_seq = xllm::util::get_int_env(
+      env_prefix + "BUFFER_SIZE_PER_SEQ", FLAGS_buffer_size_per_seq);
+
+  // Beam search config
+  FLAGS_enable_beam_search_kernel =
+      xllm::util::get_bool_env(env_prefix + "ENABLE_BEAM_SEARCH_KERNEL",
+                               FLAGS_enable_beam_search_kernel);
+
+  // Reasoning parser config
+  FLAGS_reasoning_parser = xllm::util::get_string_env_opt(
+      env_prefix + "REASONING_PARSER", FLAGS_reasoning_parser);
+
+  // Qwen3 reranker config
+  FLAGS_enable_qwen3_reranker = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_QWEN3_RERANKER", FLAGS_enable_qwen3_reranker);
+
+  // Flashinfer config
+  FLAGS_flashinfer_workspace_buffer_size = static_cast<int32_t>(
+      xllm::util::get_int_env(env_prefix + "FLASHINFER_WORKSPACE_BUFFER_SIZE",
+                              FLAGS_flashinfer_workspace_buffer_size));
+
+  // Prefetch weight config
+  FLAGS_enable_prefetch_weight = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_PREFETCH_WEIGHT", FLAGS_enable_prefetch_weight);
+
+  // DP load balance
+  FLAGS_enable_dp_balance = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_DP_BALANCE", FLAGS_enable_dp_balance);
+
+  // Random seed
+  FLAGS_random_seed = static_cast<int32_t>(
+      xllm::util::get_int_env(env_prefix + "RANDOM_SEED", FLAGS_random_seed));
+
+  // DIT cache config
+  FLAGS_dit_cache_policy = xllm::util::get_string_env_opt(
+      env_prefix + "DIT_CACHE_POLICY", FLAGS_dit_cache_policy);
+  FLAGS_dit_cache_warmup_steps = xllm::util::get_int_env(
+      env_prefix + "DIT_CACHE_WARMUP_STEPS", FLAGS_dit_cache_warmup_steps);
+  FLAGS_dit_cache_n_derivatives = xllm::util::get_int_env(
+      env_prefix + "DIT_CACHE_N_DERIVATIVES", FLAGS_dit_cache_n_derivatives);
+  FLAGS_dit_cache_skip_interval_steps =
+      xllm::util::get_int_env(env_prefix + "DIT_CACHE_SKIP_INTERVAL_STEPS",
+                              FLAGS_dit_cache_skip_interval_steps);
+  FLAGS_dit_cache_residual_diff_threshold = xllm::util::get_double_env(
+      env_prefix + "DIT_CACHE_RESIDUAL_DIFF_THRESHOLD",
+      FLAGS_dit_cache_residual_diff_threshold);
+
+  // Constrained decoding
+  FLAGS_enable_constrained_decoding =
+      xllm::util::get_bool_env(env_prefix + "ENABLE_CONSTRAINED_DECODING",
+                               FLAGS_enable_constrained_decoding);
+
+  // Concurrent rec worker config (REC specific, default 2 for REC)
+  uint32_t rec_worker_default = (backend_type == BackendType::REC) ? 2 : 1;
+  FLAGS_rec_worker_max_concurrency =
+      static_cast<uint32_t>(xllm::util::get_int_env(
+          env_prefix + "REC_WORKER_MAX_CONCURRENCY", rec_worker_default));
+
+  // Multi-step decode config
+  FLAGS_enable_beam_search_optimized =
+      xllm::util::get_bool_env(env_prefix + "ENABLE_BEAM_SEARCH_OPTIMIZED",
+                               FLAGS_enable_beam_search_optimized);
+
+  // XAttention config
+  FLAGS_enable_xattention_two_stage_decode = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_XATTENTION_TWO_STAGE_DECODE",
+      FLAGS_enable_xattention_two_stage_decode);
 }
 
 void transfer_request_params(InferenceType inference_type,

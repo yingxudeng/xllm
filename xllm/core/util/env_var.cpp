@@ -62,7 +62,7 @@ std::string get_string_env(const std::string& name) {
   return std::string(val);
 }
 
-double get_double_env(const std::string& key, double defaultValue = -1) {
+double get_double_env(const std::string& key, double defaultValue) {
   const char* val = std::getenv(key.c_str());
   if (val == nullptr) {
     return defaultValue;
@@ -77,6 +77,15 @@ double get_double_env(const std::string& key, double defaultValue = -1) {
     return defaultValue;
   }
   return result;
+}
+
+std::string get_string_env_opt(const std::string& key,
+                               const std::string& defaultValue) {
+  const char* val = std::getenv(key.c_str());
+  if (val == nullptr) {
+    return defaultValue;
+  }
+  return std::string(val);
 }
 
 int64_t get_process_group_test_timeout_seconds() {

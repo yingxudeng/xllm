@@ -66,6 +66,9 @@ XLLM_CAPI_EXPORT bool xllm_rec_initialize(
     xllm::helper::set_init_options(
         xllm::helper::BackendType::REC, init_options, &xllm_init_options);
 
+    // Override init options from environment variables
+    xllm::helper::override_init_options_from_env("XLLM_", &xllm_init_options);
+
     std::string log_dir(xllm_init_options.log_dir);
     if (!log_dir.empty()) {
       xllm::helper::init_log(xllm_init_options.log_dir);
@@ -116,14 +119,16 @@ XLLM_CAPI_EXPORT bool xllm_rec_initialize(
         .is_local(true)
         .server_idx(xllm_init_options.server_idx);
 
+    // FLAGS from init_options (already overridden by env vars above)
     FLAGS_beam_width = xllm_init_options.beam_width;
     FLAGS_max_decode_rounds = xllm_init_options.max_decode_rounds;
     FLAGS_max_token_per_req = xllm_init_options.max_token_per_req;
     FLAGS_max_seqs_per_batch = xllm_init_options.max_seqs_per_batch;
-    FLAGS_enable_graph = true;
-    FLAGS_enable_graph_no_padding = true;
-    FLAGS_rec_worker_max_concurrency = 2;
-    FLAGS_enable_prefill_piecewise_graph = true;
+
+    // Override global FLAGS from environment variables
+    xllm::helper::override_global_flags_from_env(
+        "XLLM_", xllm::helper::BackendType::REC);
+    options.enable_graph(FLAGS_enable_graph);
 
     handler->master = std::make_unique<xllm::RecMaster>(options);
     handler->master->run();

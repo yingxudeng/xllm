@@ -66,6 +66,9 @@ XLLM_CAPI_EXPORT bool xllm_llm_initialize(
     xllm::helper::set_init_options(
         xllm::helper::BackendType::LLM, init_options, &xllm_init_options);
 
+    // Override init options from environment variables
+    xllm::helper::override_init_options_from_env("XLLM_", &xllm_init_options);
+
     std::string log_dir(xllm_init_options.log_dir);
     if (!log_dir.empty()) {
       xllm::helper::init_log(xllm_init_options.log_dir);
@@ -114,6 +117,11 @@ XLLM_CAPI_EXPORT bool xllm_llm_initialize(
         .enable_shm(xllm_init_options.enable_shm)
         .is_local(true)
         .server_idx(xllm_init_options.server_idx);
+
+    // Override global FLAGS from environment variables
+    xllm::helper::override_global_flags_from_env(
+        "XLLM_", xllm::helper::BackendType::LLM);
+    options.enable_graph(FLAGS_enable_graph);
 
     handler->master = std::make_unique<xllm::LLMMaster>(options);
     handler->master->run();
