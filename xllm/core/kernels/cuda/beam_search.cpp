@@ -76,8 +76,8 @@ void beam_search(torch::Tensor acc_logprob,
     }
 
     const auto top_k_i64 = static_cast<int64_t>(top_k);
-    auto parent_beam = new_indices / top_k_i64;
-    auto token_in_beam = new_indices % top_k_i64;
+    auto parent_beam = (new_indices / top_k_i64).to(torch::kLong);
+    auto token_in_beam = (new_indices % top_k_i64).to(torch::kLong);
 
     auto top_tokens_reshaped = top_tokens.view({batch_size, beam_size, top_k});
 
