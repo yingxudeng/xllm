@@ -29,6 +29,7 @@ limitations under the License.
 #include "core/framework/model/causal_lm.h"
 #include "core/framework/model/model_input_params.h"
 #include "core/kernels/cuda/piecewise_graphs.h"
+#include "core/layers/common/attention_metadata.h"
 #include "executor_impl.h"
 #include "executor_impl_factory.h"
 #include "options.h"
@@ -154,6 +155,14 @@ class CudaGraphPersistentParam {
     return persistent_decode_qo_indptr_;
   }
 
+  // Get two-stage decode cache with sliced tensors from persistent buffers
+  layer::TwoStageDecodeCache get_two_stage_decode_cache(
+      int64_t total_beam,
+      int64_t request_batch_size,
+      int64_t beam_width,
+      int64_t n_heads,
+      int64_t head_dim) const;
+
  private:
   const ModelArgs& args_;
   const torch::Device& device_;
@@ -174,9 +183,16 @@ class CudaGraphPersistentParam {
   torch::Tensor persistent_paged_kv_indices_;
   torch::Tensor persistent_paged_kv_last_page_len_;
   torch::Tensor persistent_decode_qo_indptr_;
+  layer::TwoStageDecodeCache persistent_two_decode_cache_;
 
   // TODO maybe not used. or use q_cu_seq_lens instead.
   torch::Tensor persistent_chunked_prefill_qo_indptr_;
+
+  // Unshared workspace buffer for two-stage decode (avoid conflict with shared
+  // stage)
+  torch::Tensor unshared_float_workspace_buffer_;
+  torch::Tensor unshared_int_workspace_buffer_;
+  torch::Tensor unshared_page_locked_int_workspace_buffer_;
 };
 
 // CUDA graph executor using libtorch CUDAGraph for memory management

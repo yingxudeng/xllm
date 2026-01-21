@@ -255,6 +255,8 @@ DECLARE_int64(max_token_per_req);
 
 DECLARE_uint32(rec_worker_max_concurrency);
 
+DECLARE_bool(enable_xattention_two_stage_decode);
+
 #if defined(USE_NPU)
 DECLARE_string(npu_kernel_backend);
 #endif

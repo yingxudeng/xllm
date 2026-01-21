@@ -42,11 +42,8 @@ void batch_prefill(const std::string& uri,
   //             << ", dtype=" << plan_info.scalar_type()
   //             << ", uri=" << uri;
   // }
-
   std::string backend =
-      determine_attention_backend(/*pos_encoding_mode=*/0,
-                                  /*use_fp16_qk_reduction=*/false,
-                                  /*use_custom_mask=*/false);
+      (uri.find("_sm90") != std::string::npos) ? "fa3" : "fa2";
 
   if (backend == "fa2") {
     FunctionFactory::get_instance().fa2_prefill_ragged_run_func(uri).call(
