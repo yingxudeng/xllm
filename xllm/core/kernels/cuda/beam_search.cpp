@@ -3,6 +3,7 @@
 #include <torch/script.h>
 #include <torch/torch.h>
 
+#include "common/global_flags.h"
 #include "cuda.h"
 
 namespace xllm::kernel::cuda {
@@ -53,20 +54,30 @@ void beam_search(torch::Tensor acc_logprob,
     auto combined_probs =
         (acc_logprob + top_logprobs).view({batch_size, beam_size * top_k});
 
-    auto topk_result = torch::topk(combined_probs, beam_size, -1);
+    const bool enable_optimized =
+        FLAGS_enable_beam_search_optimized && FLAGS_max_decode_rounds > 0;
+    auto topk_result = torch::topk(combined_probs,
+                                   beam_size,
+                                   /*dim=*/-1,
+                                   /*largest=*/true,
+                                   /*sorted=*/!enable_optimized);
     auto new_probs = std::get<0>(topk_result);    // [batch_size, beam_size]
     auto new_indices = std::get<1>(topk_result);  // [batch_size, beam_size]
 
-    auto ordered_indices = new_indices.argsort(static_cast<int64_t>(1), false);
-    // Reorder new_probs (and corresponding new_indices) by ordered_indices to
-    // keep alignment.
-    if (current_step < total_rounds - 1) {
-      new_probs = new_probs.gather(1, ordered_indices);
-      new_indices = new_indices.gather(1, ordered_indices);
+    if (!enable_optimized) {
+      auto ordered_indices =
+          new_indices.argsort(static_cast<int64_t>(1), false);
+      // Reorder new_probs (and corresponding new_indices) by ordered_indices to
+      // keep alignment.
+      if (current_step < total_rounds - 1) {
+        new_probs = new_probs.gather(1, ordered_indices);
+        new_indices = new_indices.gather(1, ordered_indices);
+      }
     }
 
-    auto parent_beam = (new_indices / top_k).to(torch::kLong);
-    auto token_in_beam = (new_indices % top_k).to(torch::kLong);
+    const auto top_k_i64 = static_cast<int64_t>(top_k);
+    auto parent_beam = new_indices / top_k_i64;
+    auto token_in_beam = new_indices % top_k_i64;
 
     auto top_tokens_reshaped = top_tokens.view({batch_size, beam_size, top_k});
 
@@ -92,12 +103,6 @@ void beam_search(torch::Tensor acc_logprob,
             torch::TensorOptions().dtype(torch::kInt32).device(device))
             .unsqueeze(1)
             .expand({-1, beam_size});
-    auto beam_range =
-        torch::arange(
-            beam_size,
-            torch::TensorOptions().dtype(torch::kInt32).device(device))
-            .unsqueeze(0)
-            .expand({batch_size, -1});
 
     using torch::indexing::Slice;
     using torch::indexing::TensorIndex;
