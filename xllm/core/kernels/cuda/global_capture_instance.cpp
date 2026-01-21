@@ -18,9 +18,24 @@ limitations under the License.
 
 namespace xllm::runtime::cuda {
 
+// Static member definitions for thread-local instance management
+std::unordered_map<std::thread::id, std::unique_ptr<GlobalCaptureInstance>>
+    GlobalCaptureInstance::instances_;
+std::mutex GlobalCaptureInstance::instances_mutex_;
+
 GlobalCaptureInstance& GlobalCaptureInstance::get_instance() {
-  static GlobalCaptureInstance instance;
-  return instance;
+  std::thread::id tid = std::this_thread::get_id();
+  std::lock_guard<std::mutex> lock(instances_mutex_);
+
+  auto it = instances_.find(tid);
+  if (it == instances_.end()) {
+    // Lazy create instance for this thread
+    auto [new_it, inserted] = instances_.emplace(
+        tid,
+        std::unique_ptr<GlobalCaptureInstance>(new GlobalCaptureInstance()));
+    return *new_it->second;
+  }
+  return *it->second;
 }
 
 GlobalCaptureInstance::GlobalCaptureInstance() = default;

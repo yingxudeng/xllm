@@ -14,6 +14,8 @@ limitations under the License.
 
 #include <memory>
 #include <mutex>
+#include <thread>
+#include <unordered_map>
 
 namespace xllm::kernel::cuda {
 // Forward declaration
@@ -28,11 +30,12 @@ class PiecewiseGraphs;
 namespace xllm::runtime::cuda {
 
 // Global CUDA Graph Capture instance management
-// Assumption: only one capture pipeline at a time
+// Thread-safe: each thread gets its own instance via get_instance()
 // Note: Stream management should be handled by the caller (e.g.,
 // CudaGraphExecutor)
 class GlobalCaptureInstance {
  public:
+  // Returns the instance for the current thread (lazy created)
   static GlobalCaptureInstance& get_instance();
   // Begin capture: reset current_piecewise_graph_, create first graph
   void begin_capture(const decltype(at::cuda::graph_pool_handle())& pool);
@@ -57,6 +60,9 @@ class GlobalCaptureInstance {
   at::cuda::CUDAGraph* get_current_graph() { return current_graph_.get(); }
 
  private:
+  // Allow unique_ptr to call destructor
+  friend struct std::default_delete<GlobalCaptureInstance>;
+
   // Constructor and destructor must be defined in .cpp where PiecewiseGraphs
   // is complete
   GlobalCaptureInstance();
@@ -74,5 +80,11 @@ class GlobalCaptureInstance {
   std::unique_ptr<PiecewiseGraphs> current_piecewise_graph_;
   decltype(at::cuda::graph_pool_handle()) graph_pool_;
   mutable std::mutex mutex_;  // Protect capture state
+
+  // Static members for thread-local instance management
+  static std::unordered_map<std::thread::id,
+                            std::unique_ptr<GlobalCaptureInstance>>
+      instances_;
+  static std::mutex instances_mutex_;
 };
 }  // namespace xllm::runtime::cuda
