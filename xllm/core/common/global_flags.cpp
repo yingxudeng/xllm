@@ -520,6 +520,13 @@ DEFINE_int32(max_decode_rounds,
              "Maximum number of decode rounds for multi-step decoding. "
              "0 means disabled.");
 
+DEFINE_bool(enable_beam_search_optimized,
+            false,
+            "Enable optimized beam search without ordering overhead. "
+            "Removes argsort/gather and uses unsorted topk. "
+            "Only effective in rec backend with pure_device mode. "
+            "Expected 15-25% latency reduction.");
+
 DEFINE_int32(beam_width, 1, "Beam width for beam search.");
 
 DEFINE_int64(max_token_per_req, 1024, "Max token per request.");
