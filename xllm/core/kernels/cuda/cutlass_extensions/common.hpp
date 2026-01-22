@@ -45,6 +45,10 @@ inline int get_cuda_max_shared_memory_per_block_opt_in(int const device) {
 
 int32_t get_sm_version_num();
 
+// Get the number of SMs (Streaming Multiprocessors) on the current device.
+// This is used for wave efficiency calculations in GEMM dispatch.
+int32_t get_device_sm_count(int device = 0);
+
 // Kernel wrapper to guard against compilation on unsupported architectures.
 // Reduces binary size by excluding code paths that won't be executed.
 template <typename Kernel>
