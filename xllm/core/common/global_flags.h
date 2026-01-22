@@ -258,3 +258,7 @@ DECLARE_uint32(rec_worker_max_concurrency);
 #if defined(USE_NPU)
 DECLARE_string(npu_kernel_backend);
 #endif
+
+// --- qwen3 fused qk norm rope config ---
+
+DECLARE_bool(enable_qwen3_fused_qk_norm_rope_kernel);

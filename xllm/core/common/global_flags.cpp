@@ -523,3 +523,9 @@ DEFINE_int32(max_decode_rounds,
 DEFINE_int32(beam_width, 1, "Beam width for beam search.");
 
 DEFINE_int64(max_token_per_req, 1024, "Max token per request.");
+
+// --- qwen3 fused qk norm rope config ---
+
+DEFINE_bool(enable_qwen3_fused_qk_norm_rope_kernel,
+            false,
+            "Whether to enable fused qk norm rope for qwen3 model.");

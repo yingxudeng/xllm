@@ -530,6 +530,11 @@ void override_global_flags_from_env(const std::string& env_prefix,
   FLAGS_enable_xattention_two_stage_decode = xllm::util::get_bool_env(
       env_prefix + "ENABLE_XATTENTION_TWO_STAGE_DECODE",
       FLAGS_enable_xattention_two_stage_decode);
+
+  // Qwen3 fused qk norm rope config
+  FLAGS_enable_qwen3_fused_qk_norm_rope_kernel = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_QWEN3_FUSED_QK_NORM_ROPE_KERNEL",
+      FLAGS_enable_qwen3_fused_qk_norm_rope_kernel);
 }
 
 void transfer_request_params(InferenceType inference_type,
