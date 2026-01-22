@@ -39,7 +39,7 @@ void cutlass_scaled_mm_sm120(torch::Tensor& c,
                      bias,
                      cutlass_scaled_mm_sm120_fp8,
                      nullptr,  // int8 not supported on SM120
-                     cutlass_scaled_mm_blockwise_sm120_fp8);
+                     nullptr);  // blockwise not supported
 }
 
 }  // namespace xllm::kernel::cuda
