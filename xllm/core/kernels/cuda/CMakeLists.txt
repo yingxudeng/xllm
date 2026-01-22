@@ -26,6 +26,8 @@ set(CUDA_HEADER_FILES
   cuda_ops_api.h
   cutlass_w8a8/c3x/cutlass_gemm_caller.cuh
   cutlass_w8a8/c3x/scaled_mm.cuh
+  cutlass_w8a8/c3x/sm120_fp8_kernel_configs.cuh
+  cutlass_w8a8/c3x/sm120_fp8_dispatch_policy.hpp
   cutlass_w8a8/c3x/scaled_mm_sm100_fp8_dispatch.cuh
   cutlass_w8a8/c3x/scaled_mm_sm120_fp8_dispatch.cuh
   cutlass_w8a8/c3x/scaled_mm_sm90_fp8_dispatch.cuh
@@ -173,3 +175,27 @@ cc_test(
     glog::glog
 )
 target_link_libraries(fp8_quant_test PRIVATE brpc)
+
+# Keep CUDA benchmarks behind a plain CMake cache option instead of adding
+# another dedicated argument in `setup.py`.
+#
+# Why:
+# - `setup.py` already forwards arbitrary CMake definitions from the
+#   `CMAKE_ARGS` environment variable, so adding a new Python-side flag would
+#   duplicate the existing mechanism.
+# - Most normal builds do not need benchmark binaries, so the default stays
+#   `OFF` and users enable it only when they really want to build them.
+#
+# Simplest way to build benchmarks:
+# 1. From the repo root, run:
+#      CMAKE_ARGS="-DBUILD_CUDA_BENCHMARKS=ON" python setup.py build test
+# 2. This is enough: `build test` builds `all_tests`, and when
+#    `BUILD_CUDA_BENCHMARKS=ON` the benchmark binaries are added to
+#    `all_tests` as build dependencies.
+# 3. If the build directory was configured before with this option `OFF`, the
+#    old value is cached. Re-run the same command, or delete `CMakeCache.txt`
+#    / the build directory before rebuilding.
+option(BUILD_CUDA_BENCHMARKS "Build CUDA kernel benchmarks" OFF)
+if(BUILD_CUDA_BENCHMARKS)
+  add_subdirectory(benchmarks)
+endif()

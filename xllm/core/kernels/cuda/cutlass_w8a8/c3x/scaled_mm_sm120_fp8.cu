@@ -16,11 +16,8 @@
 // ref to:
 // https://github.com/vllm-project/vllm/blob/main/csrc/quantization/cutlass_w8a8/c3x/scaled_mm_sm120_fp8.cu
 
-// clang-format off
 #include "scaled_mm_kernels.hpp"
 #include "scaled_mm_sm120_fp8_dispatch.cuh"
-#include "cutlass_extensions/epilogue/scaled_mm_epilogues_c3x.hpp"
-// clang-format on
 
 namespace xllm {
 namespace kernel {
@@ -37,10 +34,10 @@ void cutlass_scaled_mm_sm120_fp8(torch::Tensor& out,
     TORCH_CHECK(bias->dtype() == out.dtype(),
                 "currently bias dtype must match output dtype ",
                 out.dtype());
-    return cutlass_scaled_mm_sm120_fp8_epilogue<c3x::ScaledEpilogueBias>(
+    return cutlass_scaled_mm_sm120_fp8_epilogue<true>(
         out, a, b, a_scales, b_scales, *bias);
   } else {
-    return cutlass_scaled_mm_sm120_fp8_epilogue<c3x::ScaledEpilogue>(
+    return cutlass_scaled_mm_sm120_fp8_epilogue<false>(
         out, a, b, a_scales, b_scales);
   }
 }
