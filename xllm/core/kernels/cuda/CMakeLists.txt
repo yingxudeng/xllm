@@ -30,8 +30,9 @@ file(GLOB_RECURSE CUDA_SOURCE_FILES
   "${CMAKE_CURRENT_LIST_DIR}/*.cu"
 )
 
-# Exclude test files from source list (tests are built separately)
+# Exclude test and benchmark files from source list (they are built separately)
 list(FILTER CUDA_SOURCE_FILES EXCLUDE REGEX ".*/tests/.*")
+list(FILTER CUDA_SOURCE_FILES EXCLUDE REGEX ".*/benchmarks/.*")
 
 cc_library(
   NAME
@@ -86,3 +87,4 @@ cc_test(
 )
 target_link_libraries(cache_select_test PRIVATE brpc)
 add_subdirectory(tests)
+add_subdirectory(benchmarks)
