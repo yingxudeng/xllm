@@ -183,15 +183,15 @@ class CudaGraphPersistentParam {
 class CudaGraph {
  public:
   // is_piecewise: if true, use piecewise graph capture for prefill
+  // capture_stream: the stream to use for CUDA graph capture
   explicit CudaGraph(CudaGraphPersistentParam& persistent_param,
                      c10::DeviceIndex device_index,
+                     c10::cuda::CUDAStream capture_stream,
                      bool is_piecewise = false)
       : persistent_param_(persistent_param),
         device_index_(device_index),
-        is_piecewise_(is_piecewise) {
-    // Initialize capture stream in constructor
-    initialize_capture_stream(device_index);
-  }
+        capture_stream_(capture_stream),
+        is_piecewise_(is_piecewise) {}
 
   // Capture computation graph for given bucket num_tokens
   bool capture(CausalLM* model,
@@ -202,7 +202,7 @@ class CudaGraph {
                const ModelInputParams& params,
                std::vector<KVCache>& kv_cache,
                uint32_t bucket_num_tokens,
-               const decltype(at::cuda::graph_pool_handle())& pool);
+               const at::cuda::MempoolId_t& pool);
 
   // Replay captured graph with new input data
   torch::Tensor replay(const torch::Tensor& tokens,
@@ -219,9 +219,6 @@ class CudaGraph {
   // Print graph held tensors for debugging
   void print_graph_tensors() const;
 
-  // Initialize capture stream if not already initialized
-  void initialize_capture_stream(c10::DeviceIndex device_index);
-
   // CUDA graph for capturing and replaying (decode mode)
   at::cuda::CUDAGraph graph_;
   // Piecewise graphs for prefill mode
@@ -235,8 +232,8 @@ class CudaGraph {
   // instances)
   CudaGraphPersistentParam& persistent_param_;
 
-  // Cached capture stream, initialized on first capture
-  std::optional<c10::cuda::CUDAStream> capture_stream_;
+  // CUDA stream for graph capture (reference, owned by CudaGraphExecutorImpl)
+  c10::cuda::CUDAStream capture_stream_;
   c10::DeviceIndex device_index_;
 };
 
@@ -276,9 +273,6 @@ class CudaGraphExecutorImpl : public ExecutorImpl {
   // Persistent parameters shared across all CudaGraph instances
   std::unique_ptr<CudaGraphPersistentParam> persistent_param_;
 
-  // CUDA graph memory pool shared across all CudaGraph instances
-  decltype(at::cuda::graph_pool_handle()) graph_pool_;
-
   // Whether to enable prefill piecewise graph
   bool enable_prefill_piecewise_graph_;
 
@@ -288,6 +282,17 @@ class CudaGraphExecutorImpl : public ExecutorImpl {
   // When is_prefill=true, no_padding is disabled (prefill requires padding)
   uint32_t get_bucket_num_tokens(uint32_t num_tokens,
                                  bool is_prefill = false) const;
+
+  // Get CUDA graph memory pool for current thread
+  // Each thread automatically gets its own graph memory pool
+  // Maximum number of pools is limited by FLAGS_rec_worker_max_concurrency
+  static at::cuda::MempoolId_t get_mem_pool();
+
+  // Get CUDA capture stream for current thread
+  // Each thread automatically gets its own high-priority capture stream
+  // Returns the stream and device index
+  static c10::cuda::CUDAStream get_capture_stream(
+      c10::DeviceIndex device_index);
 };
 REGISTER_EXECUTOR("cuda", CudaGraphExecutorImpl);
 }  // namespace xllm::runtime::cuda

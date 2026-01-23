@@ -22,6 +22,7 @@ limitations under the License.
 #include <torch/torch.h>
 
 #include <numeric>
+#include <thread>
 
 #include "core/common/global_flags.h"
 #include "core/common/metrics.h"
@@ -147,11 +148,85 @@ std::optional<ModelInputParams> CudaGraphPersistentParam::update(
       << actual_num_tokens << "]";
   persistent_tokens_.slice(/*dim=*/0, /*start=*/0, /*end=*/actual_num_tokens)
       .copy_(tokens, /*non_blocking=*/true);
+
+  // Zero out padding region for tokens to avoid stale data
+  // This is needed for both capture and replay when using padded tensors
+  if (padded_num_tokens > actual_num_tokens) {
+    VLOG(kGraphExecutorLogVerboseLevel)
+        << "fill_ tokens padding: [" << actual_num_tokens << ", "
+        << padded_num_tokens << "] with 0";
+    persistent_tokens_
+        .slice(
+            /*dim=*/0, /*start=*/actual_num_tokens, /*end=*/padded_num_tokens)
+        .fill_(0);
+  }
+
   VLOG(kGraphExecutorLogVerboseLevel)
       << "copy_ positions: src shape=" << positions.sizes()
       << ", dst slice shape=[" << actual_num_tokens << "]";
   persistent_positions_.slice(/*dim=*/0, /*start=*/0, /*end=*/actual_num_tokens)
       .copy_(positions, /*non_blocking=*/true);
+
+  // Zero out padding region for positions to avoid index out-of-bounds errors
+  // This is critical: stale position values can exceed vocabulary size
+  // Needed for both capture and replay when using padded tensors
+  if (padded_num_tokens > actual_num_tokens) {
+    VLOG(kGraphExecutorLogVerboseLevel)
+        << "fill_ positions padding: [" << actual_num_tokens << ", "
+        << padded_num_tokens << "] with 0";
+    persistent_positions_
+        .slice(
+            /*dim=*/0, /*start=*/actual_num_tokens, /*end=*/padded_num_tokens)
+        .fill_(0);
+  }
+
+  // Validate tokens and positions range only when verbose logging is enabled
+  // to avoid CPU synchronization overhead in production
+  if (VLOG_IS_ON(10) && padded_num_tokens > 0) {
+    // Validate tokens range to detect out-of-bounds before embedding lookup
+    auto tokens_cpu = persistent_tokens_.slice(0, 0, padded_num_tokens).cpu();
+    auto tokens_min = tokens_cpu.min().item<int32_t>();
+    auto tokens_max = tokens_cpu.max().item<int32_t>();
+    auto vocab_size = args_.vocab_size();
+
+    if (tokens_min < 0 || tokens_max >= vocab_size) {
+      LOG(ERROR) << "Token index out of bounds detected! "
+                 << "min_token=" << tokens_min << ", max_token=" << tokens_max
+                 << ", valid_range=[0, " << vocab_size - 1 << "]"
+                 << ", actual_num_tokens=" << actual_num_tokens
+                 << ", padded_num_tokens=" << padded_num_tokens;
+
+      // Clamp to valid range [0, vocab_size - 1]
+      persistent_tokens_.slice(0, 0, padded_num_tokens)
+          .clamp_(0, vocab_size - 1);
+
+      LOG(WARNING) << "Clamped tokens to valid range [0, " << vocab_size - 1
+                   << "]";
+    }
+
+    // Validate positions range similarly
+    auto positions_cpu =
+        persistent_positions_.slice(0, 0, padded_num_tokens).cpu();
+    auto positions_min = positions_cpu.min().item<int32_t>();
+    auto positions_max = positions_cpu.max().item<int32_t>();
+    auto max_position = args_.max_position_embeddings();
+
+    if (positions_min < 0 || positions_max >= max_position) {
+      LOG(ERROR) << "Position index out of bounds detected! "
+                 << "min_position=" << positions_min
+                 << ", max_position=" << positions_max << ", valid_range=[0, "
+                 << max_position - 1 << "]"
+                 << ", actual_num_tokens=" << actual_num_tokens
+                 << ", padded_num_tokens=" << padded_num_tokens;
+
+      // Clamp to valid range [0, max_position - 1]
+      persistent_positions_.slice(0, 0, padded_num_tokens)
+          .clamp_(0, max_position - 1);
+
+      LOG(WARNING) << "Clamped positions to valid range [0, "
+                   << max_position - 1 << "]";
+    }
+  }
 
   // q_seq_lens is q_cu_seq_lens in GPU Model.
   // kv_seq_lens is kv_cu_seq_lens in GPU Model.
@@ -172,6 +247,18 @@ std::optional<ModelInputParams> CudaGraphPersistentParam::update(
     persistent_new_cache_slots_
         .slice(/*dim=*/0, /*start=*/0, /*end=*/actual_num_tokens)
         .copy_(params.new_cache_slots, /*non_blocking=*/true);
+
+    // Zero out padding region for new_cache_slots to avoid stale data
+    // Needed for both capture and replay when using padded tensors
+    if (padded_num_tokens > actual_num_tokens) {
+      VLOG(kGraphExecutorLogVerboseLevel)
+          << "fill_ new_cache_slots padding: [" << actual_num_tokens << ", "
+          << padded_num_tokens << "] with 0";
+      persistent_new_cache_slots_
+          .slice(
+              /*dim=*/0, /*start=*/actual_num_tokens, /*end=*/padded_num_tokens)
+          .fill_(0);
+    }
   }
 
   // Copy block table data
@@ -350,20 +437,6 @@ std::optional<ModelInputParams> CudaGraphPersistentParam::update(
   return std::nullopt;
 }
 
-void CudaGraph::initialize_capture_stream(c10::DeviceIndex device_index) {
-  // Get a secondary stream from high-priority pool for graph capture.
-  // This is required because CUDA graphs must be captured on a non-default
-  // stream. Use xllm's Device interface to get stream, but we need high
-  // priority, so we use the underlying CUDA API directly (which is what Stream
-  // uses internally) Note: Stream class doesn't expose a getter for CUDAStream,
-  // and Device::get_stream_from_pool doesn't support high priority, so we use
-  // the underlying API that Stream uses internally.
-  capture_stream_ = c10::cuda::getStreamFromPool(true, device_index);
-  device_index_ = device_index;
-  LOG(INFO) << "Initialized capture_stream: " << capture_stream_.value()
-            << ", device_index: " << device_index;
-}
-
 // CudaGraph implementation
 bool CudaGraph::capture(CausalLM* model,
                         const ModelArgs& args,
@@ -373,7 +446,7 @@ bool CudaGraph::capture(CausalLM* model,
                         const ModelInputParams& params,
                         std::vector<KVCache>& kv_cache,
                         uint32_t bucket_num_tokens,
-                        const decltype(at::cuda::graph_pool_handle())& pool) {
+                        const at::cuda::MempoolId_t& pool) {
   padded_num_tokens_ = bucket_num_tokens;
   const uint32_t actual_num_tokens = tokens.size(0);
   CHECK_GE(padded_num_tokens_, actual_num_tokens)
@@ -402,8 +475,7 @@ bool CudaGraph::capture(CausalLM* model,
             << bucket_num_tokens << ", actual_num_tokens: " << actual_num_tokens
             << ", is_piecewise: " << is_piecewise_;
 
-  // Use cached capture stream for graph capture
-  // capture_stream_ is initialized in constructor
+  // Use capture stream for graph capture (managed by CudaGraphExecutorImpl)
   // Use optional CUDAStreamGuard for RAII-based stream management
   std::optional<c10::cuda::CUDAStreamGuard> stream_guard;
 
@@ -411,8 +483,8 @@ bool CudaGraph::capture(CausalLM* model,
   if (c10::cuda::getCurrentCUDAStream(device_index_) ==
       c10::cuda::getDefaultCUDAStream(device_index_)) {
     c10::cuda::getCurrentCUDAStream(device_index_).synchronize();
-    capture_stream_.value().synchronize();
-    stream_guard.emplace(capture_stream_.value());
+    capture_stream_.synchronize();
+    stream_guard.emplace(capture_stream_);
   }
 
   if (is_piecewise_) {
@@ -589,11 +661,54 @@ CudaGraphExecutorImpl::CudaGraphExecutorImpl(CausalLM* model,
       args_(args),
       device_(device),
       options_(options),
-      graph_pool_(at::cuda::graph_pool_handle()),
       enable_prefill_piecewise_graph_(FLAGS_enable_prefill_piecewise_graph) {
   // Create single persistent parameter object shared by all CudaGraph instances
   persistent_param_ =
       std::make_unique<CudaGraphPersistentParam>(args_, device_, options_);
+}
+
+// Static method to get graph memory pool for current thread
+// Each thread gets its own graph memory pool, similar to
+// GlobalCaptureInstance::get_instance()
+at::cuda::MempoolId_t CudaGraphExecutorImpl::get_mem_pool() {
+  // Use thread_local to ensure each thread has its own graph pool
+  // This follows the same pattern as GlobalCaptureInstance::get_instance()
+  // but provides per-thread instances instead of a global singleton
+  thread_local at::cuda::MempoolId_t thread_graph_pool =
+      at::cuda::graph_pool_handle();
+
+  // Thread-local counter to log initialization only once per thread
+  thread_local bool initialized = false;
+  if (!initialized) {
+    LOG(INFO) << "Initialized graph_pool for thread: "
+              << std::this_thread::get_id();
+    initialized = true;
+  }
+
+  return thread_graph_pool;
+}
+
+// Static method to get CUDA capture stream for current thread
+// Each thread gets its own high-priority capture stream
+c10::cuda::CUDAStream CudaGraphExecutorImpl::get_capture_stream(
+    c10::DeviceIndex device_index) {
+  // Use thread_local to ensure each thread has its own capture stream
+  // This is required because CUDA graphs must be captured on a non-default
+  // stream. We use high-priority streams for better performance.
+  thread_local c10::cuda::CUDAStream thread_capture_stream =
+      c10::cuda::getStreamFromPool(/*isHighPriority=*/true, device_index);
+
+  // Thread-local counter to log initialization only once per thread
+  thread_local bool initialized = false;
+  if (!initialized) {
+    LOG(INFO) << "Initialized capture_stream for thread: "
+              << std::this_thread::get_id()
+              << ", stream: " << thread_capture_stream
+              << ", device_index: " << device_index;
+    initialized = true;
+  }
+
+  return thread_capture_stream;
 }
 
 ForwardInput CudaGraphExecutorImpl::prepare_inputs(Batch& batch) {
@@ -625,8 +740,11 @@ torch::Tensor CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
     }
 
     // Graph doesn't exist, try to create it lazily with piecewise capture
-    auto graph = std::make_unique<CudaGraph>(
-        *persistent_param_, device_.index(), /*is_piecewise=*/true);
+    auto graph =
+        std::make_unique<CudaGraph>(*persistent_param_,
+                                    device_.index(),
+                                    get_capture_stream(device_.index()),
+                                    /*is_piecewise=*/true);
     VLOG(kGraphExecutorLogVerboseLevel)
         << "CudaGraphExecutorImpl::run() in prefill piecewise capture mode";
     bool capture_success = graph->capture(model_,
@@ -637,7 +755,7 @@ torch::Tensor CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
                                           params,
                                           kv_caches,
                                           bucket_num_tokens,
-                                          graph_pool_);
+                                          get_mem_pool());
 
     if (capture_success) {
       LOG(INFO) << "Lazy capturing piecewise CUDA graph for bucket num_tokens: "
@@ -691,7 +809,9 @@ torch::Tensor CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
 
     // Graph doesn't exist for this bucket num_tokens, try to create it lazily
     auto graph =
-        std::make_unique<CudaGraph>(*persistent_param_, device_.index());
+        std::make_unique<CudaGraph>(*persistent_param_,
+                                    device_.index(),
+                                    get_capture_stream(device_.index()));
     VLOG(kGraphExecutorLogVerboseLevel)
         << "CudaGraphExecutorImpl::run() in decode capture mode";
     bool capture_success = graph->capture(model_,
@@ -702,7 +822,7 @@ torch::Tensor CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
                                           params,
                                           kv_caches,
                                           bucket_num_tokens,
-                                          graph_pool_);
+                                          get_mem_pool());
 
     if (capture_success) {
       LOG(INFO) << "Lazy capturing CUDA graph for bucket num_tokens: "

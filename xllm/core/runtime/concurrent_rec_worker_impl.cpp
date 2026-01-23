@@ -91,6 +91,8 @@ bool ConcurrentRecWorkerImpl::init_model(ModelContext& context) {
     auto worker_pipeline = create_concurrent_pipeline(pipeline_type, *this);
 
     auto stream = device_.get_stream_from_pool();
+    LOG(INFO) << "Created stream for pipeline " << i << " on device "
+              << device_.index() << ", stream: " << *stream;
     worker_pipeline->stream_ = std::move(stream);
     auto stream_guard = worker_pipeline->stream_->set_stream_guard();
 
