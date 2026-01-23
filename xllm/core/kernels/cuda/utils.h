@@ -72,4 +72,25 @@ std::string get_batch_decode_uri(torch::ScalarType dtype_q,
                                  bool use_sliding_window,
                                  bool use_logits_soft_cap);
 
+// Debug logging functions for flashinfer prefill
+void debug_log_prefill_inputs(
+    const std::string& uri,
+    const torch::Tensor& plan_info,
+    const torch::Tensor& float_workspace_buffer,
+    const torch::Tensor& int_workspace_buffer,
+    const torch::Tensor& page_locked_int_workspace_buffer,
+    const torch::Tensor& query,
+    const torch::Tensor& key,
+    const torch::Tensor& value,
+    const torch::Tensor& q_cu_seq_lens,
+    const torch::Tensor& kv_cu_seq_lens,
+    int64_t window_left,
+    bool is_causal);
+
+void debug_dump_pinned_schedule(const std::string& uri,
+                                const torch::Tensor& plan_tensor,
+                                const torch::Tensor& pinned_int_ws,
+                                const torch::Tensor& qo_indptr_host,
+                                const torch::Tensor& kv_indptr_host);
+
 }  // namespace xllm::kernel::cuda

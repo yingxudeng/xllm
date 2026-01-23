@@ -15,7 +15,11 @@ limitations under the License.
 
 #include "flashinfer_planinfo.h"
 
+#include <cuda_runtime.h>
 #include <glog/logging.h>
+
+#include <atomic>
+#include <sstream>
 
 #include "core/common/global_flags.h"
 #include "core/util/utils.h"
@@ -96,65 +100,121 @@ void update_plan_info(std::shared_ptr<PlanInfo> plan_info,
   } else {
     // 2. decode plan info
     if (use_tensor_core) {
-      plan_info->uri = kernel::cuda::get_batch_prefill_uri(
-          /*backend=*/"fa2",
-          query_dtype,
-          key_dtype,
-          output_dtype,
-          attn_meta.paged_kv_indptr.scalar_type(),
-          head_dim_qk,
-          head_dim_vo,
-          /*pos_encoding_mode=*/0,
-          /*use_sliding_window=*/false,
-          /*use_logits_soft_cap=*/false,
-          /*use_fp16_qk_reduction=*/false);
-      const int64_t batch_size = attn_meta.paged_kv_last_page_len.size(0);
-      torch::Tensor qo_indptr_host =
-          kernel::cuda::get_cache_buffer(batch_size + 1, torch::kCPU);
-      torch::Tensor qo_indptr = qo_indptr_host.to(torch::kCUDA);
-      torch::Tensor paged_kv_indptr_host =
-          attn_meta.paged_kv_indptr.to(torch::kCPU);
-      torch::Tensor kv_len_arr_host = attn_meta.kv_seq_lens.to(torch::kCPU);
-      if (VLOG_IS_ON(kGraphExecutorLogVerboseLevel)) {
-        VLOG(kGraphExecutorLogVerboseLevel)
-            << "use_tensor_core: " << use_tensor_core;
-        VLOG(kGraphExecutorLogVerboseLevel) << "batch_size: " << batch_size;
-        VLOG(kGraphExecutorLogVerboseLevel)
-            << "qo_indptr_host: " << qo_indptr_host;
-        VLOG(kGraphExecutorLogVerboseLevel)
-            << "paged_kv_indptr_host: " << paged_kv_indptr_host;
-        VLOG(kGraphExecutorLogVerboseLevel)
-            << "kv_len_arr_host: " << kv_len_arr_host;
-        VLOG(kGraphExecutorLogVerboseLevel)
-            << "enable_cuda_graph: " << enable_cuda_graph;
-        VLOG(kGraphExecutorLogVerboseLevel) << "head_dim_qk: " << head_dim_qk;
-        VLOG(kGraphExecutorLogVerboseLevel) << "head_dim_vo: " << head_dim_vo;
-        VLOG(kGraphExecutorLogVerboseLevel) << "num_qo_heads: " << num_qo_heads;
-        VLOG(kGraphExecutorLogVerboseLevel) << "num_kv_heads: " << num_kv_heads;
-        VLOG(kGraphExecutorLogVerboseLevel) << "block_size: " << block_size;
-        VLOG(kGraphExecutorLogVerboseLevel)
-            << "window_size_left: " << window_size_left;
-        VLOG(kGraphExecutorLogVerboseLevel) << "query_dtype: " << query_dtype;
-        VLOG(kGraphExecutorLogVerboseLevel) << "key_dtype: " << key_dtype;
+      if (FLAGS_enable_xattention_two_stage_decode) {
+        plan_info->uri = kernel::cuda::get_batch_prefill_uri(
+            backend,
+            query_dtype,
+            key_dtype,
+            output_dtype,
+            attn_meta.q_cu_seq_lens.scalar_type(),
+            head_dim_qk,
+            head_dim_vo,
+            /*pos_encoding_mode=*/0,
+            /*use_sliding_window=*/false,
+            /*use_logits_soft_cap=*/false,
+            /*use_fp16_qk_reduction=*/false);
+        torch::Tensor qo_indptr_host = attn_meta.q_cu_seq_lens.to(torch::kCPU);
+        torch::Tensor kv_cu_seq_lens_host =
+            attn_meta.kv_cu_seq_lens.to(torch::kCPU);
+        torch::Tensor kv_len_arr_host = kv_cu_seq_lens_host.slice(0, 1) -
+                                        kv_cu_seq_lens_host.slice(0, 0, -1);
+        const int64_t total_num_rows = qo_indptr_host[-1].item<int64_t>();
+        const int64_t batch_size = qo_indptr_host.size(0) - 1;
+        plan_info->plan_info =
+            kernel::cuda::FunctionFactory::get_instance()
+                .fa2_prefill_plan_func(plan_info->uri)
+                .call(attn_meta.float_workspace_buffer,
+                      attn_meta.int_workspace_buffer,
+                      attn_meta.page_locked_int_workspace_buffer,
+                      qo_indptr_host,
+                      kv_cu_seq_lens_host,
+                      kv_len_arr_host,
+                      total_num_rows,  // total_num_rows
+                      batch_size,
+                      num_qo_heads,  // num_qo_heads
+                      num_kv_heads,  // num_kv_heads
+                      block_size,    // block_size
+                      enable_cuda_graph,
+                      head_dim_qk,  // head_dim_qk
+                      head_dim_vo,  // head_dim_vo
+                      /*causal=*/false);
+        cudaError_t st = cudaDeviceSynchronize();
+        CHECK(st == cudaSuccess)
+            << "cudaDeviceSynchronize failed after flashinfer prefill plan: "
+            << cudaGetErrorString(st);
+        // Debug: dump scheduler metadata from pinned (host) workspace right
+        // after plan().
+        if (VLOG_IS_ON(KXAttentionLogVerboseLevel)) {
+          kernel::cuda::debug_dump_pinned_schedule(
+              plan_info->uri,
+              plan_info->plan_info,
+              attn_meta.page_locked_int_workspace_buffer,
+              qo_indptr_host,
+              kv_cu_seq_lens_host);
+        }
+      } else {
+        plan_info->uri = kernel::cuda::get_batch_prefill_uri(
+            /*backend=*/"fa2",
+            query_dtype,
+            key_dtype,
+            output_dtype,
+            attn_meta.paged_kv_indptr.scalar_type(),
+            head_dim_qk,
+            head_dim_vo,
+            /*pos_encoding_mode=*/0,
+            /*use_sliding_window=*/false,
+            /*use_logits_soft_cap=*/false,
+            /*use_fp16_qk_reduction=*/false);
+        const int64_t batch_size = attn_meta.paged_kv_last_page_len.size(0);
+        torch::Tensor qo_indptr_host =
+            kernel::cuda::get_cache_buffer(batch_size + 1, torch::kCPU);
+        torch::Tensor qo_indptr = qo_indptr_host.to(torch::kCUDA);
+        torch::Tensor paged_kv_indptr_host =
+            attn_meta.paged_kv_indptr.to(torch::kCPU);
+        torch::Tensor kv_len_arr_host = attn_meta.kv_seq_lens.to(torch::kCPU);
+        if (VLOG_IS_ON(kGraphExecutorLogVerboseLevel)) {
+          VLOG(kGraphExecutorLogVerboseLevel)
+              << "use_tensor_core: " << use_tensor_core;
+          VLOG(kGraphExecutorLogVerboseLevel) << "batch_size: " << batch_size;
+          VLOG(kGraphExecutorLogVerboseLevel)
+              << "qo_indptr_host: " << qo_indptr_host;
+          VLOG(kGraphExecutorLogVerboseLevel)
+              << "paged_kv_indptr_host: " << paged_kv_indptr_host;
+          VLOG(kGraphExecutorLogVerboseLevel)
+              << "kv_len_arr_host: " << kv_len_arr_host;
+          VLOG(kGraphExecutorLogVerboseLevel)
+              << "enable_cuda_graph: " << enable_cuda_graph;
+          VLOG(kGraphExecutorLogVerboseLevel) << "head_dim_qk: " << head_dim_qk;
+          VLOG(kGraphExecutorLogVerboseLevel) << "head_dim_vo: " << head_dim_vo;
+          VLOG(kGraphExecutorLogVerboseLevel)
+              << "num_qo_heads: " << num_qo_heads;
+          VLOG(kGraphExecutorLogVerboseLevel)
+              << "num_kv_heads: " << num_kv_heads;
+          VLOG(kGraphExecutorLogVerboseLevel) << "block_size: " << block_size;
+          VLOG(kGraphExecutorLogVerboseLevel)
+              << "window_size_left: " << window_size_left;
+          VLOG(kGraphExecutorLogVerboseLevel) << "query_dtype: " << query_dtype;
+          VLOG(kGraphExecutorLogVerboseLevel) << "key_dtype: " << key_dtype;
+        }
+        plan_info->plan_info =
+            kernel::cuda::FunctionFactory::get_instance()
+                .fa2_prefill_plan_func(plan_info->uri)
+                .call(attn_meta.float_workspace_buffer,
+                      attn_meta.int_workspace_buffer,
+                      attn_meta.page_locked_int_workspace_buffer,
+                      qo_indptr_host,
+                      paged_kv_indptr_host,
+                      kv_len_arr_host,
+                      batch_size,  // total_num_rows
+                      batch_size,
+                      num_qo_heads,  // num_qo_heads
+                      num_kv_heads,  // num_kv_heads
+                      block_size,    // block_size
+                      enable_cuda_graph,
+                      head_dim_qk,  // head_dim_qk
+                      head_dim_vo,  // head_dim_vo
+                      /*causal=*/false);
       }
-      plan_info->plan_info =
-          kernel::cuda::FunctionFactory::get_instance()
-              .fa2_prefill_plan_func(plan_info->uri)
-              .call(attn_meta.float_workspace_buffer,
-                    attn_meta.int_workspace_buffer,
-                    attn_meta.page_locked_int_workspace_buffer,
-                    qo_indptr_host,
-                    paged_kv_indptr_host,
-                    kv_len_arr_host,
-                    batch_size,  // total_num_rows
-                    batch_size,
-                    num_qo_heads,  // num_qo_heads
-                    num_kv_heads,  // num_kv_heads
-                    block_size,    // block_size
-                    enable_cuda_graph,
-                    head_dim_qk,  // head_dim_qk
-                    head_dim_vo,  // head_dim_vo
-                    /*causal=*/false);
     } else {
       plan_info->uri = kernel::cuda::get_batch_decode_uri(
           query_dtype,
