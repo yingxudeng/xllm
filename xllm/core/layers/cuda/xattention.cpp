@@ -207,6 +207,25 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> XAttentionImpl::forward(
           cache.cached_beam_size = static_cast<int32_t>(beam_size);
           cache.cached_num_heads = num_heads_;
           cache.cached_head_size = head_size_;
+
+          // Allocate a dedicated int workspace for the unshared stage.
+          // Rationale: unshared stage (decode) plan/run can overwrite the
+          // scheduler metadata (e.g. request_indices/qo_tile_indices/...)
+          // stored in the shared int_workspace_buffer, which would corrupt
+          // subsequent layers' shared stage prefill when plan_info is reused
+          // across layers.
+          if (attn_metadata.int_workspace_buffer.defined() &&
+              attn_metadata.int_workspace_buffer.numel() > 0) {
+            cache.unshared_int_workspace_buffer =
+                torch::empty_like(attn_metadata.int_workspace_buffer);
+            cache.unshared_page_locked_int_workspace_buffer =
+                torch::empty({cache.unshared_int_workspace_buffer.numel()},
+                             torch::TensorOptions()
+                                 .dtype(torch::kUInt8)
+                                 .device(torch::kCPU)
+                                 .pinned_memory(true));
+          }
+
           // Use const_cast to modify mutable cache in const attn_metadata
           const_cast<AttentionMetadata&>(attn_metadata).two_stage_decode_cache =
               cache;
@@ -232,6 +251,9 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> XAttentionImpl::forward(
       // Step 3: Create temporary AttentionMetadata with q_cu_seq_lens_shared
       AttentionMetadata shared_attn_meta = attn_metadata;
       shared_attn_meta.q_cu_seq_lens = cache.q_cu_seq_lens_shared;
+      // Shared stage is beam-level attention; it should be NON-CAUSAL to avoid
+      // FlashInfer causal prefill assumptions (e.g. kv_len >= qo_len).
+      shared_attn_meta.is_causal = false;
 
       if (attn_metadata.enable_cuda_graph) {
         CHECK(attn_metadata.plan_info->plan_info.defined())
@@ -254,9 +276,9 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> XAttentionImpl::forward(
             num_heads_,
             num_kv_heads_,
             /*block_size*/ 1,
-            /*window_size_left*/ sliding_window_,
+            /*window_size_left*/ -1,
             /*enable_cuda_graph*/ false,
-            /*causal*/ true,
+            /*causal*/ false,
             /*use_tensor_core*/ true);
       }
 
@@ -266,7 +288,7 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> XAttentionImpl::forward(
       // Use cached tensors directly - they are already in 3D shape
       shared_attention_params.output = cache.shared_o;
       shared_attention_params.output_lse = cache.shared_lse;
-      shared_attention_params.window_size_left = sliding_window_;
+      shared_attention_params.window_size_left = -1;
       shared_attention_params.scale = scale_;
       shared_attention_params.float_workspace_buffer =
           attn_metadata.float_workspace_buffer;
@@ -294,6 +316,16 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> XAttentionImpl::forward(
       unshared_attn_meta.paged_kv_last_page_len =
           cache.paged_kv_last_page_len_expanded;
       unshared_attn_meta.use_tensor_core = false;
+      // Always use a separate int workspace for unshared stage when available,
+      // even when CUDA graph is disabled.
+      if (cache.unshared_int_workspace_buffer.defined()) {
+        unshared_attn_meta.int_workspace_buffer =
+            cache.unshared_int_workspace_buffer;
+      }
+      if (cache.unshared_page_locked_int_workspace_buffer.defined()) {
+        unshared_attn_meta.page_locked_int_workspace_buffer =
+            cache.unshared_page_locked_int_workspace_buffer;
+      }
       if (attn_metadata.enable_cuda_graph) {
         CHECK(attn_metadata.unshared_plan_info->plan_info.defined())
             << "unshared stage plan_info should not be null when "
@@ -336,24 +368,19 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> XAttentionImpl::forward(
       unshared_attention_params.output_lse = cache.unshared_lse;
       unshared_attention_params.window_size_left = sliding_window_;
       unshared_attention_params.scale = scale_;
-      // Use independent workspace buffer for unshared stage in CUDA graph mode
-      // to avoid conflict with shared stage plan_info
+      // Always use unshared stage int workspace (set above). Float workspace
+      // can be optionally separated for CUDA graph stability.
+      unshared_attention_params.float_workspace_buffer =
+          unshared_attn_meta.float_workspace_buffer;
       if (attn_metadata.enable_cuda_graph &&
           cache.unshared_float_workspace_buffer.defined()) {
         unshared_attention_params.float_workspace_buffer =
             cache.unshared_float_workspace_buffer;
-        unshared_attention_params.int_workspace_buffer =
-            cache.unshared_int_workspace_buffer;
-        unshared_attention_params.page_locked_int_workspace_buffer =
-            cache.unshared_page_locked_int_workspace_buffer;
-      } else {
-        unshared_attention_params.float_workspace_buffer =
-            unshared_attn_meta.float_workspace_buffer;
-        unshared_attention_params.int_workspace_buffer =
-            unshared_attn_meta.int_workspace_buffer;
-        unshared_attention_params.page_locked_int_workspace_buffer =
-            unshared_attn_meta.page_locked_int_workspace_buffer;
       }
+      unshared_attention_params.int_workspace_buffer =
+          unshared_attn_meta.int_workspace_buffer;
+      unshared_attention_params.page_locked_int_workspace_buffer =
+          unshared_attn_meta.page_locked_int_workspace_buffer;
       unshared_attention_params.k_cache = unshared_k;
       unshared_attention_params.v_cache = unshared_v;
 

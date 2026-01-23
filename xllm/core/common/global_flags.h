@@ -85,6 +85,8 @@ DECLARE_bool(enable_mla);
 
 constexpr int32_t kGraphExecutorLogVerboseLevel = 50;
 
+constexpr int32_t KXAttentionLogVerboseLevel = 40;
+
 DECLARE_bool(enable_graph);
 
 DECLARE_bool(enable_graph_no_padding);

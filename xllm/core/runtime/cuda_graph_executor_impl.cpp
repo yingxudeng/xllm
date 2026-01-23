@@ -346,7 +346,8 @@ std::optional<ModelInputParams> CudaGraphPersistentParam::update(
   // qo_indptr is q_cu_seq_lens in GPU Model.
   attn_metadata->qo_indptr = persistent_decode_qo_indptr(actual_batch_size);
 
-  const bool enable_two_stage = FLAGS_enable_xattention_two_stage_decode;
+  const bool enable_two_stage = FLAGS_enable_xattention_two_stage_decode &&
+                                (params.batch_forward_type.is_decode());
 
   if (enable_two_stage) {
     const int64_t total_beam = request_batch_size * FLAGS_beam_width;
@@ -447,9 +448,9 @@ std::optional<ModelInputParams> CudaGraphPersistentParam::update(
         static_cast<int32_t>(n_heads),
         static_cast<int32_t>(n_kv_heads),
         /*block_size*/ 1,
-        sliding_window,
+        -1,
         /*enable_cuda_graph*/ true,
-        /*causal*/ true,
+        /*causal*/ false,
         /*use_tensor_core*/ true);
 
     // 2) unshared stage (decode, non-tensor-core) plan
@@ -771,6 +772,7 @@ bool CudaGraph::capture(CausalLM* model,
         graph_params_opt->attn_metadata->q_cu_seq_lens;
     replay_params.kv_cu_seq_lens =
         graph_params_opt->attn_metadata->kv_cu_seq_lens;
+    replay_params.is_causal = graph_params_opt->attn_metadata->is_causal;
 
     piecewise_graph_.replay(replay_params);
   } else {
@@ -825,6 +827,7 @@ torch::Tensor CudaGraph::replay(const torch::Tensor& tokens,
         updated_params.attn_metadata->plan_info->plan_info;
     replay_params.q_cu_seq_lens = updated_params.attn_metadata->q_cu_seq_lens;
     replay_params.kv_cu_seq_lens = updated_params.attn_metadata->kv_cu_seq_lens;
+    replay_params.is_causal = updated_params.attn_metadata->is_causal;
 
     // Replay piecewise graphs and attention runners
     piecewise_graph_.replay(replay_params);

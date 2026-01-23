@@ -34,7 +34,8 @@ void AttentionRunner::run(const std::string& uri,
                           double sm_scale,
                           torch::Tensor output,
                           std::optional<torch::Tensor>& output_lse,
-                          bool enable_cuda_graph) {
+                          bool enable_cuda_graph,
+                          bool is_causal) {
   // Non-piecewise mode: directly call batch_prefill
   batch_prefill(uri,
                 plan_info,
@@ -50,7 +51,8 @@ void AttentionRunner::run(const std::string& uri,
                 sm_scale,
                 output,
                 output_lse,
-                enable_cuda_graph);
+                enable_cuda_graph,
+                is_causal);
 }
 
 void AttentionRunner::run_capture(
@@ -137,7 +139,8 @@ void AttentionRunner::run_replay(const AttentionReplayParams& params) {
                 scale_,
                 output_slice,
                 output_lse,
-                /*enable_cuda_graph=*/false);
+                /*enable_cuda_graph=*/false,
+                /*is_causal=*/params.is_causal);
 }
 
 }  // namespace cuda
