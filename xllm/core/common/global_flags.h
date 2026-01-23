@@ -262,3 +262,7 @@ DECLARE_string(npu_kernel_backend);
 // --- qwen3 fused qk norm rope config ---
 
 DECLARE_bool(enable_qwen3_fused_qk_norm_rope_kernel);
+
+DECLARE_bool(enable_xattention_two_stage_decode);
+
+DECLARE_bool(enable_beam_search_optimized);

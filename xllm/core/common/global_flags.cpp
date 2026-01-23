@@ -529,3 +529,11 @@ DEFINE_int64(max_token_per_req, 1024, "Max token per request.");
 DEFINE_bool(enable_qwen3_fused_qk_norm_rope_kernel,
             false,
             "Whether to enable fused qk norm rope for qwen3 model.");
+
+DEFINE_bool(enable_xattention_two_stage_decode,
+            false,
+            "Whether to enable xattention two stage decode.");
+
+DEFINE_bool(enable_beam_search_optimized,
+            false,
+            "Whether to enable beam search optimize.");
