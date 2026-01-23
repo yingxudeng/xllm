@@ -280,6 +280,132 @@ std::pair<torch::Tensor, torch::Tensor> compute_topk_for_beam_search(
   }
 }
 
+template <typename T>
+__global__ void beam_search_init_kernel(
+    const int32_t* __restrict__ top_tokens,    // [batch_size, top_k]
+    const T* __restrict__ top_logprobs,        // [batch_size, top_k]
+    int32_t* __restrict__ out_token_ids,       // [batch_size, beam_size]
+    T* __restrict__ out_acc_logprob,           // [batch_size, beam_size]
+    int32_t* __restrict__ out_token_index,     // [batch_size * beam_size, 1]
+    int32_t* __restrict__ out_sequence_group,  // [batch_size, beam_size,
+                                               // total_rounds]
+    uint32_t batch_size,
+    uint32_t beam_size,
+    uint32_t top_k,
+    uint32_t total_rounds) {
+  const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+  const uint32_t total_elements = batch_size * beam_size;
+
+  if (tid >= total_elements) return;
+
+  const uint32_t batch_idx = tid / beam_size;
+  const uint32_t beam_idx = tid % beam_size;
+
+  // source index: read the first beam_size tokens from [batch_size, top_k]
+  const uint32_t src_idx = batch_idx * top_k + beam_idx;
+
+  // destination index
+  const uint32_t dst_idx = batch_idx * beam_size + beam_idx;
+
+  // copy all the tokens in one go
+  T token = top_tokens[src_idx];
+  out_token_ids[dst_idx] = token;
+  out_acc_logprob[dst_idx] = top_logprobs[src_idx];
+  out_token_index[tid] = static_cast<int32_t>(beam_idx);
+
+  // out_sequence_group[:, :, 0] = tokens
+  const uint32_t seq_idx =
+      batch_idx * beam_size * total_rounds + beam_idx * total_rounds + 0;
+  out_sequence_group[seq_idx] = token;
+}
+
+// initialize the beam search tensors for first step
+void beam_search_init(torch::Tensor top_tokens,
+                      torch::Tensor top_logprobs,
+                      torch::Tensor out_token_ids,
+                      torch::Tensor out_acc_logprob,
+                      torch::Tensor out_token_index,
+                      torch::Tensor out_sequence_group,
+                      uint32_t batch_size,
+                      uint32_t beam_size,
+                      uint32_t top_k,
+                      uint32_t total_rounds) {
+  constexpr uint32_t kBlockSize = 256;
+  const uint32_t total_elements = batch_size * beam_size;
+  const uint32_t num_blocks = (total_elements + kBlockSize - 1) / kBlockSize;
+
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+  auto dtype = top_logprobs.dtype();
+
+  if (dtype == torch::kFloat32) {
+    beam_search_init_kernel<float><<<num_blocks, kBlockSize, 0, stream>>>(
+        top_tokens.data_ptr<int32_t>(),
+        top_logprobs.data_ptr<float>(),
+        out_token_ids.data_ptr<int32_t>(),
+        out_acc_logprob.data_ptr<float>(),
+        out_token_index.data_ptr<int32_t>(),
+        out_sequence_group.data_ptr<int32_t>(),
+        batch_size,
+        beam_size,
+        top_k,
+        total_rounds);
+    //   } else if (dtype == torch::kFloat16) {
+    //     beam_search_init_kernel<half><<<num_blocks, kBlockSize, 0, stream>>>(
+    //         top_tokens.data_ptr<int32_t>(),
+    //         top_logprobs.data_ptr<half>(),
+    //         out_token_ids.data_ptr<int32_t>(),
+    //         out_acc_logprob.data_ptr<half>(),
+    //         out_token_index.data_ptr<int32_t>(),
+    //         out_sequence_group.data_ptr<int32_t>(),
+    //         batch_size,
+    //         beam_size,
+    //         top_k,
+    //         total_rounds);
+  } else if (dtype == torch::kBFloat16) {
+#ifdef ENABLE_BF16
+    beam_search_init_kernel<__nv_bfloat16>
+        <<<num_blocks, kBlockSize, 0, stream>>>(
+            top_tokens.data_ptr<int32_t>(),
+            top_logprobs.data_ptr<__nv_bfloat16>(),
+            out_token_ids.data_ptr<int32_t>(),
+            out_acc_logprob.data_ptr<__nv_bfloat16>(),
+            out_token_index.data_ptr<int32_t>(),
+            out_sequence_group.data_ptr<int32_t>(),
+            batch_size,
+            beam_size,
+            top_k,
+            total_rounds);
+#else
+    beam_search_init_kernel<float><<<num_blocks, kBlockSize, 0, stream>>>(
+        top_tokens.data_ptr<int32_t>(),
+        top_logprobs.data_ptr<float>(),
+        out_token_ids.data_ptr<int32_t>(),
+        out_acc_logprob.data_ptr<float>(),
+        out_token_index.data_ptr<int32_t>(),
+        out_sequence_group.data_ptr<int32_t>(),
+        batch_size,
+        beam_size,
+        top_k,
+        total_rounds);
+#endif
+  } else {
+    beam_search_init_kernel<float><<<num_blocks, kBlockSize, 0, stream>>>(
+        top_tokens.data_ptr<int32_t>(),
+        top_logprobs.data_ptr<float>(),
+        out_token_ids.data_ptr<int32_t>(),
+        out_acc_logprob.data_ptr<float>(),
+        out_token_index.data_ptr<int32_t>(),
+        out_sequence_group.data_ptr<int32_t>(),
+        batch_size,
+        beam_size,
+        top_k,
+        total_rounds);
+  }
+
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 void beam_search(torch::Tensor acc_logprob,
                  torch::Tensor in_sequence_group,
                  torch::Tensor top_tokens,
@@ -301,33 +427,23 @@ void beam_search(torch::Tensor acc_logprob,
   //   CHECK_EQ(beam_size, top_k) << "beam_size must be equal with top_k.";
 
   if (current_step == 0) {
-    auto tokens_view =
-        top_tokens.view({batch_size, top_k}).slice(1, 0, beam_size);
-    auto init_probs_view =
-        top_logprobs.view({batch_size, top_k}).slice(1, 0, beam_size);
-
-    out_token_ids.view({batch_size, beam_size}).copy_(tokens_view);
-    out_acc_logprob.view({batch_size, beam_size}).copy_(init_probs_view);
-
-    auto indices =
-        torch::arange(
-            beam_size,
-            torch::TensorOptions().dtype(torch::kInt32).device(device))
-            .unsqueeze(0)
-            .expand({batch_size, -1})
-            .reshape({-1, 1});
-    out_token_index.copy_(indices);
-
-    auto sequence_view =
-        out_sequence_group.view({batch_size, beam_size, total_rounds});
-    sequence_view.slice(2, 0, 1).squeeze(2).copy_(tokens_view);
+    // NvtxRange range("==== beam_search step 0 ====");
+    beam_search_init(top_tokens,
+                     top_logprobs,
+                     out_token_ids,
+                     out_acc_logprob,
+                     out_token_index,
+                     out_sequence_group,
+                     batch_size,
+                     beam_size,
+                     top_k,
+                     total_rounds);
 
   } else {
+    // NvtxRange range("==== beam_search step " + std::to_string(current_step) +
+    // " ====");
     auto combined_probs =
         (acc_logprob + top_logprobs).view({batch_size, beam_size * top_k});
-
-    // auto [new_probs, new_indices] = compute_topk_for_beam_search(
-    //     combined_probs, batch_size, beam_size, top_k, device);
 
     auto topk_result = torch::topk(combined_probs, beam_size, -1);
     auto new_probs = std::get<0>(topk_result);    // [batch_size, beam_size]
