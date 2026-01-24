@@ -731,7 +731,7 @@ bool CudaGraph::capture(CausalLM* model,
       << "update() should return ModelInputParams when "
          "return_capture_params=true";
   // Synchronize to ensure all data is copied to graph persistent buffers
-  torch::cuda::synchronize();
+  c10::cuda::getCurrentCUDAStream(device_index_).synchronize();
 
   LOG(INFO) << "CUDA graph capture begin, bucket_num_tokens: "
             << bucket_num_tokens << ", actual_num_tokens: " << actual_num_tokens
@@ -758,7 +758,6 @@ bool CudaGraph::capture(CausalLM* model,
                    persistent_param_.persistent_positions(padded_num_tokens_),
                    kv_cache,
                    graph_params_opt.value());
-    torch::cuda::synchronize();
 
     // Begin piecewise capture via GlobalCaptureInstance
     GlobalCaptureInstance::get_instance().begin_capture(pool);
@@ -822,9 +821,6 @@ bool CudaGraph::capture(CausalLM* model,
     // capture failed. next time will enter this function again.
     return false;
   }
-
-  // Synchronize and test replay to verify graph capture
-  torch::cuda::synchronize();
 
   if (is_piecewise_) {
     // replay piecewise graph
@@ -994,6 +990,21 @@ torch::Tensor CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
 
   // Prefill phase with piecewise graph
   if (is_prefill && enable_prefill_piecewise_graph_) {
+    // Check if token count is within limit
+    const bool tokens_supported =
+        FLAGS_max_tokens_for_graph_mode_prefill == 0 ||
+        n_tokens <= FLAGS_max_tokens_for_graph_mode_prefill;
+
+    if (!tokens_supported) {
+      VLOG(kGraphExecutorLogVerboseLevel)
+          << "Token count " << n_tokens
+          << " exceeds max_tokens_for_graph_mode_prefill ("
+          << FLAGS_max_tokens_for_graph_mode_prefill
+          << "), falling back to eager mode";
+      COUNTER_INC(num_model_execution_total_eager);
+      return model_->forward(tokens, positions, kv_caches, params);
+    }
+
     // Check if piecewise graph exists for this bucket
     auto it = prefill_graphs_.find(bucket_num_tokens);
     if (it != prefill_graphs_.end()) {
@@ -1119,7 +1130,7 @@ torch::Tensor CudaGraphExecutorImpl::run(const torch::Tensor& tokens,
 uint32_t CudaGraphExecutorImpl::get_bucket_num_tokens(uint32_t num_tokens,
                                                       bool is_prefill) const {
   // no_padding only works for decode, prefill requires padding for graph reuse
-  if (FLAGS_enable_graph_no_padding && !is_prefill) {
+  if (FLAGS_enable_graph_mode_decode_no_padding && !is_prefill) {
     return num_tokens;
   }
   if (num_tokens <= 1) {
@@ -1132,7 +1143,7 @@ uint32_t CudaGraphExecutorImpl::get_bucket_num_tokens(uint32_t num_tokens,
     return 8;
   } else {
     // For num_tokens > 8, use multiples of 16
-    return ((num_tokens + 15) / 16) * 16;
+    return ((num_tokens + 31) / 32) * 32;
   }
 }
 

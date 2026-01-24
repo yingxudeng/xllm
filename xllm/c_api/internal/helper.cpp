@@ -247,13 +247,16 @@ void override_global_flags_from_env(const std::string& env_prefix,
   FLAGS_max_seq_len_for_graph_mode = static_cast<int32_t>(
       xllm::util::get_int_env(env_prefix + "MAX_SEQ_LEN_FOR_GRAPH_MODE",
                               FLAGS_max_seq_len_for_graph_mode));
+  FLAGS_max_tokens_for_graph_mode_prefill = static_cast<int32_t>(
+      xllm::util::get_int_env(env_prefix + "MAX_TOKENS_FOR_GRAPH_MODE_PREFILL",
+                              FLAGS_max_tokens_for_graph_mode_prefill));
 
   // For REC backend, default enable graph modes
   bool graph_default = (backend_type == BackendType::REC);
   FLAGS_enable_graph =
       xllm::util::get_bool_env(env_prefix + "ENABLE_GRAPH", graph_default);
-  FLAGS_enable_graph_no_padding = xllm::util::get_bool_env(
-      env_prefix + "ENABLE_GRAPH_NO_PADDING", graph_default);
+  FLAGS_enable_graph_mode_decode_no_padding = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_GRAPH_MODE_DECODE_NO_PADDING", graph_default);
   FLAGS_enable_prefill_piecewise_graph = xllm::util::get_bool_env(
       env_prefix + "ENABLE_PREFILL_PIECEWISE_GRAPH", graph_default);
 

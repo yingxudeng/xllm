@@ -25,7 +25,7 @@ limitations under the License.
 namespace {
 // bucket will be [1, 2, 4, 8, 16, 32, 48, 64, ..., max_seqs_per_batch]
 uint32_t get_bucket_num_tokens(uint32_t num_tokens) {
-  if (FLAGS_enable_graph_no_padding) {
+  if (FLAGS_enable_graph_mode_decode_no_padding) {
     return num_tokens;
   }
   const uint32_t graph_step = 16;

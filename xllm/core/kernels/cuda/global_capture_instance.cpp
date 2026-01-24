@@ -41,7 +41,7 @@ void GlobalCaptureInstance::begin_capture(
 
   // Acquire global lock to ensure only one instance captures at a time
   capture_lock_ = std::make_unique<std::lock_guard<std::mutex>>(capture_mutex_);
-
+  LOG(INFO) << "GlobalCaptureInstance::begin_capture()";
   is_capturing_ = true;
   graph_pool_ = pool;
 
@@ -51,9 +51,6 @@ void GlobalCaptureInstance::begin_capture(
   // Create first graph and begin capture
   current_graph_ = std::make_unique<at::cuda::CUDAGraph>();
   current_graph_->capture_begin(pool, cudaStreamCaptureModeThreadLocal);
-
-  VLOG(kGraphExecutorLogVerboseLevel)
-      << "GlobalCaptureInstance::begin_capture()";
 }
 
 void GlobalCaptureInstance::split_graph() {
@@ -76,10 +73,9 @@ std::unique_ptr<PiecewiseGraphs> GlobalCaptureInstance::end_capture() {
 
   is_capturing_ = false;
 
-  VLOG(kGraphExecutorLogVerboseLevel)
-      << "GlobalCaptureInstance::end_capture(), total graphs: "
-      << current_piecewise_graph_->size()
-      << ", total runners: " << current_piecewise_graph_->num_runners();
+  LOG(INFO) << "GlobalCaptureInstance::end_capture(), total graphs: "
+            << current_piecewise_graph_->size()
+            << ", total runners: " << current_piecewise_graph_->num_runners();
 
   // Move the result before releasing the lock
   auto result = std::move(current_piecewise_graph_);
