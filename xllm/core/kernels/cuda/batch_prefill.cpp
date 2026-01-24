@@ -13,8 +13,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <cuda_runtime.h>
 #include <glog/logging.h>
 
+#include <atomic>
+#include <sstream>
+
+#include "core/common/global_flags.h"
 #include "cuda_ops_api.h"
 #include "function_factory.h"
 
@@ -34,7 +39,8 @@ void batch_prefill(const std::string& uri,
                    double sm_scale,
                    torch::Tensor output,
                    std::optional<torch::Tensor>& output_lse,
-                   bool enable_cuda_graph) {
+                   bool enable_cuda_graph,
+                   bool is_causal) {
   // Log plan_info device before use
   // if (plan_info.defined()) {
   //   LOG(INFO) << "batch_prefill: plan_info device before kernel call: "
@@ -42,12 +48,23 @@ void batch_prefill(const std::string& uri,
   //             << ", dtype=" << plan_info.scalar_type()
   //             << ", uri=" << uri;
   // }
-
   std::string backend =
-      determine_attention_backend(/*pos_encoding_mode=*/0,
-                                  /*use_fp16_qk_reduction=*/false,
-                                  /*use_custom_mask=*/false);
+      (uri.find("_sm90") != std::string::npos) ? "fa3" : "fa2";
 
+  if (VLOG_IS_ON(KXAttentionLogVerboseLevel)) {
+    debug_log_prefill_inputs(uri,
+                             plan_info,
+                             float_workspace_buffer,
+                             int_workspace_buffer,
+                             page_locked_int_workspace_buffer,
+                             query,
+                             key,
+                             value,
+                             q_cu_seq_lens,
+                             kv_cu_seq_lens,
+                             window_left,
+                             is_causal);
+  }
   if (backend == "fa2") {
     FunctionFactory::get_instance().fa2_prefill_ragged_run_func(uri).call(
         float_workspace_buffer,
@@ -60,8 +77,8 @@ void batch_prefill(const std::string& uri,
         kv_cu_seq_lens,
         output,
         output_lse,
-        /*mask_mode_code=*/1,  // CAUSAL
-        /*kv_layout_code=*/0,  // NHD layout
+        /*mask_mode_code=*/is_causal,  // CAUSAL
+        /*kv_layout_code=*/0,          // NHD layout
         window_left,
         support_pdl(),
         /*maybe_custom_mask=*/std::optional<torch::Tensor>(),
@@ -87,8 +104,8 @@ void batch_prefill(const std::string& uri,
         kv_cu_seq_lens,
         output,
         output_lse,
-        /*mask_mode_code=*/1,  // CAUSAL
-        /*kv_layout_code=*/0,  // NHD layout
+        /*mask_mode_code=*/is_causal,  // CAUSAL
+        /*kv_layout_code=*/0,          // NHD layout
         window_left,
         support_pdl(),
         /*maybe_prefix_len_ptr=*/std::optional<torch::Tensor>(),

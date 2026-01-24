@@ -30,6 +30,7 @@ struct AttentionReplayParams {
   torch::Tensor q_cu_seq_lens;
   torch::Tensor kv_cu_seq_lens;
   uint32_t actual_num_tokens;  // All layers share the same actual_num_tokens
+  bool is_causal = true;
 };
 
 // AttentionRunner encapsulates batch_prefill for piecewise CUDA Graph
@@ -53,7 +54,8 @@ class AttentionRunner {
            double sm_scale,
            torch::Tensor output,
            std::optional<torch::Tensor>& output_lse,
-           bool enable_cuda_graph);
+           bool enable_cuda_graph,
+           bool is_causal);
 
   // Piecewise mode: capture phase
   void run_capture(const std::string& uri,
@@ -111,7 +113,8 @@ inline void maybe_capturing_batch_prefill(
     double sm_scale,
     torch::Tensor output,
     std::optional<torch::Tensor>& output_lse,
-    bool enable_cuda_graph) {
+    bool enable_cuda_graph,
+    bool is_causal) {
   // This function is only called for prefill, so is_prefill is always true
   if (::xllm::runtime::cuda::GlobalCaptureInstance::get_instance()
           .is_capturing() &&
@@ -159,7 +162,8 @@ inline void maybe_capturing_batch_prefill(
                 sm_scale,
                 output,
                 output_lse,
-                enable_cuda_graph);
+                enable_cuda_graph,
+                is_causal);
 }
 
 }  // namespace xllm::kernel::cuda

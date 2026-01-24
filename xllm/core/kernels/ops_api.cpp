@@ -174,7 +174,8 @@ void batch_prefill(AttentionParams& params) {
                                       params.scale,
                                       params.output,
                                       params.output_lse,
-                                      params.attn_metadata.enable_cuda_graph);
+                                      params.attn_metadata.enable_cuda_graph,
+                                      params.attn_metadata.is_causal);
 #elif defined(USE_ILU)
   ilu::batch_prefill(
       params.query,

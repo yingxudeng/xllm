@@ -85,6 +85,8 @@ DECLARE_bool(enable_mla);
 
 constexpr int32_t kGraphExecutorLogVerboseLevel = 50;
 
+constexpr int32_t KXAttentionLogVerboseLevel = 40;
+
 DECLARE_bool(enable_graph);
 
 DECLARE_bool(enable_graph_no_padding);
@@ -256,6 +258,8 @@ DECLARE_int32(beam_width);
 DECLARE_int64(max_token_per_req);
 
 DECLARE_uint32(rec_worker_max_concurrency);
+
+DECLARE_bool(enable_xattention_two_stage_decode);
 
 #if defined(USE_NPU)
 DECLARE_string(npu_kernel_backend);
