@@ -18,6 +18,9 @@ limitations under the License.
 
 namespace xllm::runtime::cuda {
 
+// Define static mutex
+std::mutex GlobalCaptureInstance::capture_mutex_;
+
 GlobalCaptureInstance& GlobalCaptureInstance::get_instance() {
   thread_local GlobalCaptureInstance instance;
   return instance;
@@ -35,6 +38,9 @@ void GlobalCaptureInstance::cleanup_capture_state() {
 void GlobalCaptureInstance::begin_capture(
     const decltype(at::cuda::graph_pool_handle())& pool) {
   CHECK(!is_capturing_) << "Already capturing, call end_capture() first";
+
+  // Acquire global lock to ensure only one instance captures at a time
+  capture_lock_ = std::make_unique<std::lock_guard<std::mutex>>(capture_mutex_);
 
   is_capturing_ = true;
   graph_pool_ = pool;
@@ -75,7 +81,13 @@ std::unique_ptr<PiecewiseGraphs> GlobalCaptureInstance::end_capture() {
       << current_piecewise_graph_->size()
       << ", total runners: " << current_piecewise_graph_->num_runners();
 
-  return std::move(current_piecewise_graph_);
+  // Move the result before releasing the lock
+  auto result = std::move(current_piecewise_graph_);
+
+  // Release global lock to allow next instance to capture
+  capture_lock_.reset();
+
+  return result;
 }
 
 void GlobalCaptureInstance::temporarily_end_graph() {

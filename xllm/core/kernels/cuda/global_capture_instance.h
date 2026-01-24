@@ -13,6 +13,7 @@ limitations under the License.
 #include <ATen/cuda/CUDAGraph.h>
 
 #include <memory>
+#include <mutex>
 
 namespace xllm::kernel::cuda {
 // Forward declaration
@@ -68,11 +69,16 @@ class GlobalCaptureInstance {
   void temporarily_end_graph_locked();
   void temporarily_begin_graph_locked();
 
+  // Global mutex to ensure only one instance can capture at a time
+  static std::mutex capture_mutex_;
+
   // Instance members (no locks needed - each thread has its own instance via
   // thread_local)
   bool is_capturing_ = false;
   std::unique_ptr<at::cuda::CUDAGraph> current_graph_;
   std::unique_ptr<PiecewiseGraphs> current_piecewise_graph_;
   decltype(at::cuda::graph_pool_handle()) graph_pool_;
+  // Lock guard to hold the mutex during capture
+  std::unique_ptr<std::lock_guard<std::mutex>> capture_lock_;
 };
 }  // namespace xllm::runtime::cuda
