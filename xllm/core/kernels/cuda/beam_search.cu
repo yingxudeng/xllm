@@ -23,6 +23,7 @@ limitations under the License.
 
 #include <utility>
 
+#include "common/global_flags.h"
 #include "cuda.h"
 #include "cuda_utils.h"
 #include "topk_last_dim.cuh"
@@ -37,7 +38,8 @@ std::pair<torch::Tensor, torch::Tensor> compute_topk_general(
     uint32_t batch_size,
     uint32_t input_length,
     uint32_t k,
-    torch::Device device) {
+    torch::Device device,
+    bool sorted) {
   input = input.contiguous();
 
   auto output_dtype = input.dtype();
@@ -55,7 +57,8 @@ std::pair<torch::Tensor, torch::Tensor> compute_topk_general(
           static_cast<SizeType32>(batch_size),
           static_cast<SizeType32>(input_length),
           static_cast<SizeType32>(k),
-          true);
+          true,
+          sorted);
 
   auto workspace =
       torch::empty({static_cast<int64_t>(workspace_size)},
@@ -69,7 +72,8 @@ std::pair<torch::Tensor, torch::Tensor> compute_topk_general(
                                         new_values.data_ptr<float>(),
                                         new_indices.data_ptr<int32_t>(),
                                         workspace.data_ptr<uint8_t>(),
-                                        stream);
+                                        stream,
+                                        sorted);
 
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 
@@ -100,11 +104,13 @@ std::pair<torch::Tensor, torch::Tensor> compute_topk_for_beam_search_impl(
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   // calculate workspace size
+  bool sorted = FLAGS_enable_topk_sorted;
   auto workspace_size = reduce_topk::invokeComputeTopkLastDimWorkspaceSize<T>(
       static_cast<SizeType32>(batch_size),
       static_cast<SizeType32>(beam_size * top_k),
       static_cast<SizeType32>(beam_size),
-      true);  // is_largest = true
+      true,
+      sorted);  // is_largest = true
 
   // allocate workspace memory
   auto workspace =
@@ -121,7 +127,8 @@ std::pair<torch::Tensor, torch::Tensor> compute_topk_for_beam_search_impl(
                                     new_probs.data_ptr<T>(),
                                     new_indices.data_ptr<int32_t>(),
                                     workspace.data_ptr<uint8_t>(),
-                                    stream);
+                                    stream,
+                                    sorted);
 
   // synchronize CUDA stream
   C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -152,12 +159,14 @@ std::pair<torch::Tensor, torch::Tensor> compute_topk_for_beam_search_impl<half>(
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   // calculate workspace size
+  bool sorted = FLAGS_enable_topk_sorted;
   auto workspace_size =
       reduce_topk::invokeComputeTopkLastDimWorkspaceSize<half>(
           static_cast<SizeType32>(batch_size),
           static_cast<SizeType32>(beam_size * top_k),
           static_cast<SizeType32>(beam_size),
-          true);  // is_largest = true
+          true,
+          sorted);  // is_largest = true
 
   // allocate workspace memory
   auto workspace =
@@ -175,7 +184,8 @@ std::pair<torch::Tensor, torch::Tensor> compute_topk_for_beam_search_impl<half>(
       reinterpret_cast<half*>(new_probs.data_ptr<at::Half>()),
       new_indices.data_ptr<int32_t>(),
       workspace.data_ptr<uint8_t>(),
-      stream);
+      stream,
+      sorted);
 
   // synchronize CUDA stream
   C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -207,12 +217,14 @@ compute_topk_for_beam_search_impl<__nv_bfloat16>(torch::Tensor combined_probs,
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   // calculate workspace size
+  bool sorted = FLAGS_enable_topk_sorted;
   auto workspace_size =
       reduce_topk::invokeComputeTopkLastDimWorkspaceSize<__nv_bfloat16>(
           static_cast<SizeType32>(batch_size),
           static_cast<SizeType32>(beam_size * top_k),
           static_cast<SizeType32>(beam_size),
-          true);  // is_largest = true
+          true,
+          sorted);  // is_largest = true
 
   // allocate workspace memory
   auto workspace =
@@ -231,7 +243,8 @@ compute_topk_for_beam_search_impl<__nv_bfloat16>(torch::Tensor combined_probs,
       reinterpret_cast<__nv_bfloat16*>(new_probs.data_ptr<at::BFloat16>()),
       new_indices.data_ptr<int32_t>(),
       workspace.data_ptr<uint8_t>(),
-      stream);
+      stream,
+      sorted);
 
   // synchronize CUDA stream
   C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -445,14 +458,22 @@ void beam_search(torch::Tensor acc_logprob,
     auto combined_probs =
         (acc_logprob + top_logprobs).view({batch_size, beam_size * top_k});
 
-    auto topk_result = torch::topk(combined_probs, beam_size, -1);
+    // auto [new_probs, new_indices] = compute_topk_for_beam_search(
+    //     combined_probs, batch_size, beam_size, top_k, device);
+
+    auto topk_result = torch::topk(combined_probs,
+                                   beam_size,
+                                   -1,
+                                   /*largest=*/true,
+                                   /*sorted=*/FLAGS_enable_topk_sorted);
     auto new_probs = std::get<0>(topk_result);    // [batch_size, beam_size]
     auto new_indices = std::get<1>(topk_result);  // [batch_size, beam_size]
 
-    auto ordered_indices = new_indices.argsort(static_cast<int64_t>(1), false);
-    // Reorder new_probs (and corresponding new_indices) by ordered_indices to
-    // keep alignment.
-    if (current_step < total_rounds - 1) {
+    // Reorder new_probs (and corresponding new_indices) to keep alignment
+    // only when sorted output is requested.
+    if (FLAGS_enable_topk_sorted && current_step < total_rounds - 1) {
+      auto ordered_indices =
+          new_indices.argsort(static_cast<int64_t>(1), false);
       new_probs = new_probs.gather(1, ordered_indices);
       new_indices = new_indices.gather(1, ordered_indices);
     }

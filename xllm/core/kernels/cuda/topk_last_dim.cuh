@@ -96,7 +96,7 @@ __host__ __device__ constexpr int calc_num_passes() {
   return ceildiv<int>(sizeof(T) * 8, BitsPerPass);
 }
 
-__host__ __device__ int round(int num, int round_value) {
+__host__ __device__ __forceinline__ int round(int num, int round_value) {
   return ((num - 1) / round_value + 1) * round_value;
 }
 
@@ -1236,17 +1236,17 @@ static constexpr int kWARP_SIZE = 32;
 static constexpr int kWARPS_PER_BLOCK = kBLOCK_SIZE / kWARP_SIZE;
 
 template <typename T>
-__device__ T negativeInfinity() {
+__device__ __forceinline__ T negativeInfinity() {
   return -INFINITY;
 }
 
 template <>
-__device__ half negativeInfinity<half>() {
+__device__ __forceinline__ half negativeInfinity<half>() {
   return -CUDART_INF_FP16;
 }
 
 template <>
-__device__ __nv_bfloat16 negativeInfinity<__nv_bfloat16>() {
+__device__ __forceinline__ __nv_bfloat16 negativeInfinity<__nv_bfloat16>() {
   return -CUDART_INF_BF16;
 }
 
@@ -1786,7 +1786,7 @@ void standalone_stable_radix_11bits(void* buf,
   }
 }
 
-int nextPowerOfTwo(int num) {
+inline int nextPowerOfTwo(int num) {
   if (num <= 0) {
     return 1;  // Handle invalid input
   }
@@ -1935,7 +1935,8 @@ template <typename T>
 size_t invokeComputeTopkLastDimWorkspaceSize(SizeType32 batchSize,
                                              SizeType32 inputLength,
                                              SizeType32 k,
-                                             bool is_largest) {
+                                             bool is_largest,
+                                             bool sorted) {
   using IdxT = SizeType32;
 
   size_t buf_size = 0;
@@ -1946,28 +1947,53 @@ size_t invokeComputeTopkLastDimWorkspaceSize(SizeType32 batchSize,
 
   constexpr int block_dim = 512;
   constexpr bool fused_last_filter = false;
-  constexpr bool sorted = true;
-
   int sm_cnt = getMultiProcessorCount();
   unsigned grid_dim = air_topk_stable::calc_grid_dim<T, IdxT, 11, block_dim>(
       batchSize, inputLength, sm_cnt);
 
-  standalone_stable_radix_topk_<T, IdxT, 11, block_dim>(
-      workspace,
-      buf_size,
-      in,
-      static_cast<IdxT*>(nullptr),
-      batchSize,
-      inputLength,
-      k,
-      out_val,
-      out_idx,
-      !is_largest,
-      fused_last_filter,
-      grid_dim,
-      0,
-      sorted);
+  if (sorted) {
+    standalone_stable_radix_topk_<T, IdxT, 11, block_dim>(
+        workspace,
+        buf_size,
+        in,
+        static_cast<IdxT*>(nullptr),
+        batchSize,
+        inputLength,
+        k,
+        out_val,
+        out_idx,
+        !is_largest,
+        fused_last_filter,
+        grid_dim,
+        0,
+        true);
+  } else {
+    standalone_stable_radix_topk_<T, IdxT, 11, block_dim>(
+        workspace,
+        buf_size,
+        in,
+        static_cast<IdxT*>(nullptr),
+        batchSize,
+        inputLength,
+        k,
+        out_val,
+        out_idx,
+        !is_largest,
+        fused_last_filter,
+        grid_dim,
+        0,
+        false);
+  }
   return buf_size;
+}
+
+template <typename T>
+size_t invokeComputeTopkLastDimWorkspaceSize(SizeType32 batchSize,
+                                             SizeType32 inputLength,
+                                             SizeType32 k,
+                                             bool is_largest) {
+  return invokeComputeTopkLastDimWorkspaceSize<T>(
+      batchSize, inputLength, k, is_largest, true);
 }
 
 #define INSTANTIATE_COMPUTE_TOPK_LastDim_WORKSPACE_SIZE_DATA_TYPE(T) \
@@ -1998,7 +2024,8 @@ void invokeTopkLastDim(SizeType32 batchSize,
                        void* __restrict__ out_val,
                        void* __restrict__ out_idx,
                        void* workspace,
-                       cudaStream_t stream) {
+                       cudaStream_t stream,
+                       bool sorted) {
   size_t buf_size = 0;  // will be overwritten by the kernel
   T const* in = reinterpret_cast<T const*>(input);
   T* out_val_ = reinterpret_cast<T*>(out_val);
@@ -2010,17 +2037,52 @@ void invokeTopkLastDim(SizeType32 batchSize,
     moe_reduce_topk(
         in, batchSize, inputLength, k, out_val_, out_idx_, !is_largest, stream);
   } else {
-    standalone_stable_radix_11bits<T, SizeType32, true>(workspace,
-                                                        buf_size,
-                                                        in,
-                                                        batchSize,
-                                                        inputLength,
-                                                        k,
-                                                        out_val_,
-                                                        out_idx_,
-                                                        is_largest,
-                                                        stream);
+    if (sorted) {
+      standalone_stable_radix_11bits<T, SizeType32, true>(workspace,
+                                                          buf_size,
+                                                          in,
+                                                          batchSize,
+                                                          inputLength,
+                                                          k,
+                                                          out_val_,
+                                                          out_idx_,
+                                                          is_largest,
+                                                          stream);
+    } else {
+      standalone_stable_radix_11bits<T, SizeType32, false>(workspace,
+                                                           buf_size,
+                                                           in,
+                                                           batchSize,
+                                                           inputLength,
+                                                           k,
+                                                           out_val_,
+                                                           out_idx_,
+                                                           is_largest,
+                                                           stream);
+    }
   }
+}
+
+template <typename T>
+void invokeTopkLastDim(SizeType32 batchSize,
+                       SizeType32 inputLength,
+                       SizeType32 k,
+                       bool is_largest,
+                       void const* __restrict__ input,
+                       void* __restrict__ out_val,
+                       void* __restrict__ out_idx,
+                       void* workspace,
+                       cudaStream_t stream) {
+  invokeTopkLastDim<T>(batchSize,
+                       inputLength,
+                       k,
+                       is_largest,
+                       input,
+                       out_val,
+                       out_idx,
+                       workspace,
+                       stream,
+                       true);
 }
 
 #define INSTANTIATE_TOPK_LastDim_DATA_TYPE(T)                        \

@@ -168,6 +168,7 @@ std::pair<torch::Tensor, torch::Tensor> compute_topk_general(
     uint32_t batch_size,
     uint32_t input_length,
     uint32_t k,
-    torch::Device device);
+    torch::Device device,
+    bool sorted = true);
 
 }  // namespace xllm::kernel::cuda

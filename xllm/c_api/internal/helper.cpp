@@ -515,16 +515,17 @@ void override_global_flags_from_env(const std::string& env_prefix,
       xllm::util::get_bool_env(env_prefix + "ENABLE_CONSTRAINED_DECODING",
                                FLAGS_enable_constrained_decoding);
 
+  // Sampler config
+  FLAGS_enable_fast_sampler = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_FAST_SAMPLER", FLAGS_enable_fast_sampler);
+  FLAGS_enable_topk_sorted = xllm::util::get_bool_env(
+      env_prefix + "ENABLE_TOPK_SORTED", FLAGS_enable_topk_sorted);
+
   // Concurrent rec worker config (REC specific, default 2 for REC)
   uint32_t rec_worker_default = (backend_type == BackendType::REC) ? 2 : 1;
   FLAGS_rec_worker_max_concurrency =
       static_cast<uint32_t>(xllm::util::get_int_env(
           env_prefix + "REC_WORKER_MAX_CONCURRENCY", rec_worker_default));
-
-  // Multi-step decode config
-  FLAGS_enable_beam_search_optimized =
-      xllm::util::get_bool_env(env_prefix + "ENABLE_BEAM_SEARCH_OPTIMIZED",
-                               FLAGS_enable_beam_search_optimized);
 
   // XAttention config
   FLAGS_enable_xattention_two_stage_decode = xllm::util::get_bool_env(
