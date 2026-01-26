@@ -202,12 +202,9 @@ torch::Tensor Qwen2AttentionImpl::forward(
     // Qwen2 does not use q/k norm, use sliced tensors directly
     q = sliced_q;
     k = sliced_k;
+    // 4. rope for Qwen2
+    rotary_emb_->forward(q, k, positions, attn_metadata);
   }
-
-#if !defined(USE_CUDA)
-  // 4. rope
-  rotary_emb_->forward(q, k, positions, attn_metadata);
-#endif
   q = q.view({T, q_size_});
   k = k.view({T, kv_size_});
 
