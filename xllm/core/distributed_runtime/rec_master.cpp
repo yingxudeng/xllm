@@ -97,6 +97,7 @@ bool process_llmrec_with_mm_data_inputs(
     std::optional<MMData> mm_data,
     std::vector<int32_t>* local_prompt_tokens,
     MMData* processed_mm_data,
+    int32_t hidden_size,
     OutputCallback callback) {
   local_prompt_tokens->assign(prompt_tokens.begin(), prompt_tokens.end());
 
@@ -149,6 +150,12 @@ bool process_llmrec_with_mm_data_inputs(
     if (tensor.size(0) != token_pos.length) {
       CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT,
                           "Token length is not match to embedding");
+      return false;
+    }
+
+    if (tensor.size(1) != hidden_size) {
+      CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT,
+                          "Embedding size is not match to model hidden size");
       return false;
     }
 
@@ -263,10 +270,12 @@ RecMaster::LlmRecWithMmDataMasterPipeline::generate_request(
   std::vector<int32_t> local_prompt_tokens;
   MMData processed_mm_data;
 
+  int32_t hidden_size = master_.model_args_.hidden_size();
   bool ret = process_llmrec_with_mm_data_inputs(prompt_tokens,
                                                 mm_data,
                                                 &local_prompt_tokens,
                                                 &processed_mm_data,
+                                                hidden_size,
                                                 callback);
   if (!ret) {
     return nullptr;

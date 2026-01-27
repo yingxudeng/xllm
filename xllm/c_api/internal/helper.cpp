@@ -744,8 +744,26 @@ XLLM_Response* handle_inference_request(
                                    const RequestOutput& req_output) -> bool {
       if (auto locked_promise = weak_promise.lock()) {
         try {
-          locked_promise->setValue(build_success_response(
-              inference_type, req_output, request_id, created_time, model_id));
+          if (req_output.status.has_value()) {
+            if (req_output.status.value().ok()) {
+              locked_promise->setValue(build_success_response(inference_type,
+                                                              req_output,
+                                                              request_id,
+                                                              created_time,
+                                                              model_id));
+            } else {
+              locked_promise->setValue(build_error_response(
+                  request_id,
+                  XLLM_StatusCode::kInternalError,
+                  "RequestOutput status is not ok, message: " +
+                      req_output.status.value().message()));
+            }
+          } else {
+            locked_promise->setValue(
+                build_error_response(request_id,
+                                     XLLM_StatusCode::kInternalError,
+                                     "RequestOutput status has no value"));
+          }
           return true;
         } catch (const std::exception& e) {
           LOG(ERROR) << "Build response failed: " << e.what();
