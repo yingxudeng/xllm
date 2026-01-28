@@ -124,6 +124,17 @@ XLLM_CAPI_EXPORT bool xllm_rec_initialize(
     FLAGS_max_decode_rounds = xllm_init_options.max_decode_rounds;
     FLAGS_max_token_per_req = xllm_init_options.max_token_per_req;
     FLAGS_max_seqs_per_batch = xllm_init_options.max_seqs_per_batch;
+    FLAGS_max_tokens_per_batch = xllm_init_options.max_tokens_per_batch;
+    FLAGS_block_size = xllm_init_options.block_size;
+
+    FLAGS_enable_graph = true;
+    FLAGS_rec_worker_max_concurrency = 2;
+    FLAGS_enable_prefill_piecewise_graph = true;
+    FLAGS_enable_qwen3_fused_qk_norm_rope_kernel = true;
+    FLAGS_enable_xattention_two_stage_decode = true;
+    FLAGS_enable_graph_mode_decode_no_padding = true;
+    FLAGS_enable_topk_sorted = false;
+    FLAGS_enable_fast_sampler = true;
 
     // Override global FLAGS from environment variables
     xllm::helper::override_global_flags_from_env(
