@@ -389,7 +389,6 @@ std::optional<ForwardOutput> RecWorkerImpl::LlmRecPureDevicePipeline::step(
     const auto& sampling_params = round > 0
                                       ? mutable_input.decoder_sampling_params
                                       : mutable_input.sampling_params;
-    mutable_input.input_params.is_prefill = round == 0;
     mutable_input.input_params.attn_metadata = nullptr;
     // Update current_round_ tensor value
     current_round_.fill_(round - 1);
