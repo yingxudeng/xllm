@@ -641,4 +641,12 @@ torch::Tensor fp8_scaled_matmul(Fp8ScaledMatmulParams& params) {
 #endif
 }
 
+void static_scaled_fp8_quant(StaticScaledFp8QuantParams& params) {
+#if defined(USE_CUDA)
+  cuda::static_scaled_fp8_quant(params.output, params.input, params.scale);
+#else
+  LOG(FATAL) << "static_scaled_fp8_quant is only supported on CUDA";
+#endif
+}
+
 }  // namespace xllm::kernel
