@@ -83,8 +83,16 @@ void requantize_fp8_weight(torch::Tensor& weight,
     auto weight_fp16 = weight_slice.to(torch::kFloat16) * partition_scales[idx];
 
     // Requantize: FP16 -> FP8 with unified max_scale
-    auto weight_scaled = weight_fp16 / max_scale;
-    auto weight_quantized = weight_scaled.to(torch::kFloat8_e4m3fn);
+    auto scale_tensor = torch::tensor(
+        {max_scale}, weight_fp16.options().dtype(torch::kFloat32));
+    auto weight_quantized =
+        torch::empty_like(weight_slice, torch::kFloat8_e4m3fn);
+
+    xllm::kernel::StaticScaledFp8QuantParams quant_params;
+    quant_params.output = weight_quantized;
+    quant_params.input = weight_fp16;
+    quant_params.scale = scale_tensor;
+    xllm::kernel::static_scaled_fp8_quant(quant_params);
 
     weight.slice(0, start, end).copy_(weight_quantized);
     start = end;
