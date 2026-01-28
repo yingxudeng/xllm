@@ -349,7 +349,6 @@ ConcurrentRecWorkerImpl::ConcurrentLlmRecPureDevicePipeline::step(
     const auto& sampling_params = round > 0
                                       ? mutable_input.decoder_sampling_params
                                       : mutable_input.sampling_params;
-    mutable_input.input_params.is_prefill = round == 0;
     mutable_input.input_params.attn_metadata = nullptr;
     current_round_.fill_(round - 1);
 
