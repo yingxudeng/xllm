@@ -23,19 +23,32 @@ namespace xllm::kernel::npu {
 void apply_rotary(torch::Tensor& q,
                   torch::Tensor& k,
                   const torch::Tensor& cos_sin_cache,
-                  const torch::Tensor& positions) {
-  // FIXME: This computation of 'cos' and 'sin' should only be performed
-  // for the first layer (or if the cache is empty). For subsequent layers,
-  // the calculated 'cos' and 'sin' values from the first layer should be
-  // reused/cached to avoid redundant computation.
-  auto cos_sin = cos_sin_cache.index_select(0, positions);
-  int64_t last_dim = cos_sin.size(-1);
+                  const std::optional<torch::Tensor>& positions,
+                  const torch::Tensor& cos_cache,
+                  const torch::Tensor& sin_cache,
+                  bool use_precomputed_cos_sin) {
+  torch::Tensor cos;
+  torch::Tensor sin;
+  int64_t rotary_dim = 0;
+  if (use_precomputed_cos_sin) {
+    cos = cos_cache;
+    sin = sin_cache;
+    rotary_dim = cos.size(-1);
+  } else {
+    TORCH_CHECK(positions.has_value(),
+                "positions must be provided when use_precomputed_cos_sin is "
+                "false");
+    auto cos_sin = cos_sin_cache.index_select(0, positions.value());
+    int64_t last_dim = cos_sin.size(-1);
+    rotary_dim = last_dim / 2;
+    auto cos_sin_split = cos_sin.chunk(2, /*dim=*/-1);
+    cos = cos_sin_split[0];
+    sin = cos_sin_split[1];
+  }
 
-  const int64_t rotary_dim = last_dim / 2;
-  auto cos_sin_split = cos_sin.chunk(2, /*dim=*/-1);
   // Ensure tensors are contiguous for NPU operations
-  auto cos = cos_sin_split[0].contiguous().view({1, -1, 1, rotary_dim});
-  auto sin = cos_sin_split[1].contiguous().view({1, -1, 1, rotary_dim});
+  cos = cos.contiguous().view({1, -1, 1, rotary_dim});
+  sin = sin.contiguous().view({1, -1, 1, rotary_dim});
 
   q = q.view({1, q.size(0), -1, rotary_dim});
   k = k.view({1, k.size(0), -1, rotary_dim});

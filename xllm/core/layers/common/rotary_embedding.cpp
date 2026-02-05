@@ -46,7 +46,8 @@ void RotaryEmbeddingImpl::forward(torch::Tensor& q,
                                   const torch::Tensor& positions,
                                   const torch::Tensor& cu_query_lens,
                                   int64_t max_query_len,
-                                  bool is_prompt) {
+                                  bool is_prompt,
+                                  const AttentionMetadata* attn_metadata) {
   bool discrete;
   std::optional<torch::Tensor> position_ids;
   if (is_prompt) {
@@ -70,6 +71,28 @@ void RotaryEmbeddingImpl::forward(torch::Tensor& q,
   rotary_params.interleaved = interleaved_;
   rotary_params.discrete = discrete;
   rotary_params.max_query_len = max_query_len;
+#if defined(USE_NPU)
+  if (Device::type_str() == "npu" && attn_metadata != nullptr &&
+      position_ids.has_value()) {
+    const int64_t num_positions = position_ids.value().numel();
+    if (!attn_metadata->rope_cos.defined() ||
+        !attn_metadata->rope_sin.defined() ||
+        attn_metadata->rope_positions_numel != num_positions) {
+      auto cos_sin = cos_sin_cache_.index_select(0, position_ids.value());
+      const int64_t rotary_dim = cos_sin.size(-1) / 2;
+      auto cos_sin_vec = cos_sin.chunk(2, /*dim=*/-1);
+      attn_metadata->rope_cos =
+          cos_sin_vec[0].contiguous().view({1, -1, 1, rotary_dim});
+      attn_metadata->rope_sin =
+          cos_sin_vec[1].contiguous().view({1, -1, 1, rotary_dim});
+      attn_metadata->rope_positions_numel = num_positions;
+    }
+    rotary_params.cos = attn_metadata->rope_cos;
+    rotary_params.sin = attn_metadata->rope_sin;
+    rotary_params.position_ids = std::nullopt;
+    rotary_params.use_precomputed_cos_sin = true;
+  }
+#endif
   xllm::kernel::apply_rotary(rotary_params);
 
   q = rotary_params.q;
@@ -108,7 +131,8 @@ void MRotaryEmbeddingImpl::forward(torch::Tensor& q,
                                         position_ids,
                                         attn_metadata.q_cu_seq_lens,
                                         attn_metadata.max_query_len,
-                                        attn_metadata.is_prefill);
+                                        attn_metadata.is_prefill,
+                                        &attn_metadata);
   }
 
   int64_t num_tokens = positions.size(-1);
@@ -125,6 +149,7 @@ void MRotaryEmbeddingImpl::forward(torch::Tensor& q,
   rotary_params.interleaved = interleaved_;
   rotary_params.discrete = false;
   rotary_params.max_query_len = num_tokens;
+  rotary_params.use_precomputed_cos_sin = true;
   xllm::kernel::apply_rotary(rotary_params);
 
   q = rotary_params.q;
@@ -178,7 +203,9 @@ void DeepseekScalingRotaryEmbeddingImpl::forward(
     const torch::Tensor& positions,
     const torch::Tensor& cu_query_lens,
     int64_t max_query_len,
-    bool is_prompt) {
+    bool is_prompt,
+    const AttentionMetadata* attn_metadata) {
+  (void)attn_metadata;
   const int32_t dim = -1;
   bool discrete;
   std::optional<torch::Tensor> position_ids;

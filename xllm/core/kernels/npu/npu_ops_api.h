@@ -77,5 +77,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> add_rms_norm(
 void apply_rotary(torch::Tensor& q,
                   torch::Tensor& k,
                   const torch::Tensor& cos_sin_cache,
-                  const torch::Tensor& positions);
+                  const std::optional<torch::Tensor>& positions,
+                  const torch::Tensor& cos,
+                  const torch::Tensor& sin,
+                  bool use_precomputed_cos_sin);
 }  // namespace xllm::kernel::npu

@@ -45,8 +45,13 @@ void apply_rotary(RotaryParams& params) {
                     params.dynamic_ntk,
                     params.max_query_len);
 #elif defined(USE_NPU)
-  npu::apply_rotary(
-      params.q, params.k, params.cos_sin, params.position_ids.value());
+  npu::apply_rotary(params.q,
+                    params.k,
+                    params.cos_sin,
+                    params.position_ids,
+                    params.cos,
+                    params.sin,
+                    params.use_precomputed_cos_sin);
 #elif defined(USE_CUDA)
   bool is_neox = !params.interleaved;
 

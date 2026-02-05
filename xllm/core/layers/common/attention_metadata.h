@@ -116,6 +116,10 @@ struct AttentionMetadata {
   // If defined, use this instead of kv_seq_lens_host to avoid .to(kCPU)
   // operations that break ACL graph capture.
   torch::Tensor paged_attention_tiling_data;
+  // Cached rotary cos/sin slices for this batch (shared across layers).
+  mutable torch::Tensor rope_cos;
+  mutable torch::Tensor rope_sin;
+  mutable int64_t rope_positions_numel = -1;
 #endif
 };
 

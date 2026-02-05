@@ -51,6 +51,9 @@ struct RotaryParams {
   // Precomputed cos_sin tensor. Not used in current MLU implementation
   // (rope.cpp).
   torch::Tensor cos_sin;
+  // For NPU: if true, cos/sin are already selected for the current positions.
+  // When enabled, position_ids can be empty and cos/sin will be used directly.
+  bool use_precomputed_cos_sin = false;
   // Optional position IDs tensor. Type must be int32.
   // Shape: [total_seqlen] if discrete=true, or [batch_size] if discrete=false.
   // If discrete=true, position_ids must be provided.
