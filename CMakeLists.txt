@@ -312,7 +312,17 @@ endif()
 if(USE_NPU)
   # USE_NPU_TORCH: Temporary flag used for debugging qwen3 torch NPU graph
   # capture. This variable may be removed in the future.
-  # add_definitions(-DUSE_NPU_TORCH)
+
+  # USE_NPU_TORCH: Temporary flag to isolate NPU ATB graph composition from
+  # single-operator graph composition. Without this isolation, there would be
+  # many duplicate definition errors.
+  # TODO: Add an 'npu' namespace to the models corresponding to NPU ATB graph
+  # composition to avoid duplicate definition issues, then remove this flag.
+  #
+  # NOTE: This option is enabled by default to facilitate debugging single
+  # operator calls. When merging into the main branch, this option should be
+  # disabled or the code should be refactored to remove USE_NPU_TORCH entirely.
+  add_definitions(-DUSE_NPU_TORCH)
   add_definitions(-DUSE_NPU)
   add_definitions(-DBUILD_LIBTORCH)
   add_definitions(-DTORCH_SETCUSTOMHANDLER=ON)

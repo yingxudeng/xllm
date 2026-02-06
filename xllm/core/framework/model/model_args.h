@@ -134,6 +134,27 @@ struct ModelArgs {
   PROPERTY(int32_t, index_n_heads) = 0;
   PROPERTY(int32_t, index_topk) = 0;
 
+  // deepseek v4
+  PROPERTY(int32_t, rope_head_dim) = 0;
+  PROPERTY(int32_t, o_lora_rank) = 0;
+  PROPERTY(int32_t, o_groups) = 0;
+  PROPERTY(std::vector<int32_t>, compress_ratios);
+  PROPERTY(float, compress_rope_theta) = 0.0f;
+  PROPERTY(int32_t, window_size) = 0;
+  PROPERTY(int32_t, n_activated_experts) = 0;
+  PROPERTY(int32_t, n_hash_layers) = 0;
+  PROPERTY(float, route_scale) = 0.0f;
+  PROPERTY(std::string, score_func);
+  PROPERTY(float, factor) = 0.0f;
+  PROPERTY(float, beta_fast) = 0.0f;
+  PROPERTY(float, beta_slow) = 0.0f;
+  PROPERTY(std::string, scale_fmt);
+  PROPERTY(int32_t, hc_mult) = 0;
+  PROPERTY(int32_t, hc_sinkhorn_iters) = 0;
+  PROPERTY(float, hc_eps) = 0.0f;
+  PROPERTY(int64_t, max_batch_size) = 0;
+  PROPERTY(int64_t, max_seq_len) = 0;
+
   PROPERTY(int32_t, vision_start_token_id) = 0;
   PROPERTY(int32_t, vision_end_token_id) = 0;
   PROPERTY(int32_t, vision_token_id) = 0;

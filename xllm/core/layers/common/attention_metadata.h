@@ -111,6 +111,15 @@ struct AttentionMetadata {
   // for npu
   torch::Tensor attn_mask;
   torch::Tensor kv_seq_lens_host;
+
+  // DeepSeek V4 DSA RoPE caches (optional)
+  torch::Tensor dsa_cos;
+  torch::Tensor dsa_sin;
+  torch::Tensor dsa_c4_cos;
+  torch::Tensor dsa_c4_sin;
+  torch::Tensor dsa_c128_cos;
+  torch::Tensor dsa_c128_sin;
+  torch::Tensor dsa_start_pos;
 };
 
 }  // namespace xllm::layer
