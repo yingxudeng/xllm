@@ -161,6 +161,7 @@ bool WorkerImpl::allocate_kv_cache(
     const std::vector<std::vector<int64_t>>& kv_cache_shape) {
   CHECK(model_ != nullptr) << "Model is not initialized.";
   CHECK(kv_caches_.empty()) << "KV caches are already initialized.";
+  const bool enable_linear_attention = context_.get_model_args().full_attention_interval() > 1;
 
   // Check if KV cache quantization is enabled
   // "auto" (default): cache dtype aligns with model dtype (no quantization)
@@ -214,7 +215,7 @@ bool WorkerImpl::allocate_kv_cache(
     torch::ScalarType cache_dtype =
         enable_kv_cache_quant ? torch::kInt8 : dtype_;
     for (int64_t i = 0; i < num_layers; ++i) {
-      torch::Tensor key_cache, value_cache, index_cache;
+      torch::Tensor key_cache, value_cache, index_cache, conv_cache, ssm_cache;
       torch::Tensor key_cache_scale, value_cache_scale;
 #if defined(USE_NPU)
       aclFormat npu_format_type =
@@ -235,6 +236,14 @@ bool WorkerImpl::allocate_kv_cache(
             torch::empty(kv_cache_shape[2],
                          torch::dtype(dtype_).device(device_)),
             npu_format_type);
+      }
+      if (enable_linear_attention) {
+        conv_cache = at_npu::native::npu_format_cast(
+            torch::zeros(kv_cache_shape[2], torch::dtype(dtype_).device(device_)),
+            2);
+        ssm_cache = at_npu::native::npu_format_cast(
+            torch::zeros(kv_cache_shape[3], torch::dtype(dtype_).device(device_)),
+            2);
       }
 #elif defined(USE_ILU) || defined(USE_MLU) || defined(USE_MUSA)
       key_cache = torch::zeros(kv_cache_shape[0],
@@ -278,7 +287,7 @@ bool WorkerImpl::allocate_kv_cache(
                                 key_cache_scale,
                                 value_cache_scale);
       } else {
-        kv_caches_.emplace_back(key_cache, value_cache, index_cache);
+        kv_caches_.emplace_back(key_cache, value_cache, index_cache, conv_cache, ssm_cache);
       }
     }
   }
