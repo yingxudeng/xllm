@@ -28,7 +28,7 @@ if(USE_NPU)
       message(STATUS "Building for device: A2 (macro USE_A2 defined)")
   endif()
 
-  option(INSTALL_XLLM_KERNELS "Install xllm_kernels RPM" ON)  
+  option(INSTALL_XLLM_KERNELS "Install xllm_kernels RPM" OFF)  
   message(STATUS "INSTALL_XLLM_KERNELS enabled: ${INSTALL_XLLM_KERNELS}")
   if(INSTALL_XLLM_KERNELS)
     if(DEVICE_TYPE STREQUAL "USE_A3")
@@ -312,7 +312,7 @@ endif()
 if(USE_NPU)
   # USE_NPU_TORCH: Temporary flag used for debugging qwen3 torch NPU graph
   # capture. This variable may be removed in the future.
-  # add_definitions(-DUSE_NPU_TORCH)
+  add_definitions(-DUSE_NPU_TORCH)
   add_definitions(-DUSE_NPU)
   add_definitions(-DBUILD_LIBTORCH)
   add_definitions(-DTORCH_SETCUSTOMHANDLER=ON)
@@ -328,6 +328,7 @@ if(USE_NPU)
       $ENV{NPU_HOME_PATH}/include
       $ENV{ATB_HOME_PATH}/include
       $ENV{NPU_HOME_PATH}/opp/vendors/xllm/op_api/include/
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/torch_npu_ops/
   )
   # xllm_kernels - mark as system headers to suppress warnings from third-party code
   include_directories(SYSTEM
