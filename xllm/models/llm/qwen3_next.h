@@ -20,7 +20,6 @@ limitations under the License.
 #include <vector>
 
 #include "core/framework/model_context.h"
-#include "core/layers/common/layer_utils.h"
 #include "core/layers/qwen3_next_decoder_layer.h"
 #include "llm_model_base.h"
 
@@ -75,10 +74,10 @@ class Qwen3NextModelImpl : public torch::nn::Module {
         xllm::layer::Qwen3NextRMSNorm(
             model_args.hidden_size(), model_args.rms_norm_eps(), options));
 #if defined(USE_NPU_TORCH)
-  embed_tokens_  = layer::WordEmbedding(model_args.vocab_size(),
-                                               model_args.hidden_size(),
-                                               context.get_parallel_args(),
-                                               options);
+    embed_tokens_ = layer::WordEmbedding(model_args.vocab_size(),
+                                         model_args.hidden_size(),
+                                         context.get_parallel_args(),
+                                         options);
 #else
     for (auto i = 0; i < FLAGS_micro_batch_num; i++) {
       npu_embed_tokens_.push_back(layer::NpuWordEmbedding(context));
@@ -123,7 +122,7 @@ class Qwen3NextModelImpl : public torch::nn::Module {
     // Create attention mask
     torch::Tensor attn_mask;
     max_seq_len_ = std::max(input_params.kv_max_seq_len, max_seq_len_);
-    
+
     if (FLAGS_enable_chunked_prefill) {
       int num_sequences = input_params.num_sequences;
       if (num_sequences > 0) {
@@ -131,12 +130,12 @@ class Qwen3NextModelImpl : public torch::nn::Module {
         req_mask_vec.reserve(num_sequences);
 
         for (int j = 0; j < num_sequences; j++) {
-          auto mask = attn_mask_.gen_append_mask(
-              input_params.q_seq_lens_vec[j],
-              input_params.kv_seq_lens_vec[j],
-              max_seq_len_,
-              dtype_,
-              device_);
+          auto mask =
+              attn_mask_.gen_append_mask(input_params.q_seq_lens_vec[j],
+                                         input_params.kv_seq_lens_vec[j],
+                                         max_seq_len_,
+                                         dtype_,
+                                         device_);
           req_mask_vec.emplace_back(mask);
         }
         attn_mask = torch::cat(req_mask_vec, 0);
@@ -145,8 +144,8 @@ class Qwen3NextModelImpl : public torch::nn::Module {
       attn_mask = attn_mask_.get_attn_mask(max_seq_len_, dtype_, device_);
     }
 
-    layer::AttentionMetadata attn_metadata =
-        layer::AttentionMetadata::build(input_params, input_params.q_max_seq_len > 1, attn_mask);
+    layer::AttentionMetadata attn_metadata = layer::AttentionMetadata::build(
+        input_params, input_params.q_max_seq_len > 1, attn_mask);
     torch::Tensor h = embed_tokens_(tokens);
     for (size_t i = 0; i < layers_.size(); i++) {
       auto& layer = layers_[i];
@@ -160,7 +159,7 @@ class Qwen3NextModelImpl : public torch::nn::Module {
   // load the weight from the checkpoint
   void load_state_dict(const StateDict& state_dict) {
     embed_tokens_->load_state_dict(
-      state_dict.get_dict_with_prefix("embed_tokens."));
+        state_dict.get_dict_with_prefix("embed_tokens."));
     for (int i = 0; i < layers_.size(); i++) {
       layers_[i]->load_state_dict(
           state_dict.get_dict_with_prefix("layers." + std::to_string(i) + "."));
@@ -176,7 +175,6 @@ class Qwen3NextModelImpl : public torch::nn::Module {
       std::vector<layer::NpuWordEmbedding>& word_embedding) {
     npu_embed_tokens_ = word_embedding;
   }
-
 
  private:
   torch::nn::ModuleList blocks_{nullptr};
@@ -251,7 +249,8 @@ class Qwen3NextForCausalLMImpl : public torch::nn::Module {
 #if defined(USE_NPU_TORCH)
       lm_head_->load_state_dict(state_dict->get_dict_with_prefix("lm_head."));
 #else
-      npu_lm_head_->load_state_dict(state_dict->get_dict_with_prefix("lm_head."));
+      npu_lm_head_->load_state_dict(
+          state_dict->get_dict_with_prefix("lm_head."));
 #endif
     }
 
@@ -291,7 +290,6 @@ class Qwen3NextForCausalLMImpl : public torch::nn::Module {
   layer::NpuLmHead npu_lm_head_{nullptr};
   layer::LmHead lm_head_{nullptr};
   Qwen3NextModel model_{nullptr};
-
 };
 TORCH_MODULE(Qwen3NextForCausalLM);
 
@@ -340,10 +338,10 @@ REGISTER_MODEL_ARGS(qwen3_next, [&] {
   LOAD_ARG_OR(linear_num_value_heads, "linear_num_value_heads", 32);
   LOAD_ARG_OR(linear_value_head_dim, "linear_value_head_dim", 128);
   LOAD_ARG_OR(partial_rotary_factor, "partial_rotary_factor", 0.25f);
-  LOAD_ARG_OR(shared_expert_intermediate_size, "shared_expert_intermediate_size", 512);
+  LOAD_ARG_OR(
+      shared_expert_intermediate_size, "shared_expert_intermediate_size", 512);
 
   SET_ARG(stop_token_ids, std::unordered_set<int32_t>({args->eos_token_id()}));
 });
 
 }  // namespace xllm
-

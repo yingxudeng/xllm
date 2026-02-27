@@ -16,6 +16,7 @@ limitations under the License.
 #pragma once
 
 #include "param.h"
+#include "triton_npu/torch_api/triton_ops_api.h"
 
 namespace xllm::kernel {
 
@@ -93,8 +94,9 @@ void fused_indexer_k(FusedIndexerKParams& params);
 // (and token_count/cusum outputs) on other backends.
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 moe_init_routing_v2(MoeInitRoutingV2Params& params);
-  
-std::pair<torch::Tensor, torch::Tensor> fused_gdn_gating(FusedGdnGatingParams& params);
+
+std::pair<torch::Tensor, torch::Tensor> fused_gdn_gating(
+    FusedGdnGatingParams& params);
 
 std::pair<torch::Tensor, torch::Tensor> fused_recurrent_gated_delta_rule(
     FusedRecurrentGatedDeltaRuleParams& params);
@@ -103,6 +105,7 @@ torch::Tensor causal_conv1d_update(CausalConv1dUpdateParams& params);
 
 torch::Tensor gated_layer_norm(GatedLayerNormParams& params);
 
-std::pair<torch::Tensor, torch::Tensor> partial_rotary_embedding(PartialRotaryEmbeddingParams& params);
+std::pair<torch::Tensor, torch::Tensor> partial_rotary_embedding(
+    PartialRotaryEmbeddingParams& params);
 
 }  // namespace xllm::kernel
