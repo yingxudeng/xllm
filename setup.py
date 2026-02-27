@@ -514,7 +514,21 @@ def parse_arguments() -> dict[str, Any]:
         default='auto',
         help='Device type: a2, a3, mlu, ilu, cuda or musa (case-insensitive)'
     )
-
+    
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Dry run mode (do not execute pre_build)'
+    )
+    
+    parser.add_argument(
+        '--install-xllm-kernels',
+        type=str.lower,
+        choices=['true', 'false', '1', '0', 'yes', 'no', 'y', 'n', 'on', 'off'],
+        default='false',
+        help='Whether to install xllm kernels'
+    )
+    
     parser.add_argument(
         '--generate-so',
         type=str.lower,

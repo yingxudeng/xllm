@@ -20,8 +20,9 @@ limitations under the License.
 namespace xllm {
 namespace layer {
 
-Qwen3NextDecoderLayerImpl::Qwen3NextDecoderLayerImpl(const ModelContext& context,
-                                                     int32_t layer_id) {
+Qwen3NextDecoderLayerImpl::Qwen3NextDecoderLayerImpl(
+    const ModelContext& context,
+    int32_t layer_id) {
   const auto& model_args = context.get_model_args();
   const auto& quant_args = context.get_quant_args();
   const auto& parallel_args = context.get_parallel_args();
@@ -29,22 +30,26 @@ Qwen3NextDecoderLayerImpl::Qwen3NextDecoderLayerImpl(const ModelContext& context
   // Initialize attention layers
   if ((layer_id + 1) % 4 == 0) {
     attention_ = register_module(
-      "self_attn",
-      Qwen3NextAttention(model_args, quant_args, parallel_args, options, layer_id));
+        "self_attn",
+        Qwen3NextAttention(
+            model_args, quant_args, parallel_args, options, layer_id));
   } else {
     linear_attention_ = register_module(
-      "linear_attn",
-      Qwen3NextGatedDeltaNet(model_args, quant_args, parallel_args, options, layer_id));
+        "linear_attn",
+        Qwen3NextGatedDeltaNet(
+            model_args, quant_args, parallel_args, options, layer_id));
   }
 
   // Initialize norm layers
   input_norm_ = register_module(
       "input_layernorm",
-      Qwen3NextRMSNorm(model_args.hidden_size(), model_args.rms_norm_eps(), options));
+      Qwen3NextRMSNorm(
+          model_args.hidden_size(), model_args.rms_norm_eps(), options));
 
   post_norm_ = register_module(
       "post_attention_layernorm",
-      Qwen3NextRMSNorm(model_args.hidden_size(), model_args.rms_norm_eps(), options));
+      Qwen3NextRMSNorm(
+          model_args.hidden_size(), model_args.rms_norm_eps(), options));
 
   // Initialize mlp
   auto mlp_only_layers = model_args.mlp_only_layers();
@@ -66,7 +71,7 @@ Qwen3NextDecoderLayerImpl::Qwen3NextDecoderLayerImpl(const ModelContext& context
                                     false,
                                     model_args.hidden_act(),
                                     quant_args,
-                                    parallel_args,
+                                    parallel_args.tp_group_,
                                     options));
   }
 }
@@ -75,7 +80,8 @@ void Qwen3NextDecoderLayerImpl::load_state_dict(const StateDict& state_dict) {
   if (attention_) {
     attention_->load_state_dict(state_dict.get_dict_with_prefix("self_attn."));
   } else {
-    linear_attention_->load_state_dict(state_dict.get_dict_with_prefix("linear_attn."));
+    linear_attention_->load_state_dict(
+        state_dict.get_dict_with_prefix("linear_attn."));
   }
   input_norm_->load_state_dict(
       state_dict.get_dict_with_prefix("input_layernorm."));
@@ -101,8 +107,8 @@ torch::Tensor Qwen3NextDecoderLayerImpl::forward(
   // Attention
   if (attention_) {
     x = attention_->forward(positions, x, attn_metadata, kv_cache);
-  } else { 
-    //x = x;
+  } else {
+    // x = x;
     x = linear_attention_->forward(x, attn_metadata, kv_cache, input_params);
   }
 
