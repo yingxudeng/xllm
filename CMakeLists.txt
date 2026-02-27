@@ -28,6 +28,7 @@ if(USE_NPU)
       message(STATUS "Building for device: A2 (macro USE_A2 defined)")
   endif()
 
+<<<<<<< HEAD
   # Override Mooncake option for mooncake transfer engine
   # CANN 8.5+ migration: ascend_direct_transport replaces ascend_transport
   set(USE_ASCEND_DIRECT ON CACHE BOOL "Enable ADXL engine for Ascend NPU" FORCE)
@@ -37,6 +38,34 @@ if(USE_NPU)
       CACHE PATH "Path to xllm_atb_layers source tree")
   if(NOT EXISTS "${XLLM_ATB_LAYERS_SOURCE_DIR}")
     message(FATAL_ERROR "xllm_atb_layers source not found: ${XLLM_ATB_LAYERS_SOURCE_DIR}")
+=======
+  option(INSTALL_XLLM_KERNELS "Install xllm_kernels RPM" OFF)  
+  message(STATUS "INSTALL_XLLM_KERNELS enabled: ${INSTALL_XLLM_KERNELS}")
+  if(INSTALL_XLLM_KERNELS)
+    if(DEVICE_TYPE STREQUAL "USE_A3")
+        message("downloading a3 arm xllm kernels")
+        file(DOWNLOAD 
+            "https://9n-das-tools.s3.cn-north-1.jdcloud-oss.com/xllm-ai/xllm_kernels/0.8.0/xllm_kernels-1.3.10-Linux.a3.arm.rpm"
+            "${CMAKE_BINARY_DIR}/xllm_kernels.rpm"
+        )
+    else()  
+      if(DEVICE_ARCH STREQUAL "ARM")
+          message("downloading a2 arm xllm_kernels")
+          file(DOWNLOAD 
+              "https://9n-das-tools.s3.cn-north-1.jdcloud-oss.com/xllm-ai/xllm_kernels/0.8.0/xllm_kernels-1.3.10-Linux.a2.arm.rpm"
+              "${CMAKE_BINARY_DIR}/xllm_kernels.rpm"
+          )
+      else()
+          message("downloading a2 x86 xllm_kernels")
+          file(DOWNLOAD 
+              "https://9n-das-tools.s3.cn-north-1.jdcloud-oss.com/xllm-ai/xllm_kernels/0.8.0/xllm_kernels-1.3.10-Linux.a2.x86.rpm"
+              "${CMAKE_BINARY_DIR}/xllm_kernels.rpm"
+          )
+      endif()
+    endif()
+      execute_process(COMMAND rpm -ivh  --replacepkgs --replacefiles "${CMAKE_BINARY_DIR}/xllm_kernels.rpm")
+      file(WRITE "${CMAKE_BINARY_DIR}/.xllm_installed" "")
+>>>>>>> 89ccdda (bugfix: fix some compile problem: LOAD_MERGED_WEIGHT_V2 / testing trea / Qwen3NextDecoderLayer.)
   endif()
   message(STATUS "Using xllm_atb_layers source at: ${XLLM_ATB_LAYERS_SOURCE_DIR}")
 
@@ -315,7 +344,7 @@ endif()
 if(USE_NPU)
   # USE_NPU_TORCH: Temporary flag used for debugging qwen3 torch NPU graph
   # capture. This variable may be removed in the future.
-  # add_definitions(-DUSE_NPU_TORCH)
+  add_definitions(-DUSE_NPU_TORCH)
   add_definitions(-DUSE_NPU)
   add_definitions(-DBUILD_LIBTORCH)
   add_definitions(-DTORCH_SETCUSTOMHANDLER=ON)
@@ -338,6 +367,7 @@ if(USE_NPU)
       $ENV{NPU_HOME_PATH}/include
       $ENV{ATB_HOME_PATH}/include
       $ENV{NPU_HOME_PATH}/opp/vendors/xllm/op_api/include/
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/torch_npu_ops/
   )
   # Keep third-party warnings suppressed while providing headers expected by
   # legacy includes like "atb_speed/log.h" from xllm_atb_layers.
