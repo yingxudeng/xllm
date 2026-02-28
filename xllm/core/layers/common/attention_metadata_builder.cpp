@@ -89,8 +89,10 @@ AttentionMetadata AttentionMetadataBuilder::build(
 #if defined(USE_NPU)
     // NPU path uses per-sequence lengths (not cumulative), so no diff.
     attn_metadata.kv_seq_lens = params.kv_seq_lens;
+    attn_metadata.q_seq_lens = params.q_seq_lens;
 #else
     attn_metadata.kv_seq_lens = torch::diff(params.kv_seq_lens);  // kv seqlens
+    attn_metadata.q_seq_lens = torch::diff(params.q_seq_lens);  // q seqlens
 #endif
   }
 

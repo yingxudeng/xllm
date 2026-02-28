@@ -445,12 +445,12 @@ torch::Tensor Qwen3NextGatedDeltaNetImpl::reshape_qkvz_unpad(
     return padded_qkvz;
   }
   std::vector<torch::Tensor> valid_batches;
-  int64_t bs = attn_metadata.query_start_loc.size(0);
+  int64_t bs = attn_metadata.q_seq_lens.size(0);
   int64_t max_len = attn_metadata.max_query_len;
-  const auto& ori_seq_lens = attn_metadata.query_start_loc;
+  const auto& ori_seq_lens = attn_metadata.q_seq_lens;
   auto reshaped_qkvz = padded_qkvz.view({bs, max_len, -1});
   for (int64_t b = 0; b < bs; ++b) {
-    int64_t ori_len = ori_seq_lens[b].item<int64_t>();
+    int64_t ori_len = ori_seq_lens[b].toLong();
     torch::Tensor valid_batch = reshaped_qkvz[b].slice(0, 0, ori_len);
     valid_batches.push_back(valid_batch);
   }
@@ -460,16 +460,16 @@ torch::Tensor Qwen3NextGatedDeltaNetImpl::reshape_qkvz_unpad(
 torch::Tensor Qwen3NextGatedDeltaNetImpl::reshape_qkvz_with_pad(
     const AttentionMetadata& attn_metadata,
     const torch::Tensor& qkvz) {
-  int64_t bs = attn_metadata.query_start_loc.size(0);
+  int64_t bs = attn_metadata.q_seq_lens.size(0);
   int64_t max_len = attn_metadata.max_query_len;
-  const auto& start_loc = attn_metadata.query_start_loc;
+  const auto& start_loc = attn_metadata.q_seq_lens;
   if (!attn_metadata.is_prefill) {
     return qkvz.view({bs, -1, qkvz.size(-1)});
   }
   std::vector<torch::Tensor> batches;
   int64_t idx = 0;
   for (int64_t b = 0; b < bs; ++b) {
-    int64_t cur_len = start_loc[b].item<int64_t>();
+    int64_t cur_len = start_loc[b].toLong();
     torch::Tensor batch = qkvz.slice(0, idx, idx + cur_len).contiguous();
     idx = idx + cur_len;
     if (batch.size(0) != max_len) {
