@@ -79,15 +79,6 @@ void apply_rotary(torch::Tensor& q,
                   const torch::Tensor& cos_sin_cache,
                   const torch::Tensor& positions);
 
-std::pair<torch::Tensor, torch::Tensor> apply_npu_partial_rotary_embedding(
-    const torch::Tensor& positions,
-    torch::Tensor& query,
-    torch::Tensor& key,
-    int64_t head_size,
-    int64_t rotary_dim,
-    const torch::Tensor& cos_sin_cache,
-    bool is_neox_style);
-
 torch::Tensor apply_npu_moe_token_unpermute(
     const torch::Tensor& permuted_tokens,
     const torch::Tensor& sorted_indices,
