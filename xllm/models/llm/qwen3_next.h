@@ -64,7 +64,7 @@ class Qwen3NextModelImpl : public torch::nn::Module {
                                       options.dtype().toScalarType(),
                                       /*mask_value=*/mask_value);
     for (int32_t i = 0; i < model_args.n_layers(); ++i) {
-      auto block = Qwen3NextDecoderLayer(context, i);
+      auto block = layer::Qwen3NextDecoderLayer(context, i);
       layers_.push_back(block);
       blocks_->push_back(block);
     }
@@ -153,7 +153,7 @@ class Qwen3NextModelImpl : public torch::nn::Module {
 
  private:
   torch::nn::ModuleList blocks_{nullptr};
-  std::vector<Qwen3NextDecoderLayer> layers_;
+  std::vector<layer::Qwen3NextDecoderLayer> layers_;
   int32_t max_seq_len_ = 0;
   int32_t dp_rank_;
   int32_t rank_;
