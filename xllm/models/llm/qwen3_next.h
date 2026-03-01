@@ -119,8 +119,8 @@ class Qwen3NextModelImpl : public torch::nn::Module {
       attn_mask = attn_mask_.get_attn_mask(max_seq_len_, dtype_, device_);
     }
 
-    layer::AttentionMetadata attn_metadata = layer::AttentionMetadata::build(
-        input_params, input_params.q_max_seq_len > 1, attn_mask);
+    layer::AttentionMetadata attn_metadata =
+        layer::AttentionMetadataBuilder::build(input_params, attn_mask);
     torch::Tensor h = embed_tokens_(tokens);
     for (size_t i = 0; i < layers_.size(); i++) {
       auto& layer = layers_[i];
@@ -180,15 +180,7 @@ class Qwen3NextForCausalLMImpl : public torch::nn::Module {
   Qwen3NextForCausalLMImpl(const ModelContext& context) {
     model_ = register_module("model", Qwen3NextModel(context));
 #if defined(USE_NPU) && defined(USE_NPU_TORCH)
-    lm_head_ =
-        register_module("lm_head",
-                        layer::LmHead(context.get_model_args().hidden_size(),
-                                      context.get_model_args().vocab_size(),
-                                      /*bias=*/false,
-                                      /*gather_output=*/true,
-                                      QuantArgs{},
-                                      context.get_parallel_args(),
-                                      context.get_tensor_options()));
+    lm_head_ = register_module("lm_head", layer::LmHead(context));
 #else
     npu_lm_head_ = register_module("lm_head", layer::NpuLmHead(context));
 #endif
