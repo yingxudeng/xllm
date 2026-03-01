@@ -82,10 +82,10 @@ class Qwen3NextModelImpl : public torch::nn::Module {
 
   // tokens: [num_tokens]
   // positions: [num_tokens] token pos in the sequence
-  torch::Tensor forward(torch::Tensor tokens,
-                        torch::Tensor positions,
-                        std::vector<KVCache>& kv_caches,
-                        const ModelInputParams& input_params) {
+  ModelOutput forward(torch::Tensor tokens,
+                      torch::Tensor positions,
+                      std::vector<KVCache>& kv_caches,
+                      const ModelInputParams& input_params) {
     if (dp_size_ > 1) {
       if (tokens.sizes() == 0) {
         tokens = torch::tensor({1}).to(torch::kInt32).to(device_);
@@ -119,15 +119,15 @@ class Qwen3NextModelImpl : public torch::nn::Module {
       attn_mask = attn_mask_.get_attn_mask(max_seq_len_, dtype_, device_);
     }
 
-    layer::AttentionMetadata attn_metadata = layer::AttentionMetadata::build(
-        input_params, input_params.q_max_seq_len > 1, attn_mask);
+    layer::AttentionMetadata attn_metadata =
+        layer::AttentionMetadataBuilder::build(input_params, attn_mask);
     torch::Tensor h = embed_tokens_(tokens);
     for (size_t i = 0; i < layers_.size(); i++) {
       auto& layer = layers_[i];
       h = layer(h, positions, attn_metadata, kv_caches[i], input_params);
     }
     h = norm_(h);
-    return h;
+    return ModelOutput(h);
 #endif
   }
 
@@ -142,14 +142,28 @@ class Qwen3NextModelImpl : public torch::nn::Module {
     norm_->load_state_dict(state_dict.get_dict_with_prefix("norm."));
   }
 
-  std::vector<layer::NpuWordEmbedding> get_word_embedding() {
-    return {npu_embed_tokens_};
+#if defined(USE_NPU) && defined(USE_NPU_TORCH)
+  layer::WordEmbedding get_word_embedding() { return embed_tokens_; }
+
+  void set_word_embedding(layer::WordEmbedding& word_embedding) {
+    embed_tokens_ = word_embedding;
+  }
+#elif defined(USE_NPU)
+  layer::NpuWordEmbedding get_npu_word_embedding() {
+    if (npu_embed_tokens_.empty()) {
+      return nullptr;
+    }
+    return npu_embed_tokens_.front();
   }
 
-  void set_word_embedding(
-      std::vector<layer::NpuWordEmbedding>& word_embedding) {
-    npu_embed_tokens_ = word_embedding;
+  void set_npu_word_embedding(layer::NpuWordEmbedding& word_embedding) {
+    if (npu_embed_tokens_.empty()) {
+      npu_embed_tokens_.push_back(word_embedding);
+      return;
+    }
+    npu_embed_tokens_[0] = word_embedding;
   }
+#endif
 
  private:
   torch::nn::ModuleList blocks_{nullptr};
@@ -180,15 +194,7 @@ class Qwen3NextForCausalLMImpl : public torch::nn::Module {
   Qwen3NextForCausalLMImpl(const ModelContext& context) {
     model_ = register_module("model", Qwen3NextModel(context));
 #if defined(USE_NPU) && defined(USE_NPU_TORCH)
-    lm_head_ =
-        register_module("lm_head",
-                        layer::LmHead(context.get_model_args().hidden_size(),
-                                      context.get_model_args().vocab_size(),
-                                      /*bias=*/false,
-                                      /*gather_output=*/true,
-                                      QuantArgs{},
-                                      context.get_parallel_args(),
-                                      context.get_tensor_options()));
+    lm_head_ = register_module("lm_head", layer::LmHead(context));
 #else
     npu_lm_head_ = register_module("lm_head", layer::NpuLmHead(context));
 #endif
@@ -197,11 +203,11 @@ class Qwen3NextForCausalLMImpl : public torch::nn::Module {
   // tokens: [num_tokens]
   // positions: [num_tokens] token pos in the sequence
   // returns: [num_tokens, hidden_size]
-  torch::Tensor forward(const std::vector<torch::Tensor>& tokens,
-                        const std::vector<torch::Tensor>& positions,
-                        std::vector<KVCache>& kv_caches,
-                        const std::vector<ModelInputParams>& input_params) {
-    return model_(tokens[0], positions[0], kv_caches, input_params[0]);
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      const ModelInputParams& input_params) {
+    return model_(tokens, positions, kv_caches, input_params);
   }
 
   // hidden_states: [num_tokens, hidden_size]
@@ -245,19 +251,29 @@ class Qwen3NextForCausalLMImpl : public torch::nn::Module {
   }
   virtual void update_expert_weight(int32_t layer_id) { return; }
 
-#if defined(USE_NPU)
+#if defined(USE_NPU) && defined(USE_NPU_TORCH)
+  layer::LmHead get_lm_head() { return lm_head_; }
 
-  layer::NpuLmHead get_lm_head() { return npu_lm_head_; }
+  void set_lm_head(layer::LmHead& head) { lm_head_ = head; }
 
-  void set_lm_head(layer::NpuLmHead& head) { npu_lm_head_ = head; }
-
-  std::vector<layer::NpuWordEmbedding> get_word_embedding() {
+  layer::WordEmbedding get_word_embedding() {
     return model_->get_word_embedding();
   }
 
-  void set_word_embedding(
-      std::vector<layer::NpuWordEmbedding>& word_embedding) {
+  void set_word_embedding(layer::WordEmbedding& word_embedding) {
     model_->set_word_embedding(word_embedding);
+  }
+#elif defined(USE_NPU)
+  layer::NpuLmHead get_npu_lm_head() { return npu_lm_head_; }
+
+  void set_npu_lm_head(layer::NpuLmHead& head) { npu_lm_head_ = head; }
+
+  layer::NpuWordEmbedding get_npu_word_embedding() {
+    return model_->get_npu_word_embedding();
+  }
+
+  void set_npu_word_embedding(layer::NpuWordEmbedding& word_embedding) {
+    model_->set_npu_word_embedding(word_embedding);
   }
 #endif
 

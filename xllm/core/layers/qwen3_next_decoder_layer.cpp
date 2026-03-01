@@ -36,8 +36,7 @@ Qwen3NextDecoderLayerImpl::Qwen3NextDecoderLayerImpl(
   } else {
     linear_attention_ = register_module(
         "linear_attn",
-        Qwen3NextGatedDeltaNet(
-            model_args, quant_args, parallel_args, options, layer_id));
+        Qwen3NextGatedDeltaNet(model_args, quant_args, parallel_args, options));
   }
 
   // Initialize norm layers
@@ -70,6 +69,7 @@ Qwen3NextDecoderLayerImpl::Qwen3NextDecoderLayerImpl(
                                     false,
                                     false,
                                     model_args.hidden_act(),
+                                    /*enable_result_reduction=*/true,
                                     quant_args,
                                     parallel_args.tp_group_,
                                     options));
