@@ -332,6 +332,16 @@ REGISTER_MODEL_ARGS(qwen3_next, [&] {
   LOAD_ARG_OR(
       shared_expert_intermediate_size, "shared_expert_intermediate_size", 512);
 
+  // MoE compatibility with fused_moe implementation.
+  LOAD_ARG_OR(n_routed_experts, "n_routed_experts", args->num_experts());
+  SET_ARG(n_shared_experts,
+          args->shared_expert_intermediate_size() > 0 ? 1 : 0);
+  SET_ARG(scoring_func, "softmax");
+  SET_ARG(topk_method, "");
+  SET_ARG(n_group, -1);
+  SET_ARG(topk_group, 0);
+  SET_ARG(routed_scaling_factor, 1.0);
+
   SET_ARG(stop_token_ids, std::unordered_set<int32_t>({args->eos_token_id()}));
 });
 
