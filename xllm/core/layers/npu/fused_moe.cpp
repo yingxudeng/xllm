@@ -185,7 +185,7 @@ torch::Tensor FusedMoEImpl::select_experts(
   // prepare the parameters for select_experts
   xllm::kernel::MoeActiveTopkParams moe_active_topk_params;
   moe_active_topk_params.input = router_logits_2d;
-  moe_active_topk_params.finished = std::nullopt;
+  moe_active_topk_params.finished = torch::Tensor();
   moe_active_topk_params.topk = topk_;
   auto [topk_weights, topk_ids] =
       xllm::kernel::moe_active_topk(moe_active_topk_params);
@@ -273,6 +273,7 @@ torch::Tensor FusedMoEImpl::forward_expert(
   activation_params.act_mode = hidden_act_;
   activation_params.is_gated = is_gated_;
   xllm::kernel::active(activation_params);
+  act_out = activation_params.output;
   // Step 6: group gemm 2
   torch::Tensor gemm2_out =
       create_group_gemm_output(act_out,

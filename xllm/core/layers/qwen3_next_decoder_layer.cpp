@@ -54,7 +54,7 @@ Qwen3NextDecoderLayerImpl::Qwen3NextDecoderLayerImpl(
   auto mlp_only_layers = model_args.mlp_only_layers();
   if ((std::count(mlp_only_layers.begin(), mlp_only_layers.end(), layer_id) ==
        0) &&
-      model_args.num_experts() > 0 &&
+      model_args.n_routed_experts() > 0 &&
       (layer_id + 1) % model_args.decoder_sparse_step() == 0) {
     moe_mlp_ = register_module("mlp",
                                FusedMoE(model_args,

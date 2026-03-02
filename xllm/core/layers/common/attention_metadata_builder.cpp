@@ -95,6 +95,15 @@ AttentionMetadata AttentionMetadataBuilder::build(
     attn_metadata.q_seq_lens = torch::diff(params.q_seq_lens);  // q seqlens
 #endif
   }
+#if defined(USE_NPU)
+  // Ensure per-sequence lengths are available for NPU kernels in prefill too.
+  if (params.kv_seq_lens.defined()) {
+    attn_metadata.kv_seq_lens = params.kv_seq_lens;
+  }
+  if (params.q_seq_lens.defined()) {
+    attn_metadata.q_seq_lens = params.q_seq_lens;
+  }
+#endif
 
   attn_metadata.is_dummy = (params.q_max_seq_len == 0);
   if (attn_metadata.is_dummy) {
