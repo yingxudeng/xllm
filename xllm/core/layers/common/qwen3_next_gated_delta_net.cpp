@@ -578,8 +578,38 @@ void Qwen3NextGatedDeltaNetImpl::load_state_dict(const StateDict& state_dict) {
   const int32_t shard_tensor_count = 3;
   const std::vector<int64_t> shard_sizes = {
       k_size_ / tp_size_, k_size_ / tp_size_, v_size_ / tp_size_};
-  qkvz_proj_->load_state_dict(state_dict.get_dict_with_prefix("in_proj_qkvz."));
-  ba_proj_->load_state_dict(state_dict.get_dict_with_prefix("in_proj_ba."));
+
+  auto qkvz_state_dict = state_dict.get_dict_with_prefix("in_proj_qkvz.");
+  if (qkvz_state_dict.size() > 0) {
+    qkvz_proj_->load_state_dict(qkvz_state_dict);
+  } else {
+    auto in_proj_qkv_weight = state_dict.get_tensor("in_proj_qkv.weight");
+    auto in_proj_z_weight = state_dict.get_tensor("in_proj_z.weight");
+    if (in_proj_qkv_weight.defined() && in_proj_z_weight.defined()) {
+      qkvz_proj_->load_state_dict(StateDict(
+          {{"weight", torch::cat({in_proj_qkv_weight, in_proj_z_weight}, 0)}}));
+    } else {
+      LOG(WARNING) << "Neither in_proj_qkvz nor in_proj_qkv/in_proj_z weights "
+                      "are found for "
+                   << state_dict.prefix();
+    }
+  }
+
+  auto ba_state_dict = state_dict.get_dict_with_prefix("in_proj_ba.");
+  if (ba_state_dict.size() > 0) {
+    ba_proj_->load_state_dict(ba_state_dict);
+  } else {
+    auto in_proj_b_weight = state_dict.get_tensor("in_proj_b.weight");
+    auto in_proj_a_weight = state_dict.get_tensor("in_proj_a.weight");
+    if (in_proj_b_weight.defined() && in_proj_a_weight.defined()) {
+      ba_proj_->load_state_dict(StateDict(
+          {{"weight", torch::cat({in_proj_b_weight, in_proj_a_weight}, 0)}}));
+    } else {
+      LOG(WARNING) << "Neither in_proj_ba nor in_proj_b/in_proj_a weights are "
+                      "found for "
+                   << state_dict.prefix();
+    }
+  }
 
   if (auto w = state_dict.get_tensor("conv1d.weight"); w.defined()) {
     conv1d_->load_state_dict(

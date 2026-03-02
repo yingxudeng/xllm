@@ -17,6 +17,8 @@ limitations under the License.
 
 #include <glog/logging.h>
 
+#include <algorithm>
+
 namespace xllm {
 namespace layer {
 
@@ -27,8 +29,22 @@ Qwen3NextDecoderLayerImpl::Qwen3NextDecoderLayerImpl(
   const auto& quant_args = context.get_quant_args();
   const auto& parallel_args = context.get_parallel_args();
   const auto& options = context.get_tensor_options();
+  const auto& layer_types = model_args.layer_types();
+  bool use_full_attention = false;
+  if (layer_id < static_cast<int32_t>(layer_types.size())) {
+    const auto& layer_type = layer_types[layer_id];
+    use_full_attention =
+        (layer_type == "full_attention" || layer_type == "attention");
+  } else {
+    int32_t full_attention_interval = model_args.full_attention_interval();
+    if (full_attention_interval <= 0) {
+      full_attention_interval = 4;
+    }
+    use_full_attention = ((layer_id + 1) % full_attention_interval == 0);
+  }
+
   // Initialize attention layers
-  if ((layer_id + 1) % 4 == 0) {
+  if (use_full_attention) {
     attention_ = register_module(
         "self_attn",
         Qwen3NextAttention(
@@ -66,7 +82,7 @@ Qwen3NextDecoderLayerImpl::Qwen3NextDecoderLayerImpl(
     mlp_ = register_module("mlp",
                            DenseMLP(model_args.hidden_size(),
                                     model_args.intermediate_size(),
-                                    false,
+                                    true,
                                     false,
                                     model_args.hidden_act(),
                                     /*enable_result_reduction=*/true,
