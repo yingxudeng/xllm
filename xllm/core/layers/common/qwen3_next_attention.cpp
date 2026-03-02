@@ -179,7 +179,7 @@ torch::Tensor Qwen3NextAttentionImpl::forward(
 }
 
 void Qwen3NextAttentionImpl::load_state_dict(const StateDict& state_dict) {
-  qkv_proj_->load_state_dict(state_dict);
+  qkv_proj_->load_state_dict(state_dict, {"q_proj.", "k_proj.", "v_proj."});
   o_proj_->load_state_dict(state_dict.get_dict_with_prefix("o_proj."));
   if (auto w = state_dict.get_tensor("q_norm.weight"); w.defined()) {
     q_norm_->load_state_dict(StateDict({{"weight", w}}));
