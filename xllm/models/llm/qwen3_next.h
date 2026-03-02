@@ -192,6 +192,7 @@ TORCH_MODULE(Qwen3NextModel);
 class Qwen3NextForCausalLMImpl : public torch::nn::Module {
  public:
   Qwen3NextForCausalLMImpl(const ModelContext& context) {
+    tie_word_embeddings_ = context.get_model_args().tie_word_embeddings();
     model_ = register_module("model", Qwen3NextModel(context));
 #if defined(USE_NPU) && defined(USE_NPU_TORCH)
     lm_head_ = register_module("lm_head", layer::LmHead(context));
@@ -225,13 +226,90 @@ class Qwen3NextForCausalLMImpl : public torch::nn::Module {
   }
 
   void load_model(std::unique_ptr<ModelLoader> loader) {
+    auto has_model_weights = [](const StateDict& dict) {
+      return dict.get_tensor("embed_tokens.weight").defined() ||
+             dict.get_dict_with_prefix("layers.").size() > 0 ||
+             dict.get_tensor("norm.weight").defined();
+    };
+    auto has_lm_head_weights = [](const StateDict& dict) {
+      return dict.get_tensor("weight").defined() ||
+             dict.get_tensor("qweight").defined();
+    };
+
     for (const auto& state_dict : loader->get_state_dicts()) {
-      model_->load_state_dict(state_dict->get_dict_with_prefix("model."));
+      auto model_state_dict = state_dict->get_dict_with_prefix("model.");
+      if (!has_model_weights(model_state_dict)) {
+        auto language_model_state_dict =
+            state_dict->get_dict_with_prefix("language_model.model.");
+        if (has_model_weights(language_model_state_dict)) {
+          model_state_dict = language_model_state_dict;
+        } else {
+          auto wrapped_language_model_state_dict =
+              state_dict->get_dict_with_prefix("model.language_model.");
+          if (has_model_weights(wrapped_language_model_state_dict)) {
+            model_state_dict = wrapped_language_model_state_dict;
+          }
+        }
+      }
+      model_->load_state_dict(model_state_dict);
 #if defined(USE_NPU_TORCH)
-      lm_head_->load_state_dict(state_dict->get_dict_with_prefix("lm_head."));
+      auto lm_head_state_dict = state_dict->get_dict_with_prefix("lm_head.");
+      if (!has_lm_head_weights(lm_head_state_dict)) {
+        auto language_model_lm_head_state_dict =
+            state_dict->get_dict_with_prefix("language_model.lm_head.");
+        if (has_lm_head_weights(language_model_lm_head_state_dict)) {
+          lm_head_state_dict = language_model_lm_head_state_dict;
+        } else {
+          auto wrapped_language_model_lm_head_state_dict =
+              state_dict->get_dict_with_prefix("model.language_model.lm_head.");
+          if (has_lm_head_weights(wrapped_language_model_lm_head_state_dict)) {
+            lm_head_state_dict = wrapped_language_model_lm_head_state_dict;
+          } else {
+            auto wrapped_lm_head_state_dict =
+                state_dict->get_dict_with_prefix("model.lm_head.");
+            if (has_lm_head_weights(wrapped_lm_head_state_dict)) {
+              lm_head_state_dict = wrapped_lm_head_state_dict;
+            }
+          }
+        }
+      }
+      if (!has_lm_head_weights(lm_head_state_dict) && tie_word_embeddings_) {
+        auto tied_lm_head_state_dict =
+            model_state_dict.get_dict_with_prefix("embed_tokens.");
+        if (has_lm_head_weights(tied_lm_head_state_dict)) {
+          lm_head_state_dict = tied_lm_head_state_dict;
+        }
+      }
+      lm_head_->load_state_dict(lm_head_state_dict);
 #else
-      npu_lm_head_->load_state_dict(
-          state_dict->get_dict_with_prefix("lm_head."));
+      auto lm_head_state_dict = state_dict->get_dict_with_prefix("lm_head.");
+      if (!has_lm_head_weights(lm_head_state_dict)) {
+        auto language_model_lm_head_state_dict =
+            state_dict->get_dict_with_prefix("language_model.lm_head.");
+        if (has_lm_head_weights(language_model_lm_head_state_dict)) {
+          lm_head_state_dict = language_model_lm_head_state_dict;
+        } else {
+          auto wrapped_language_model_lm_head_state_dict =
+              state_dict->get_dict_with_prefix("model.language_model.lm_head.");
+          if (has_lm_head_weights(wrapped_language_model_lm_head_state_dict)) {
+            lm_head_state_dict = wrapped_language_model_lm_head_state_dict;
+          } else {
+            auto wrapped_lm_head_state_dict =
+                state_dict->get_dict_with_prefix("model.lm_head.");
+            if (has_lm_head_weights(wrapped_lm_head_state_dict)) {
+              lm_head_state_dict = wrapped_lm_head_state_dict;
+            }
+          }
+        }
+      }
+      if (!has_lm_head_weights(lm_head_state_dict) && tie_word_embeddings_) {
+        auto tied_lm_head_state_dict =
+            model_state_dict.get_dict_with_prefix("embed_tokens.");
+        if (has_lm_head_weights(tied_lm_head_state_dict)) {
+          lm_head_state_dict = tied_lm_head_state_dict;
+        }
+      }
+      npu_lm_head_->load_state_dict(lm_head_state_dict);
 #endif
     }
 
@@ -278,6 +356,7 @@ class Qwen3NextForCausalLMImpl : public torch::nn::Module {
 #endif
 
  private:
+  bool tie_word_embeddings_{false};
   layer::NpuLmHead npu_lm_head_{nullptr};
   layer::LmHead lm_head_{nullptr};
   Qwen3NextModel model_{nullptr};
@@ -331,6 +410,7 @@ REGISTER_MODEL_ARGS(qwen3_next, [&] {
   LOAD_ARG_OR(partial_rotary_factor, "partial_rotary_factor", 0.25f);
   LOAD_ARG_OR(
       shared_expert_intermediate_size, "shared_expert_intermediate_size", 512);
+  LOAD_ARG_OR(layer_types, "layer_types", std::vector<std::string>());
 
   // MoE compatibility with fused_moe implementation.
   LOAD_ARG_OR(n_routed_experts, "n_routed_experts", args->num_experts());
@@ -342,6 +422,134 @@ REGISTER_MODEL_ARGS(qwen3_next, [&] {
   SET_ARG(topk_group, 0);
   SET_ARG(routed_scaling_factor, 1.0);
 
+  SET_ARG(stop_token_ids, std::unordered_set<int32_t>({args->eos_token_id()}));
+});
+
+REGISTER_CAUSAL_MODEL_WITH_VARNAME(qwen3_5_alias,
+                                   qwen3_5,
+                                   Qwen3NextForCausalLM);
+REGISTER_MODEL_ARGS_WITH_VARNAME(qwen3_5_alias, qwen3_5, [&] {
+  LOAD_ARG_OR(model_type, "model_type", "qwen3_5");
+  LOAD_ARG_OR(dtype, "torch_dtype", "");
+  LOAD_ARG_OR(attention_bias, "text_config.attention_bias", false);
+  LOAD_ARG_OR(attention_dropout, "text_config.attention_dropout", 0.0f);
+  LOAD_ARG_OR(bos_token_id, "text_config.bos_token_id", 151643);
+  LOAD_ARG_OR(decoder_sparse_step, "text_config.decoder_sparse_step", 1);
+  LOAD_ARG_OR(eos_token_id, "text_config.eos_token_id", 151645);
+  LOAD_ARG_OR(head_dim, "text_config.head_dim", 256);
+  LOAD_ARG_OR(hidden_act, "text_config.hidden_act", "silu");
+  LOAD_ARG_OR(hidden_size, "text_config.hidden_size", 2048);
+  LOAD_ARG_OR(initializer_range, "text_config.initializer_range", 0.02f);
+  LOAD_ARG_OR(intermediate_size, "text_config.intermediate_size", 5120);
+  LOAD_ARG_OR(
+      max_position_embeddings, "text_config.max_position_embeddings", 262144);
+  LOAD_ARG_OR(max_window_layers, "text_config.max_window_layers", 28);
+  LOAD_ARG_OR(moe_intermediate_size, "text_config.moe_intermediate_size", 0);
+  LOAD_ARG_OR(norm_topk_prob, "text_config.norm_topk_prob", true);
+  LOAD_ARG_OR(n_heads, "text_config.num_attention_heads", 16);
+  LOAD_ARG_OR(num_experts, "text_config.num_experts", 0);
+  LOAD_ARG_OR(num_experts_per_tok, "text_config.num_experts_per_tok", 0);
+  LOAD_ARG_OR(n_layers, "text_config.num_hidden_layers", 48);
+  LOAD_ARG_OR(n_kv_heads, "text_config.num_key_value_heads", 2);
+  LOAD_ARG_OR(output_router_logits, "text_config.output_router_logits", false);
+  LOAD_ARG_OR(rms_norm_eps, "text_config.rms_norm_eps", 1e-6);
+  LOAD_ARG_OR(rope_theta, "text_config.rope_theta", 10000000.0f);
+  LOAD_ARG_OR(router_aux_loss_coef, "text_config.router_aux_loss_coef", 0.001f);
+  LOAD_ARG_OR(use_sliding_window, "text_config.use_sliding_window", false);
+  LOAD_ARG_OR(sliding_window, "text_config.sliding_window", 4096);
+  LOAD_ARG_OR(tie_word_embeddings, "text_config.tie_word_embeddings", false);
+  LOAD_ARG_OR(vocab_size, "text_config.vocab_size", 151936);
+  LOAD_ARG_OR(
+      mlp_only_layers, "text_config.mlp_only_layers", std::vector<int>());
+  LOAD_ARG_OR(attn_output_gate, "text_config.attn_output_gate", true);
+  LOAD_ARG_OR(
+      full_attention_interval, "text_config.full_attention_interval", 4);
+  LOAD_ARG_OR(linear_conv_kernel_dim, "text_config.linear_conv_kernel_dim", 4);
+  LOAD_ARG_OR(linear_key_head_dim, "text_config.linear_key_head_dim", 128);
+  LOAD_ARG_OR(linear_num_key_heads, "text_config.linear_num_key_heads", 16);
+  LOAD_ARG_OR(linear_num_value_heads, "text_config.linear_num_value_heads", 32);
+  LOAD_ARG_OR(linear_value_head_dim, "text_config.linear_value_head_dim", 128);
+  LOAD_ARG_OR(
+      partial_rotary_factor, "text_config.partial_rotary_factor", 0.25f);
+  LOAD_ARG_OR(shared_expert_intermediate_size,
+              "text_config.shared_expert_intermediate_size",
+              0);
+  LOAD_ARG_OR(
+      layer_types, "text_config.layer_types", std::vector<std::string>());
+
+  LOAD_ARG_OR(
+      n_routed_experts, "text_config.n_routed_experts", args->num_experts());
+  SET_ARG(n_shared_experts,
+          args->shared_expert_intermediate_size() > 0 ? 1 : 0);
+  SET_ARG(scoring_func, "softmax");
+  SET_ARG(topk_method, "");
+  SET_ARG(n_group, -1);
+  SET_ARG(topk_group, 0);
+  SET_ARG(routed_scaling_factor, 1.0);
+  SET_ARG(stop_token_ids, std::unordered_set<int32_t>({args->eos_token_id()}));
+});
+
+REGISTER_CAUSAL_MODEL_WITH_VARNAME(qwen3_5_moe_alias,
+                                   qwen3_5_moe,
+                                   Qwen3NextForCausalLM);
+REGISTER_MODEL_ARGS_WITH_VARNAME(qwen3_5_moe_alias, qwen3_5_moe, [&] {
+  LOAD_ARG_OR(model_type, "model_type", "qwen3_5_moe");
+  LOAD_ARG_OR(dtype, "torch_dtype", "");
+  LOAD_ARG_OR(attention_bias, "text_config.attention_bias", false);
+  LOAD_ARG_OR(attention_dropout, "text_config.attention_dropout", 0.0f);
+  LOAD_ARG_OR(bos_token_id, "text_config.bos_token_id", 151643);
+  LOAD_ARG_OR(decoder_sparse_step, "text_config.decoder_sparse_step", 1);
+  LOAD_ARG_OR(eos_token_id, "text_config.eos_token_id", 151645);
+  LOAD_ARG_OR(head_dim, "text_config.head_dim", 256);
+  LOAD_ARG_OR(hidden_act, "text_config.hidden_act", "silu");
+  LOAD_ARG_OR(hidden_size, "text_config.hidden_size", 2048);
+  LOAD_ARG_OR(initializer_range, "text_config.initializer_range", 0.02f);
+  LOAD_ARG_OR(intermediate_size, "text_config.intermediate_size", 5120);
+  LOAD_ARG_OR(
+      max_position_embeddings, "text_config.max_position_embeddings", 262144);
+  LOAD_ARG_OR(max_window_layers, "text_config.max_window_layers", 28);
+  LOAD_ARG_OR(moe_intermediate_size, "text_config.moe_intermediate_size", 512);
+  LOAD_ARG_OR(norm_topk_prob, "text_config.norm_topk_prob", true);
+  LOAD_ARG_OR(n_heads, "text_config.num_attention_heads", 16);
+  LOAD_ARG_OR(num_experts, "text_config.num_experts", 512);
+  LOAD_ARG_OR(num_experts_per_tok, "text_config.num_experts_per_tok", 10);
+  LOAD_ARG_OR(n_layers, "text_config.num_hidden_layers", 48);
+  LOAD_ARG_OR(n_kv_heads, "text_config.num_key_value_heads", 2);
+  LOAD_ARG_OR(output_router_logits, "text_config.output_router_logits", false);
+  LOAD_ARG_OR(rms_norm_eps, "text_config.rms_norm_eps", 1e-6);
+  LOAD_ARG_OR(rope_theta, "text_config.rope_theta", 10000000.0f);
+  LOAD_ARG_OR(router_aux_loss_coef, "text_config.router_aux_loss_coef", 0.001f);
+  LOAD_ARG_OR(use_sliding_window, "text_config.use_sliding_window", false);
+  LOAD_ARG_OR(sliding_window, "text_config.sliding_window", 4096);
+  LOAD_ARG_OR(tie_word_embeddings, "text_config.tie_word_embeddings", false);
+  LOAD_ARG_OR(vocab_size, "text_config.vocab_size", 151936);
+  LOAD_ARG_OR(
+      mlp_only_layers, "text_config.mlp_only_layers", std::vector<int>());
+  LOAD_ARG_OR(attn_output_gate, "text_config.attn_output_gate", true);
+  LOAD_ARG_OR(
+      full_attention_interval, "text_config.full_attention_interval", 4);
+  LOAD_ARG_OR(linear_conv_kernel_dim, "text_config.linear_conv_kernel_dim", 4);
+  LOAD_ARG_OR(linear_key_head_dim, "text_config.linear_key_head_dim", 128);
+  LOAD_ARG_OR(linear_num_key_heads, "text_config.linear_num_key_heads", 16);
+  LOAD_ARG_OR(linear_num_value_heads, "text_config.linear_num_value_heads", 32);
+  LOAD_ARG_OR(linear_value_head_dim, "text_config.linear_value_head_dim", 128);
+  LOAD_ARG_OR(
+      partial_rotary_factor, "text_config.partial_rotary_factor", 0.25f);
+  LOAD_ARG_OR(shared_expert_intermediate_size,
+              "text_config.shared_expert_intermediate_size",
+              512);
+  LOAD_ARG_OR(
+      layer_types, "text_config.layer_types", std::vector<std::string>());
+
+  LOAD_ARG_OR(
+      n_routed_experts, "text_config.n_routed_experts", args->num_experts());
+  SET_ARG(n_shared_experts,
+          args->shared_expert_intermediate_size() > 0 ? 1 : 0);
+  SET_ARG(scoring_func, "softmax");
+  SET_ARG(topk_method, "");
+  SET_ARG(n_group, -1);
+  SET_ARG(topk_group, 0);
+  SET_ARG(routed_scaling_factor, 1.0);
   SET_ARG(stop_token_ids, std::unordered_set<int32_t>({args->eos_token_id()}));
 });
 
