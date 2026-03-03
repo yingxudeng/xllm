@@ -185,7 +185,7 @@ torch::Tensor FusedMoEImpl::select_experts(
   // prepare the parameters for select_experts
   xllm::kernel::MoeActiveTopkParams moe_active_topk_params;
   moe_active_topk_params.input = router_logits_2d;
-  moe_active_topk_params.finished = std::nullopt;
+  moe_active_topk_params.finished = torch::Tensor();
   moe_active_topk_params.topk = topk_;
   auto [topk_weights, topk_ids] =
       xllm::kernel::moe_active_topk(moe_active_topk_params);
