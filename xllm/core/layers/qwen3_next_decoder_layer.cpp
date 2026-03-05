@@ -110,6 +110,13 @@ void Qwen3NextDecoderLayerImpl::load_state_dict(const StateDict& state_dict) {
   }
 }
 
+void Qwen3NextDecoderLayerImpl::verify_loaded_weights(
+    const std::string& prefix) const {
+  if (linear_attention_) {
+    linear_attention_->verify_loaded_weights(prefix + "linear_attn.");
+  }
+}
+
 torch::Tensor Qwen3NextDecoderLayerImpl::forward(
     torch::Tensor& x,
     torch::Tensor& positions,

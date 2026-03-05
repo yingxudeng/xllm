@@ -377,6 +377,77 @@ void FusedMoEImpl::load_experts(const StateDict& state_dict) {
   } else {
     LOAD_MOE_FUSED_WEIGHT("weight", w1, w3, w13);
     LOAD_MOE_WEIGHT("down_proj.", "weight", w2, 1);
+
+    // Some Qwen3.5-MoE checkpoints store expert weights in fused tensors
+    // (gate_up_proj / down_proj). Fall back to this format when split
+    // gate_proj/up_proj tensors are absent.
+    if (!w13_is_loaded_) {
+      auto fused_gate_up = state_dict.get_tensor("gate_up_proj");
+      if (!fused_gate_up.defined()) {
+        fused_gate_up = state_dict.get_tensor("gate_up_proj.weight");
+      }
+
+      if (fused_gate_up.defined()) {
+        if (world_size > 1) {
+          CHECK_EQ(fused_gate_up.size(1) % 2, 0)
+              << "gate_up_proj dim1 must be even, got "
+              << fused_gate_up.size(1);
+          const int64_t full_intermediate = fused_gate_up.size(1) / 2;
+          CHECK_EQ(full_intermediate % world_size, 0)
+              << "gate_up_proj intermediate dim is not divisible by world_size";
+          const int64_t inter_shard = full_intermediate / world_size;
+
+          auto gate_full = fused_gate_up.slice(1, 0, full_intermediate);
+          auto up_full =
+              fused_gate_up.slice(1, full_intermediate, full_intermediate * 2);
+          auto gate_shard =
+              gate_full.slice(1, rank * inter_shard, (rank + 1) * inter_shard);
+          auto up_shard =
+              up_full.slice(1, rank * inter_shard, (rank + 1) * inter_shard);
+          fused_gate_up = torch::cat({gate_shard, up_shard}, 1);
+        }
+
+        auto gate_up_slice =
+            fused_gate_up
+                .slice(
+                    0, start_expert_id, start_expert_id + num_experts_per_rank)
+                .contiguous();
+
+        CHECK_EQ(w13_.sizes(), gate_up_slice.sizes())
+            << "weight size mismatch for " << state_dict.prefix()
+            << "experts.gate_up_proj";
+        w13_.copy_(gate_up_slice);
+        w13_is_loaded_ = true;
+      }
+    }
+
+    if (!w2_is_loaded_) {
+      auto fused_down = state_dict.get_tensor("down_proj");
+      if (!fused_down.defined()) {
+        fused_down = state_dict.get_tensor("down_proj.weight");
+      }
+
+      if (fused_down.defined()) {
+        if (world_size > 1) {
+          CHECK_EQ(fused_down.size(2) % world_size, 0)
+              << "down_proj dim2 is not divisible by world_size";
+          const int64_t down_shard = fused_down.size(2) / world_size;
+          fused_down =
+              fused_down.slice(2, rank * down_shard, (rank + 1) * down_shard);
+        }
+
+        auto down_slice =
+            fused_down
+                .slice(
+                    0, start_expert_id, start_expert_id + num_experts_per_rank)
+                .contiguous();
+        CHECK_EQ(w2_.sizes(), down_slice.sizes())
+            << "weight size mismatch for " << state_dict.prefix()
+            << "experts.down_proj";
+        w2_.copy_(down_slice);
+        w2_is_loaded_ = true;
+      }
+    }
   }
 }
 
