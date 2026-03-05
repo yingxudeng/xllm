@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <boost/algorithm/string.hpp>
 #include <filesystem>
+#include <string>
 #include <vector>
 
 #include "core/framework/model_context.h"
@@ -140,6 +141,13 @@ class Qwen3NextModelImpl : public torch::nn::Module {
           state_dict.get_dict_with_prefix("layers." + std::to_string(i) + "."));
     }
     norm_->load_state_dict(state_dict.get_dict_with_prefix("norm."));
+  }
+
+  void verify_loaded_weights(const std::string& prefix) const {
+    for (size_t i = 0; i < layers_.size(); ++i) {
+      layers_[i]->verify_loaded_weights(prefix + "layers." + std::to_string(i) +
+                                        ".");
+    }
   }
 
 #if defined(USE_NPU) && defined(USE_NPU_TORCH)
@@ -312,6 +320,10 @@ class Qwen3NextForCausalLMImpl : public torch::nn::Module {
       npu_lm_head_->load_state_dict(lm_head_state_dict);
 #endif
     }
+
+#if defined(USE_NPU) && defined(USE_NPU_TORCH)
+    model_->verify_loaded_weights("model.");
+#endif
 
 #if defined(USE_NPU) && !defined(USE_NPU_TORCH)
     // verify

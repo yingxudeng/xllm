@@ -124,7 +124,10 @@ namespace xllm {
 REGISTER_CAUSAL_MODEL(qwen3_5, Qwen3NextForCausalLM);
 REGISTER_MODEL_ARGS(qwen3_5, [&] {
   LOAD_ARG_OR(model_type, "model_type", "qwen3_5");
-  LOAD_ARG_OR(dtype, "torch_dtype", "");
+  LOAD_ARG_OR(dtype, "text_config.dtype", "bfloat16");
+  LOAD_ARG_OR(dtype, "dtype", args->dtype());
+  LOAD_ARG_OR(dtype, "text_config.torch_dtype", args->dtype());
+  LOAD_ARG_OR(dtype, "torch_dtype", args->dtype());
   LOAD_QWEN3_5_COMMON_ARGS(/*moe_intermediate_size=*/0,
                            /*num_experts=*/0,
                            /*num_experts_per_tok=*/0,
@@ -134,7 +137,10 @@ REGISTER_MODEL_ARGS(qwen3_5, [&] {
 REGISTER_CAUSAL_MODEL(qwen3_5_text, Qwen3NextForCausalLM);
 REGISTER_MODEL_ARGS(qwen3_5_text, [&] {
   LOAD_ARG_OR(model_type, "model_type", "qwen3_5_text");
-  LOAD_ARG_OR(dtype, "torch_dtype", "");
+  LOAD_ARG_OR(dtype, "text_config.dtype", "bfloat16");
+  LOAD_ARG_OR(dtype, "dtype", args->dtype());
+  LOAD_ARG_OR(dtype, "text_config.torch_dtype", args->dtype());
+  LOAD_ARG_OR(dtype, "torch_dtype", args->dtype());
   LOAD_QWEN3_5_COMMON_ARGS(/*moe_intermediate_size=*/0,
                            /*num_experts=*/0,
                            /*num_experts_per_tok=*/0,
@@ -144,7 +150,10 @@ REGISTER_MODEL_ARGS(qwen3_5_text, [&] {
 REGISTER_CAUSAL_MODEL(qwen3_5_moe, Qwen3NextForCausalLM);
 REGISTER_MODEL_ARGS(qwen3_5_moe, [&] {
   LOAD_ARG_OR(model_type, "model_type", "qwen3_5_moe");
-  LOAD_ARG_OR(dtype, "torch_dtype", "");
+  LOAD_ARG_OR(dtype, "text_config.dtype", "bfloat16");
+  LOAD_ARG_OR(dtype, "dtype", args->dtype());
+  LOAD_ARG_OR(dtype, "text_config.torch_dtype", args->dtype());
+  LOAD_ARG_OR(dtype, "torch_dtype", args->dtype());
   LOAD_QWEN3_5_COMMON_ARGS(/*moe_intermediate_size=*/512,
                            /*num_experts=*/512,
                            /*num_experts_per_tok=*/10,
@@ -154,7 +163,10 @@ REGISTER_MODEL_ARGS(qwen3_5_moe, [&] {
 REGISTER_CAUSAL_MODEL(qwen3_5_moe_text, Qwen3NextForCausalLM);
 REGISTER_MODEL_ARGS(qwen3_5_moe_text, [&] {
   LOAD_ARG_OR(model_type, "model_type", "qwen3_5_moe_text");
-  LOAD_ARG_OR(dtype, "torch_dtype", "");
+  LOAD_ARG_OR(dtype, "text_config.dtype", "bfloat16");
+  LOAD_ARG_OR(dtype, "dtype", args->dtype());
+  LOAD_ARG_OR(dtype, "text_config.torch_dtype", args->dtype());
+  LOAD_ARG_OR(dtype, "torch_dtype", args->dtype());
   LOAD_QWEN3_5_COMMON_ARGS(/*moe_intermediate_size=*/512,
                            /*num_experts=*/512,
                            /*num_experts_per_tok=*/10,
