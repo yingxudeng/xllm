@@ -381,4 +381,22 @@ TEST_F(FastTokenizerTest, SkipBothBosAndEosTokensWhenAlreadyPresent) {
       << "EOS token should not be duplicated when already present";
 }
 
+// Test that special tokens provided by TokenizerArgs are added to fast
+// tokenizer even when they are absent from tokenizer.json.
+TEST_F(FastTokenizerTest, AddMissingSpecialTokensFromTokenizerArgs) {
+  TokenizerArgs args;
+  args.tokenizer_type() = "fast";
+  args.vocab_file() = tokenizer_json_path_.string();
+  args.special_tokens() = {{"<|audio_start|>", 15}, {"<|audio_end|>", 16}};
+
+  FastTokenizer tokenizer(args);
+
+  const auto audio_start_id = tokenizer.token_to_id("<|audio_start|>");
+  const auto audio_end_id = tokenizer.token_to_id("<|audio_end|>");
+  ASSERT_TRUE(audio_start_id.has_value());
+  ASSERT_TRUE(audio_end_id.has_value());
+  EXPECT_EQ(audio_start_id.value(), 15);
+  EXPECT_EQ(audio_end_id.value(), 16);
+}
+
 }  // namespace xllm

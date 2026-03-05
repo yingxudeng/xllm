@@ -179,12 +179,15 @@ RequestParams::RequestParams(const proto::CompletionRequest& request,
   }
   if (request.has_temperature()) {
     temperature = request.temperature();
+    user_set_temperature = true;
   }
   if (request.has_top_p()) {
     top_p = request.top_p();
+    user_set_top_p = true;
   }
   if (request.has_top_k()) {
     top_k = request.top_k();
+    user_set_top_k = true;
   }
   if (request.has_logprobs()) {
     logprobs = true;
@@ -359,12 +362,15 @@ void init_from_chat_request(RequestParams& params, const ChatRequest& request) {
   }
   if (request.has_temperature()) {
     params.temperature = request.temperature();
+    params.user_set_temperature = true;
   }
   if (request.has_top_p()) {
     params.top_p = request.top_p();
+    params.user_set_top_p = true;
   }
   if (request.has_top_k()) {
     params.top_k = request.top_k();
+    params.user_set_top_k = true;
   }
   if (request.has_logprobs()) {
     params.logprobs = request.logprobs();
@@ -510,12 +516,15 @@ RequestParams::RequestParams(const proto::AnthropicMessagesRequest& request,
   }
   if (request.has_temperature()) {
     temperature = request.temperature();
+    user_set_temperature = true;
   }
   if (request.has_top_p()) {
     top_p = request.top_p();
+    user_set_top_p = true;
   }
   if (request.has_top_k()) {
     top_k = request.top_k();
+    user_set_top_k = true;
   }
   if (request.stop_sequences_size() > 0) {
     stop = std::vector<std::string>(request.stop_sequences().begin(),

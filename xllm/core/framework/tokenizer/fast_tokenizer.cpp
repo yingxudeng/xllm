@@ -25,6 +25,57 @@ FastTokenizer::FastTokenizer(const TokenizerArgs& tokenizer_args)
   handle_ = tokenizers_new_from_path(tokenizer_args.vocab_file().c_str());
   CHECK(handle_ != nullptr)
       << "Failed to load tokenizer from file: " << tokenizer_args.vocab_file();
+
+  if (!tokenizer_args_.special_tokens().empty()) {
+    std::vector<const char*> missing_token_ptrs;
+    std::vector<size_t> missing_token_lens;
+    missing_token_ptrs.reserve(tokenizer_args_.special_tokens().size());
+    missing_token_lens.reserve(tokenizer_args_.special_tokens().size());
+
+    for (const auto& [token, _] : tokenizer_args_.special_tokens()) {
+      if (token.empty()) {
+        continue;
+      }
+      const auto cur_id = token_to_id(token);
+      if (!cur_id.has_value()) {
+        missing_token_ptrs.push_back(token.data());
+        missing_token_lens.push_back(token.size());
+      }
+    }
+
+    if (!missing_token_ptrs.empty()) {
+      const size_t added =
+          tokenizers_add_special_tokens(handle_,
+                                        missing_token_ptrs.data(),
+                                        missing_token_lens.data(),
+                                        missing_token_ptrs.size());
+      LOG(INFO) << "FastTokenizer added missing special tokens: requested="
+                << missing_token_ptrs.size() << ", actually_added=" << added;
+    }
+
+    int32_t matched = 0;
+    int32_t mismatched = 0;
+    int32_t missing = 0;
+    for (const auto& [token, expected_id] : tokenizer_args_.special_tokens()) {
+      if (token.empty()) {
+        continue;
+      }
+      const auto cur_id = token_to_id(token);
+      if (!cur_id.has_value()) {
+        missing++;
+        continue;
+      }
+      if (expected_id >= 0 && cur_id.value() != expected_id) {
+        mismatched++;
+      } else {
+        matched++;
+      }
+    }
+    LOG(INFO) << "FastTokenizer special token alignment summary: total="
+              << tokenizer_args_.special_tokens().size()
+              << ", matched=" << matched << ", mismatched=" << mismatched
+              << ", missing=" << missing;
+  }
 }
 
 std::unique_ptr<Tokenizer> FastTokenizer::clone() const {

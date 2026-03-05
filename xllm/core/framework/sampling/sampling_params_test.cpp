@@ -115,4 +115,34 @@ TEST(SamplingParamsTest, AbnormalConcat) {
   EXPECT_FALSE(sampling_parameters_1.sample_idxes.defined());
 }
 
+TEST(SamplingParamsTest, TemperatureZeroKeepsGreedyByDefault) {
+  RequestSamplingParam request_1, request_2, request_3;
+  request_1.temperature = 0.0f;
+  request_1.top_p = 0.95f;
+  request_1.top_k = 20;
+
+  request_2.temperature = 0.7f;
+  request_2.top_p = 0.95f;
+  request_2.top_k = 20;
+
+  request_3.temperature = 0.0f;
+  request_3.top_k = 20;
+  request_3.do_sample = true;  // explicit override
+
+  SamplingParameters params;
+  params.init(
+      std::vector<const RequestSamplingParam*>{
+          &request_1, &request_2, &request_3},
+      /*selected_token_idxes=*/{0, 1, 2},
+      /*sample_idxes=*/{0, 1, 2},
+      /*unique_token_ids_vec=*/{},
+      /*unique_token_counts_vec=*/{},
+      /*unique_token_lens_vec=*/{});
+
+  auto expected = torch::tensor({false, true, true}, torch::kBool);
+  EXPECT_TRUE(torch::equal(params.do_sample, expected));
+  EXPECT_FALSE(params.all_random_sample);
+  EXPECT_FALSE(params.all_greedy_sample);
+}
+
 }  // namespace xllm

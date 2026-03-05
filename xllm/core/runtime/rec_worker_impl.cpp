@@ -178,6 +178,7 @@ std::optional<ForwardOutput> RecWorkerImpl::OneRecWorkPipeline::step(
   ForwardOutput output;
 
   if (sampling_params.selected_token_idxes.defined()) {
+    worker_.mask_invalid_token_logits(logits);
     auto sample_output = worker_.sampler_->forward(logits, sampling_params);
     output.logits = logits;
     output.sample_output = sample_output;
@@ -508,6 +509,7 @@ std::optional<ForwardOutput> RecWorkerImpl::LlmRecMultiRoundPipeline::step(
     if (sampling_params.selected_token_idxes.defined()) {
       logits = worker_.model_->logits(hidden_states,
                                       sampling_params.selected_token_idxes);
+      worker_.mask_invalid_token_logits(logits);
       sample_output = worker_.sampler_->forward(logits, sampling_params);
     }
 

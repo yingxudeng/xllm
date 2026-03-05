@@ -47,6 +47,12 @@ void tokenizers_free(TokenizerHandle handle);
 
 void tokenizers_get_vocab_size(TokenizerHandle handle, size_t* size);
 
+// add special tokens to tokenizer, returns number of newly added tokens.
+size_t tokenizers_add_special_tokens(TokenizerHandle handle,
+                                     const char** tokens,
+                                     const size_t* lens,
+                                     size_t num_tokens);
+
 void tokenizers_free_encode_results(TokenizerEncodeResult* results,
                                     size_t num_seqs);
 

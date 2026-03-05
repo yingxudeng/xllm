@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <folly/Function.h>
 
+#include <cstdint>
 #include <functional>
 #include <future>
 #include <memory>
@@ -89,10 +90,20 @@ class LLMMaster : public Master {
       OutputCallback callback);
 
  private:
+  struct GenerationSamplingDefaults {
+    bool has_temperature = false;
+    float temperature = 0.0f;
+    bool has_top_p = false;
+    float top_p = 1.0f;
+    bool has_top_k = false;
+    int64_t top_k = -1;
+  };
+
   std::unique_ptr<Scheduler> scheduler_;
 
   // model args
   ModelArgs model_args_;
+  GenerationSamplingDefaults generation_sampling_defaults_;
 
   // thread pool for handling requests
   std::unique_ptr<ThreadPool> threadpool_;

@@ -110,6 +110,11 @@ struct RequestParams {
   // top_k sampling cutoff. default = -1 to disable.
   int64_t top_k = -1;
 
+  // Whether user explicitly sets sampling params in request payload.
+  bool user_set_temperature = false;
+  bool user_set_top_p = false;
+  bool user_set_top_k = false;
+
   // whether to return the log probabilities of the tokens. default = false.
   bool logprobs = false;
 

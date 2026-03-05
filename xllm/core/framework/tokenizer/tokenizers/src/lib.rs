@@ -5,7 +5,7 @@ use std::{collections::HashMap, str::FromStr};
 use std::fs;
 use std::ffi::{c_char, CStr};
 use std::io;
-use tokenizers::tokenizer::Tokenizer;
+use tokenizers::{tokenizer::Tokenizer, AddedToken};
 
 pub struct TokenizerWrapper {
     tokenizer: Tokenizer,
@@ -200,5 +200,45 @@ extern "C" fn tokenizers_token_to_id(
             Some(id) => id as i32,
             None => -1,
         };
+    }
+}
+
+#[no_mangle]
+extern "C" fn tokenizers_add_special_tokens(
+    handle: *mut TokenizerWrapper,
+    tokens: *const *const c_char,
+    lens: *const usize,
+    num_tokens: usize,
+) -> usize {
+    if handle.is_null() || tokens.is_null() || lens.is_null() || num_tokens == 0 {
+        return 0;
+    }
+
+    unsafe {
+        let mut added_tokens: Vec<AddedToken> = Vec::with_capacity(num_tokens);
+        for i in 0..num_tokens {
+            let token_ptr = *tokens.add(i);
+            if token_ptr.is_null() {
+                continue;
+            }
+            let token_len = *lens.add(i);
+            if token_len == 0 {
+                continue;
+            }
+            let token = String::from_utf8_lossy(std::slice::from_raw_parts(
+                token_ptr as *const u8,
+                token_len,
+            ))
+            .into_owned();
+            if token.is_empty() {
+                continue;
+            }
+            added_tokens.push(AddedToken::from(token, true));
+        }
+
+        if added_tokens.is_empty() {
+            return 0;
+        }
+        (*handle).tokenizer.add_special_tokens(&added_tokens)
     }
 }

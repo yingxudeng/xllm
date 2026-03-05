@@ -22,8 +22,45 @@ limitations under the License.
 #include <cstdint>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace xllm {
+
+namespace {
+
+constexpr size_t kDecodeLookbackTokens = 16;
+
+std::string decode_with_vocab_guard(const Slice<int32_t>& token_ids,
+                                    const Tokenizer& tokenizer,
+                                    bool skip_special_tokens) {
+  if (token_ids.empty()) {
+    return "";
+  }
+
+  const size_t tokenizer_vocab_size = tokenizer.vocab_size();
+  if (tokenizer_vocab_size == 0) {
+    return tokenizer.decode(token_ids, skip_special_tokens);
+  }
+
+  std::vector<int32_t> valid_token_ids;
+  valid_token_ids.reserve(token_ids.size());
+  for (size_t i = 0; i < token_ids.size(); ++i) {
+    const int32_t token_id = token_ids[i];
+    if (token_id >= 0 && static_cast<size_t>(token_id) < tokenizer_vocab_size) {
+      valid_token_ids.push_back(token_id);
+      continue;
+    }
+  }
+
+  if (valid_token_ids.empty()) {
+    return "";
+  }
+  return tokenizer.decode(
+      Slice<int32_t>(valid_token_ids.data(), valid_token_ids.size()),
+      skip_special_tokens);
+}
+
+}  // namespace
 
 IncrementalDecoder::IncrementalDecoder(const std::string_view& prompt,
                                        size_t num_prompt_tokens,
@@ -55,22 +92,47 @@ std::string IncrementalDecoder::decode(const Slice<int32_t>& token_ids,
   // phase needs to skip that token. If it cannot, the decode token and that
   // token need to generate characters together.
   if (checking_prefill_token_) {
-    const auto prefill_token_text =
-        tokenizer.decode(token_ids.slice(output_offset_, output_offset_ + 1),
-                         skip_special_tokens_);
+    const auto prefill_token_text = decode_with_vocab_guard(
+        token_ids.slice(output_offset_, output_offset_ + 1),
+        tokenizer,
+        skip_special_tokens_);
     if (!absl::EndsWith(prefill_token_text, "�")) {
       output_offset_ += 1;
     }
     checking_prefill_token_ = false;
   }
 
-  const auto prefix_text = tokenizer.decode(
-      token_ids.slice(prefix_offset_, output_offset_), skip_special_tokens_);
-  const auto new_text =
-      tokenizer.decode(token_ids.slice(prefix_offset_), skip_special_tokens_);
+  auto prefix_text =
+      decode_with_vocab_guard(token_ids.slice(prefix_offset_, output_offset_),
+                              tokenizer,
+                              skip_special_tokens_);
+  auto new_text = decode_with_vocab_guard(
+      token_ids.slice(prefix_offset_), tokenizer, skip_special_tokens_);
+  bool has_monotonic_prefix = absl::StartsWith(new_text, prefix_text);
+
+  // Fallback to a small lookback window only when needed. This preserves
+  // stable incremental boundaries for normal text while still handling
+  // byte-fallback fragments that end with replacement char.
+  if (absl::EndsWith(new_text, "�") || new_text.size() <= prefix_text.size() ||
+      !has_monotonic_prefix) {
+    const size_t decode_start = prefix_offset_ <= kDecodeLookbackTokens
+                                    ? 0
+                                    : prefix_offset_ - kDecodeLookbackTokens;
+    const auto prefix_text_with_lookback =
+        decode_with_vocab_guard(token_ids.slice(decode_start, output_offset_),
+                                tokenizer,
+                                skip_special_tokens_);
+    const auto new_text_with_lookback = decode_with_vocab_guard(
+        token_ids.slice(decode_start), tokenizer, skip_special_tokens_);
+
+    prefix_text = prefix_text_with_lookback;
+    new_text = new_text_with_lookback;
+    has_monotonic_prefix = absl::StartsWith(new_text, prefix_text);
+  }
   // utf-8 char � at the end means it is a potential unfinished byte sequence
   // from byte fallback tokenization.
-  if (new_text.size() > prefix_text.size() && !absl::EndsWith(new_text, "�")) {
+  if (has_monotonic_prefix && new_text.size() > prefix_text.size() &&
+      !absl::EndsWith(new_text, "�")) {
     prefix_offset_ = output_offset_;
     output_offset_ = token_ids.size();
     // only print the delta text

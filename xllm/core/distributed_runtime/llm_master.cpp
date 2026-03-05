@@ -22,6 +22,7 @@ limitations under the License.
 #include <atomic>
 #include <boost/algorithm/string.hpp>
 #include <csignal>
+#include <cstdint>
 #include <memory>
 #include <thread>
 #include <utility>
@@ -37,10 +38,80 @@ limitations under the License.
 #include "server/xllm_server_registry.h"
 #include "speculative_engine.h"
 #include "util/device_name_utils.h"
+#include "util/json_reader.h"
 #include "util/scope_guard.h"
 #include "util/timer.h"
 
 namespace xllm {
+
+namespace {
+
+struct ResolvedGenerationSamplingDefaults {
+  bool has_temperature = false;
+  float temperature = 0.0f;
+  bool has_top_p = false;
+  float top_p = 1.0f;
+  bool has_top_k = false;
+  int64_t top_k = -1;
+};
+
+bool is_qwen35_model(const ModelArgs& model_args) {
+  return boost::algorithm::starts_with(model_args.model_type(), "qwen3_5");
+}
+
+ResolvedGenerationSamplingDefaults load_generation_sampling_defaults(
+    const std::string& model_path,
+    const ModelArgs& model_args) {
+  ResolvedGenerationSamplingDefaults defaults;
+  if (!is_qwen35_model(model_args)) {
+    return defaults;
+  }
+
+  const std::string generation_config_path =
+      model_path + "/generation_config.json";
+  JsonReader generation_reader;
+  if (!generation_reader.parse(generation_config_path)) {
+    return defaults;
+  }
+
+  if (const auto temperature = generation_reader.value<float>("temperature")) {
+    defaults.has_temperature = true;
+    defaults.temperature = *temperature;
+  }
+  if (const auto top_p = generation_reader.value<float>("top_p")) {
+    defaults.has_top_p = true;
+    defaults.top_p = *top_p;
+  }
+  if (const auto top_k = generation_reader.value<int64_t>("top_k")) {
+    defaults.has_top_k = true;
+    defaults.top_k = *top_k;
+  }
+
+  return defaults;
+}
+
+nlohmann::json resolve_chat_template_kwargs_for_model(
+    const RequestParams& sp,
+    const ModelArgs& model_args) {
+  nlohmann::json kwargs = sp.chat_template_kwargs;
+  if (!kwargs.is_object()) {
+    return kwargs;
+  }
+
+  // Qwen3.5 chat template defaults to thinking mode when enable_thinking is
+  // not provided, which produces long reasoning text before the answer.
+  // Align xllm default behavior with common chat expectation for this model:
+  // return concise assistant content unless user explicitly enables thinking.
+  if (boost::algorithm::starts_with(model_args.model_type(), "qwen3_5") &&
+      !kwargs.contains("enable_thinking") && !kwargs.contains("thinking")) {
+    kwargs["enable_thinking"] = false;
+  }
+
+  return kwargs;
+}
+
+}  // namespace
+
 volatile bool LLMAssistantMaster::running_ = false;
 
 LLMMaster::LLMMaster(const Options& options)
@@ -52,6 +123,15 @@ LLMMaster::LLMMaster(const Options& options)
   task_type_ = options_.task_type();
 
   model_args_ = engine_->model_args();
+  const auto generation_defaults =
+      load_generation_sampling_defaults(options_.model_path(), model_args_);
+  generation_sampling_defaults_.has_temperature =
+      generation_defaults.has_temperature;
+  generation_sampling_defaults_.temperature = generation_defaults.temperature;
+  generation_sampling_defaults_.has_top_p = generation_defaults.has_top_p;
+  generation_sampling_defaults_.top_p = generation_defaults.top_p;
+  generation_sampling_defaults_.has_top_k = generation_defaults.has_top_k;
+  generation_sampling_defaults_.top_k = generation_defaults.top_k;
 
   if (options_.enable_service_routing()) {
     XServiceClient* xservice_client = XServiceClient::get_instance();
@@ -333,6 +413,20 @@ std::shared_ptr<Request> LLMMaster::generate_request(
   sampling_param.temperature = sp.temperature;
   sampling_param.top_p = sp.top_p;
   sampling_param.top_k = sp.top_k;
+
+  if (is_qwen35_model(model_args_)) {
+    if (!sp.user_set_temperature &&
+        generation_sampling_defaults_.has_temperature) {
+      sampling_param.temperature = generation_sampling_defaults_.temperature;
+    }
+    if (!sp.user_set_top_p && generation_sampling_defaults_.has_top_p) {
+      sampling_param.top_p = generation_sampling_defaults_.top_p;
+    }
+    if (!sp.user_set_top_k && generation_sampling_defaults_.has_top_k) {
+      sampling_param.top_k = generation_sampling_defaults_.top_k;
+    }
+  }
+
   sampling_param.logprobs = sp.logprobs;
   sampling_param.top_logprobs = sp.top_logprobs;
   sampling_param.is_embeddings = sp.is_embeddings;
@@ -440,10 +534,12 @@ std::shared_ptr<Request> LLMMaster::generate_request(
     OutputCallback callback) {
   Timer timer;
   std::optional<std::string> prompt;
+  const auto chat_template_kwargs =
+      resolve_chat_template_kwargs_for_model(sp, model_args_);
   if (sp.has_tools()) {
-    prompt = chat_template_->apply(messages, sp.tools, sp.chat_template_kwargs);
+    prompt = chat_template_->apply(messages, sp.tools, chat_template_kwargs);
   } else {
-    prompt = chat_template_->apply(messages, sp.chat_template_kwargs);
+    prompt = chat_template_->apply(messages, chat_template_kwargs);
   }
 
   if (!prompt.has_value()) {

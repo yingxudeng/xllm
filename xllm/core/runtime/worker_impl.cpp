@@ -84,6 +84,23 @@ WorkerImpl::WorkerImpl(const ParallelArgs& parallel_args,
 
 WorkerImpl::~WorkerImpl() = default;
 
+void WorkerImpl::mask_invalid_token_logits(torch::Tensor& logits) const {
+  if (!logits.defined() || tokenizer_vocab_size_ <= 0) {
+    return;
+  }
+  const int64_t logits_vocab_size = logits.size(-1);
+  if (logits_vocab_size <= tokenizer_vocab_size_) {
+    return;
+  }
+
+  constexpr float kMaskedInvalidTokenLogit = -1e30f;
+  logits
+      .narrow(/*dim=*/-1,
+              /*start=*/tokenizer_vocab_size_,
+              /*length=*/logits_vocab_size - tokenizer_vocab_size_)
+      .fill_(kMaskedInvalidTokenLogit);
+}
+
 bool WorkerImpl::allocate_kv_cache(
     const std::vector<std::vector<int64_t>>& kv_cache_shape) {
   CHECK(model_ != nullptr) << "Model is not initialized.";
@@ -563,6 +580,7 @@ bool WorkerImpl::init_model(const std::string& model_weights_path,
   auto args = model_loader->model_args();
   auto quant_args = model_loader->quant_args();
   torch::ScalarType dtype = util::parse_dtype(args.dtype(), device_);
+  tokenizer_vocab_size_ = static_cast<int64_t>(tokenizer->vocab_size());
 
   if (tokenizer->vocab_size() != args.vocab_size()) {
     // use tokenizer vocab size if model vocab size is not set

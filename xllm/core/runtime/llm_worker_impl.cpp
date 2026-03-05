@@ -150,6 +150,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::step(const ForwardInput& input) {
   // driver prepare model output
   SampleOutput sample_output;
   if (sampling_params.selected_token_idxes.defined()) {
+    mask_invalid_token_logits(logits);
     sample_output = sampler_->forward(logits, sampling_params);
     output.logits = logits;
 

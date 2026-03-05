@@ -75,3 +75,14 @@ cc_library(
     ${OpenCV_LIBS}
 )
 
+cc_test(
+  NAME
+    incremental_decoder_test
+  SRCS
+    tests/incremental_decoder_test.cpp
+    incremental_decoder.cpp
+  DEPS
+    absl::strings
+    glog::glog
+    GTest::gtest_main
+)

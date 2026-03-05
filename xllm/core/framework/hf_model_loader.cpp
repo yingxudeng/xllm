@@ -22,7 +22,10 @@ limitations under the License.
 #include <torch/torch.h>
 
 #include <boost/algorithm/string.hpp>
+#include <exception>
 #include <filesystem>
+#include <limits>
+#include <unordered_set>
 #include <vector>
 
 #include "core/common/rec_model_utils.h"
@@ -38,6 +41,160 @@ limitations under the License.
 #include "models/model_registry.h"
 
 namespace xllm {
+namespace {
+
+void merge_added_tokens_decoder_special_tokens(
+    const JsonReader& tokenizer_reader,
+    TokenizerArgs* tokenizer_args) {
+  CHECK(tokenizer_args != nullptr);
+  if (!tokenizer_reader.contains("added_tokens_decoder")) {
+    return;
+  }
+
+  const auto tokenizer_data = tokenizer_reader.data();
+  const auto& added_tokens_decoder = tokenizer_data["added_tokens_decoder"];
+  if (!added_tokens_decoder.is_object()) {
+    LOG(WARNING) << "tokenizer_config.added_tokens_decoder is not an object";
+    return;
+  }
+
+  std::vector<SpecialToken> decoded_tokens;
+  decoded_tokens.reserve(added_tokens_decoder.size());
+  for (auto it = added_tokens_decoder.begin(); it != added_tokens_decoder.end();
+       ++it) {
+    int64_t id64 = -1;
+    try {
+      id64 = std::stoll(it.key());
+    } catch (const std::exception&) {
+      LOG(WARNING) << "Skip non-integer added token id key: " << it.key();
+      continue;
+    }
+    if (id64 < 0 || id64 > std::numeric_limits<int32_t>::max()) {
+      LOG(WARNING) << "Skip out-of-range added token id: " << id64;
+      continue;
+    }
+    if (!it.value().is_object() || !it.value().contains("content") ||
+        !it.value()["content"].is_string()) {
+      continue;
+    }
+    const std::string token = it.value()["content"].get<std::string>();
+    if (token.empty()) {
+      continue;
+    }
+    decoded_tokens.emplace_back(token, static_cast<int32_t>(id64));
+  }
+  if (decoded_tokens.empty()) {
+    return;
+  }
+
+  std::sort(decoded_tokens.begin(),
+            decoded_tokens.end(),
+            [](const SpecialToken& lhs, const SpecialToken& rhs) {
+              if (lhs.second != rhs.second) {
+                return lhs.second < rhs.second;
+              }
+              return lhs.first < rhs.first;
+            });
+
+  std::vector<SpecialToken> merged_tokens = tokenizer_args->special_tokens();
+  std::unordered_set<std::string> seen_tokens;
+  std::unordered_set<int32_t> seen_ids;
+  seen_tokens.reserve(merged_tokens.size() + decoded_tokens.size());
+  seen_ids.reserve(merged_tokens.size() + decoded_tokens.size());
+  for (const auto& [token, id] : merged_tokens) {
+    seen_tokens.insert(token);
+    seen_ids.insert(id);
+  }
+
+  int32_t added_count = 0;
+  for (const auto& [token, id] : decoded_tokens) {
+    const bool token_exists = seen_tokens.contains(token);
+    const bool id_exists = seen_ids.contains(id);
+    if (token_exists || id_exists) {
+      bool exact_exists = false;
+      for (const auto& [exist_token, exist_id] : merged_tokens) {
+        if (exist_token == token && exist_id == id) {
+          exact_exists = true;
+          break;
+        }
+      }
+      if (!exact_exists) {
+        LOG(WARNING) << "Skip conflicting special token from "
+                        "tokenizer_config.added_tokens_decoder: token="
+                     << token << ", id=" << id;
+      }
+      continue;
+    }
+    merged_tokens.emplace_back(token, id);
+    seen_tokens.insert(token);
+    seen_ids.insert(id);
+    added_count++;
+  }
+  std::sort(merged_tokens.begin(),
+            merged_tokens.end(),
+            [](const SpecialToken& lhs, const SpecialToken& rhs) {
+              if (lhs.second != rhs.second) {
+                return lhs.second < rhs.second;
+              }
+              return lhs.first < rhs.first;
+            });
+  tokenizer_args->special_tokens() = std::move(merged_tokens);
+
+  LOG(INFO) << "Merged tokenizer_config.added_tokens_decoder special tokens: "
+            << "decoded=" << decoded_tokens.size()
+            << ", added_to_tokenizer_args=" << added_count
+            << ", total_tokenizer_args_special_tokens="
+            << tokenizer_args->special_tokens().size();
+}
+
+void merge_generation_config_special_token_ids(
+    const std::string& model_weights_path,
+    ModelArgs* args) {
+  CHECK(args != nullptr);
+  JsonReader generation_reader;
+  const std::string generation_config_path =
+      model_weights_path + "/generation_config.json";
+  if (!generation_reader.parse(generation_config_path)) {
+    return;
+  }
+
+  std::vector<int32_t> eos_token_ids;
+  if (auto v = generation_reader.value<std::vector<int32_t>>("eos_token_id")) {
+    eos_token_ids = v.value();
+  } else if (auto v = generation_reader.value<int32_t>("eos_token_id")) {
+    eos_token_ids.push_back(v.value());
+  }
+
+  if (auto v = generation_reader.value<int32_t>("bos_token_id")) {
+    args->bos_token_id() = v.value();
+  }
+  if (auto v = generation_reader.value<int32_t>("pad_token_id")) {
+    args->pad_token_id() = v.value();
+  }
+
+  if (!eos_token_ids.empty()) {
+    const int32_t old_eos_token_id = args->eos_token_id();
+    // generation_config is the model-authoritative source; keep this as
+    // primary.
+    args->eos_token_id() = eos_token_ids.front();
+
+    std::unordered_set<int32_t> stop_token_ids = args->stop_token_ids();
+    stop_token_ids.insert(eos_token_ids.begin(), eos_token_ids.end());
+    if (old_eos_token_id >= 0) {
+      stop_token_ids.insert(old_eos_token_id);
+    }
+    args->eos_token_id_vec() = eos_token_ids;
+    args->stop_token_ids() = std::move(stop_token_ids);
+  }
+
+  LOG(INFO) << "Merged generation_config special token ids: "
+            << "bos_token_id=" << args->bos_token_id()
+            << ", eos_token_id=" << args->eos_token_id()
+            << ", pad_token_id=" << args->pad_token_id()
+            << ", eos_token_id_vec size=" << args->eos_token_id_vec().size();
+}
+
+}  // namespace
 
 HFModelLoader::HFModelLoader(const std::string& model_weights_path)
     : model_weights_path_(model_weights_path) {
@@ -174,6 +331,7 @@ bool HFModelLoader::load_model_args(const std::string& model_weights_path) {
     return false;
   }
   model_args_loader(reader, &args_);
+  merge_generation_config_special_token_ids(model_weights_path, &args_);
 
   return true;
 }
@@ -360,6 +518,7 @@ bool HFModelLoader::load_tokenizer_args(const std::string& model_weights_path) {
       return false;
     }
   }
+  merge_added_tokens_decoder_special_tokens(tokenizer_reader, &tokenizer_args_);
 
   return true;
 }

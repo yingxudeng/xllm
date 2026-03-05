@@ -171,6 +171,10 @@ class WorkerImpl {
 
   virtual ForwardOutput get_last_step_result();
 
+  // Prevent sampling from padded/invalid vocab tail when tokenizer vocab is
+  // smaller than model vocab.
+  void mask_invalid_token_logits(torch::Tensor& logits) const;
+
   bool is_driver() const { return driver_ || dp_driver_; }
 
   int64_t get_active_activation_memory();
@@ -248,6 +252,8 @@ class WorkerImpl {
   bool is_spec_draft_ = false;
 
   Status status_ = Status::UNINITIALIZED;
+
+  int64_t tokenizer_vocab_size_ = -1;
 
   torch::Tensor expert_load_data_;
 };

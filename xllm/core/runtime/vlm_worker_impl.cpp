@@ -75,6 +75,7 @@ std::optional<ForwardOutput> VLMWorkerImpl::step(const ForwardInput& input) {
 
   ForwardOutput output;
   if (sampling_params.selected_token_idxes.defined()) {
+    mask_invalid_token_logits(logits);
     auto sample_output = sampler_->forward(logits, sampling_params);
     output.logits = logits;
     COUNTER_ADD(execution_latency_seconds_sampling, timer.elapsed_seconds());
