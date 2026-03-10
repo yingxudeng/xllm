@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <boost/algorithm/string.hpp>
 #include <filesystem>
+#include <string>
 #include <vector>
 
 #include "core/framework/model_context.h"
@@ -142,6 +143,13 @@ class Qwen3NextModelImpl : public torch::nn::Module {
     norm_->load_state_dict(state_dict.get_dict_with_prefix("norm."));
   }
 
+  void verify_loaded_weights(const std::string& prefix) const {
+    for (size_t i = 0; i < layers_.size(); ++i) {
+      layers_[i]->verify_loaded_weights(prefix + "layers." + std::to_string(i) +
+                                        ".");
+    }
+  }
+
 #if defined(USE_NPU) && defined(USE_NPU_TORCH)
   layer::WordEmbedding get_word_embedding() { return embed_tokens_; }
 
@@ -192,6 +200,7 @@ TORCH_MODULE(Qwen3NextModel);
 class Qwen3NextForCausalLMImpl : public torch::nn::Module {
  public:
   Qwen3NextForCausalLMImpl(const ModelContext& context) {
+    tie_word_embeddings_ = context.get_model_args().tie_word_embeddings();
     model_ = register_module("model", Qwen3NextModel(context));
 #if defined(USE_NPU) && defined(USE_NPU_TORCH)
     lm_head_ = register_module("lm_head", layer::LmHead(context));
@@ -225,15 +234,96 @@ class Qwen3NextForCausalLMImpl : public torch::nn::Module {
   }
 
   void load_model(std::unique_ptr<ModelLoader> loader) {
+    auto has_model_weights = [](const StateDict& dict) {
+      return dict.get_tensor("embed_tokens.weight").defined() ||
+             dict.get_dict_with_prefix("layers.").size() > 0 ||
+             dict.get_tensor("norm.weight").defined();
+    };
+    auto has_lm_head_weights = [](const StateDict& dict) {
+      return dict.get_tensor("weight").defined() ||
+             dict.get_tensor("qweight").defined();
+    };
+
     for (const auto& state_dict : loader->get_state_dicts()) {
-      model_->load_state_dict(state_dict->get_dict_with_prefix("model."));
+      auto model_state_dict = state_dict->get_dict_with_prefix("model.");
+      if (!has_model_weights(model_state_dict)) {
+        auto language_model_state_dict =
+            state_dict->get_dict_with_prefix("language_model.model.");
+        if (has_model_weights(language_model_state_dict)) {
+          model_state_dict = language_model_state_dict;
+        } else {
+          auto wrapped_language_model_state_dict =
+              state_dict->get_dict_with_prefix("model.language_model.");
+          if (has_model_weights(wrapped_language_model_state_dict)) {
+            model_state_dict = wrapped_language_model_state_dict;
+          }
+        }
+      }
+      model_->load_state_dict(model_state_dict);
 #if defined(USE_NPU_TORCH)
-      lm_head_->load_state_dict(state_dict->get_dict_with_prefix("lm_head."));
+      auto lm_head_state_dict = state_dict->get_dict_with_prefix("lm_head.");
+      if (!has_lm_head_weights(lm_head_state_dict)) {
+        auto language_model_lm_head_state_dict =
+            state_dict->get_dict_with_prefix("language_model.lm_head.");
+        if (has_lm_head_weights(language_model_lm_head_state_dict)) {
+          lm_head_state_dict = language_model_lm_head_state_dict;
+        } else {
+          auto wrapped_language_model_lm_head_state_dict =
+              state_dict->get_dict_with_prefix("model.language_model.lm_head.");
+          if (has_lm_head_weights(wrapped_language_model_lm_head_state_dict)) {
+            lm_head_state_dict = wrapped_language_model_lm_head_state_dict;
+          } else {
+            auto wrapped_lm_head_state_dict =
+                state_dict->get_dict_with_prefix("model.lm_head.");
+            if (has_lm_head_weights(wrapped_lm_head_state_dict)) {
+              lm_head_state_dict = wrapped_lm_head_state_dict;
+            }
+          }
+        }
+      }
+      if (!has_lm_head_weights(lm_head_state_dict) && tie_word_embeddings_) {
+        auto tied_lm_head_state_dict =
+            model_state_dict.get_dict_with_prefix("embed_tokens.");
+        if (has_lm_head_weights(tied_lm_head_state_dict)) {
+          lm_head_state_dict = tied_lm_head_state_dict;
+        }
+      }
+      lm_head_->load_state_dict(lm_head_state_dict);
 #else
-      npu_lm_head_->load_state_dict(
-          state_dict->get_dict_with_prefix("lm_head."));
+      auto lm_head_state_dict = state_dict->get_dict_with_prefix("lm_head.");
+      if (!has_lm_head_weights(lm_head_state_dict)) {
+        auto language_model_lm_head_state_dict =
+            state_dict->get_dict_with_prefix("language_model.lm_head.");
+        if (has_lm_head_weights(language_model_lm_head_state_dict)) {
+          lm_head_state_dict = language_model_lm_head_state_dict;
+        } else {
+          auto wrapped_language_model_lm_head_state_dict =
+              state_dict->get_dict_with_prefix("model.language_model.lm_head.");
+          if (has_lm_head_weights(wrapped_language_model_lm_head_state_dict)) {
+            lm_head_state_dict = wrapped_language_model_lm_head_state_dict;
+          } else {
+            auto wrapped_lm_head_state_dict =
+                state_dict->get_dict_with_prefix("model.lm_head.");
+            if (has_lm_head_weights(wrapped_lm_head_state_dict)) {
+              lm_head_state_dict = wrapped_lm_head_state_dict;
+            }
+          }
+        }
+      }
+      if (!has_lm_head_weights(lm_head_state_dict) && tie_word_embeddings_) {
+        auto tied_lm_head_state_dict =
+            model_state_dict.get_dict_with_prefix("embed_tokens.");
+        if (has_lm_head_weights(tied_lm_head_state_dict)) {
+          lm_head_state_dict = tied_lm_head_state_dict;
+        }
+      }
+      npu_lm_head_->load_state_dict(lm_head_state_dict);
 #endif
     }
+
+#if defined(USE_NPU) && defined(USE_NPU_TORCH)
+    model_->verify_loaded_weights("model.");
+#endif
 
 #if defined(USE_NPU) && !defined(USE_NPU_TORCH)
     // verify
@@ -278,6 +368,7 @@ class Qwen3NextForCausalLMImpl : public torch::nn::Module {
 #endif
 
  private:
+  bool tie_word_embeddings_{false};
   layer::NpuLmHead npu_lm_head_{nullptr};
   layer::LmHead lm_head_{nullptr};
   Qwen3NextModel model_{nullptr};
@@ -331,6 +422,7 @@ REGISTER_MODEL_ARGS(qwen3_next, [&] {
   LOAD_ARG_OR(partial_rotary_factor, "partial_rotary_factor", 0.25f);
   LOAD_ARG_OR(
       shared_expert_intermediate_size, "shared_expert_intermediate_size", 512);
+  LOAD_ARG_OR(layer_types, "layer_types", std::vector<std::string>());
 
   // MoE compatibility with fused_moe implementation.
   LOAD_ARG_OR(n_routed_experts, "n_routed_experts", args->num_experts());

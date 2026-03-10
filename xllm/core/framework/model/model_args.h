@@ -171,6 +171,7 @@ struct ModelArgs {
   PROPERTY(int32_t, linear_num_value_heads) = 32;
   PROPERTY(int32_t, shared_expert_intermediate_size) = 512;
   PROPERTY(float, partial_rotary_factor) = 0.25f;
+  PROPERTY(std::vector<std::string>, layer_types) = {};
 
   // Vision model's dropout
   PROPERTY(float, mm_dropout) = 0.0f;
