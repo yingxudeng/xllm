@@ -18,6 +18,7 @@ limitations under the License.
 #include <torch/torch.h>
 
 #include <functional>
+#include <string>
 
 #include "framework/kv_cache/kv_cache.h"
 #include "framework/model/model_args.h"
@@ -39,6 +40,7 @@ class Qwen3NextDecoderLayerImpl : public torch::nn::Module {
                                      int32_t layer_id);
 
   void load_state_dict(const StateDict& state_dict);
+  void verify_loaded_weights(const std::string& prefix) const;
 
   torch::Tensor forward(torch::Tensor& x,
                         torch::Tensor& positions,

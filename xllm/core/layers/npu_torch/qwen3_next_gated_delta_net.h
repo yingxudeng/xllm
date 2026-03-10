@@ -17,6 +17,8 @@ limitations under the License.
 
 #include <torch/torch.h>
 
+#include <string>
+
 #include "attention.h"
 #include "framework/kv_cache/kv_cache.h"
 #include "framework/model/model_args.h"
@@ -44,8 +46,13 @@ class Qwen3NextGatedDeltaNetImpl : public torch::nn::Module {
                         const ModelInputParams& input_params);
 
   void load_state_dict(const StateDict& state_dict);
+  void verify_loaded_weights(const std::string& prefix) const;
 
  private:
+  torch::Tensor merge_qkvz_tensor_for_qwen3_5(const torch::Tensor& qkv,
+                                              const torch::Tensor& z) const;
+  torch::Tensor merge_ba_tensor_for_qwen3_5(const torch::Tensor& b,
+                                            const torch::Tensor& a) const;
   std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
   process_qkvz_tensor(const torch::Tensor& qkvz);
   std::tuple<torch::Tensor, torch::Tensor> process_ba_tensor(
@@ -69,6 +76,10 @@ class Qwen3NextGatedDeltaNetImpl : public torch::nn::Module {
   int64_t rank_;
   int32_t conv_kernel_size_;
 
+  ColumnParallelLinear in_proj_qkv_{nullptr};
+  ColumnParallelLinear in_proj_z_{nullptr};
+  ColumnParallelLinear in_proj_b_{nullptr};
+  ColumnParallelLinear in_proj_a_{nullptr};
   ColumnParallelLinear qkvz_proj_{nullptr};
   ColumnParallelLinear ba_proj_{nullptr};
   ColumnParallelLinear conv1d_{nullptr};
@@ -78,6 +89,7 @@ class Qwen3NextGatedDeltaNetImpl : public torch::nn::Module {
   RmsNormGated norm_{nullptr};
   DEFINE_WEIGHT(dt_bias);
   DEFINE_WEIGHT(A_log);
+  bool is_qwen3_5_model_ = false;
 };
 TORCH_MODULE(Qwen3NextGatedDeltaNet);
 
