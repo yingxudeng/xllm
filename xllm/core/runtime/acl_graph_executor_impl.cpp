@@ -61,8 +61,14 @@ GraphPersistentParam::GraphPersistentParam(const ModelArgs& args,
       need_update_attn_mask_(need_update_attn_mask) {
   // Determine whether attention plan needs to be updated based on model type
   // Future logic can be extended here for more complex model-specific behavior
+  // For qwen3_next: disable paged attention plan update because it uses mixed architecture
+  // (standard attention + linear attention). The standard attention layers (every 4th layer)
+  // will still work correctly without plan updates, as they use the same k/v cache structure.
+  // Linear attention layers use different cache types (conv_cache, ssm_cache) and don't need
+  // paged attention plan at all.
   need_update_attention_plan_ = (args.model_type() != "deepseek_v32" &&
-                                 args.model_type() != "glm_moe_dsa");
+                                 args.model_type() != "glm_moe_dsa" &&
+                                 args.model_type() != "qwen3_next");
 
   // Check if mRoPE is used (for VLM models like qwen2-vl)
   use_mrope_ = !args.rope_scaling_mrope_section().empty();
@@ -259,7 +265,8 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
     aclrtStream stream = c10_npu::getCurrentNPUStream().stream();
 
     // Update tiling tensor based on model type
-    if (need_update_attention_plan_) {
+    // For models with mixed attention types (e.g., qwen3_next), only update if k/v cache is defined
+    if (need_update_attention_plan_ && k_cache.defined() && v_cache.defined()) {
       plan_paged_attention_tiling(
           tokens, k_cache, v_cache, persistent_block_tables_, params, stream);
     }
