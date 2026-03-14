@@ -577,7 +577,7 @@ bool LLMEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
         args_.linear_key_head_dim() * n_local_linear_v_heads_,  args_.linear_conv_kernel_dim() - 1});
       kv_cache_shape.emplace_back(std::vector<int64_t>{
         kv_cache_cap.n_blocks,  n_local_linear_v_heads_, args_.linear_key_head_dim(),
-         args_.linear_key_head_dim()});
+         args_.linear_value_head_dim()});
     }
 #if defined(USE_MLU)
   // transpose kv_cache layout for mlu
