@@ -780,6 +780,7 @@ std::tuple<torch::Tensor, torch::Tensor> fp8_scaled_quantize(
 #else
   NOT_IMPLEMENTED();
 #endif
+}
 
 std::pair<torch::Tensor, torch::Tensor> fused_gdn_gating(
     FusedGdnGatingParams& params) {

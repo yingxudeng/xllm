@@ -20,23 +20,31 @@ limitations under the License.
 #include <functional>
 
 #include "common/dense_mlp.h"
-#include "common/qwen3_next_rms_norm.h"
 #include "common/qwen3_next_attention.h"
 #include "common/qwen3_next_gated_delta_net.h"
-#include "layers/npu/fused_moe.h"
+#include "common/qwen3_next_rms_norm.h"
+#if defined(USE_MLU)
+#include "layers/mlu/fused_moe.h"
+#elif defined(USE_NPU)
+#include "layers/npu_torch/fused_moe.h"
+#elif defined(USE_ILU)
+#include "layers/ilu/fused_moe.h"
+#else
+#include "layers/common/fused_moe.h"
+#endif
 #include "framework/kv_cache/kv_cache.h"
 #include "framework/model/model_args.h"
 #include "framework/model/model_input_params.h"
 #include "framework/model_context.h"
 #include "framework/state_dict/state_dict.h"
 
-
 namespace xllm {
 namespace layer {
 
 class Qwen3NextDecoderLayerImpl : public torch::nn::Module {
  public:
-  explicit Qwen3NextDecoderLayerImpl(const ModelContext& context, int32_t layer_id);
+  explicit Qwen3NextDecoderLayerImpl(const ModelContext& context,
+                                     int32_t layer_id);
 
   void load_state_dict(const StateDict& state_dict);
 
