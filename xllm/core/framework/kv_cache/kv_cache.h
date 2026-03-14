@@ -74,9 +74,6 @@ class KVCache final {
   torch::Tensor value_cache_scale_;
   torch::Tensor conv_cache_;
   torch::Tensor ssm_cache_;
-  // for continuous kvcache
-  std::shared_ptr<XTensor> key_xtensor_;
-  std::shared_ptr<XTensor> value_xtensor_;
 };
 
 }  // namespace xllm

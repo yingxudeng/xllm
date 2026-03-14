@@ -47,9 +47,6 @@ KVCache::KVCache(torch::Tensor key_cache,
       conv_cache_(std::move(conv_cache)),
       ssm_cache_(std::move(ssm_cache)) {}
 
-KVCache::KVCache(std::shared_ptr<XTensor> key_xtensor,
-                 std::shared_ptr<XTensor> value_xtensor)
-    : key_xtensor_(key_xtensor), value_xtensor_(value_xtensor) {}
 torch::Tensor KVCache::get_k_cache() const { return key_cache_; }
 torch::Tensor KVCache::get_v_cache() const { return value_cache_; }
 torch::Tensor KVCache::get_index_cache() const { return index_cache_; }
