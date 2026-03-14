@@ -95,13 +95,13 @@ bool CommChannel::allocate_kv_cache(
   }
 
   if (kv_cache_shape.size() == 4) {
-    shape.mutable_conv_shape()->Reserve(kv_cache_shape[2].size());
-    shape.mutable_ssm_shape()->Reserve(kv_cache_shape[3].size());
+    shape->mutable_conv_shape()->Reserve(kv_cache_shape[2].size());
+    shape->mutable_ssm_shape()->Reserve(kv_cache_shape[3].size());
     for (size_t i = 0; i < kv_cache_shape[2].size(); ++i) {
-      shape.add_conv_shape(kv_cache_shape[2][i]);
+      shape->add_conv_shape(kv_cache_shape[2][i]);
     }
     for (size_t i = 0; i < kv_cache_shape[3].size(); ++i) {
-      shape.add_ssm_shape(kv_cache_shape[3][i]);
+      shape->add_ssm_shape(kv_cache_shape[3][i]);
     }
   }
   proto::Status s;
