@@ -187,6 +187,7 @@ torch::Tensor FusedMoEImpl::select_experts(
   moe_active_topk_params.input = router_logits_2d;
   moe_active_topk_params.finished = torch::Tensor();
   moe_active_topk_params.topk = topk_;
+  moe_active_topk_params.scoring_func = "softmax";
   auto [topk_weights, topk_ids] =
       xllm::kernel::moe_active_topk(moe_active_topk_params);
   topk_ids = topk_ids.to(torch::kInt32);

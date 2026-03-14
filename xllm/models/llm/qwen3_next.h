@@ -226,6 +226,16 @@ class Qwen3NextForCausalLMImpl : public torch::nn::Module {
 #endif
   }
 
+  torch::Tensor pooler(const torch::Tensor& hidden_states,
+                       const torch::Tensor& seleted_idxes) {
+    auto h = hidden_states;
+    if (seleted_idxes.defined()) {
+      h = h.index_select(/*dim=*/0, seleted_idxes);
+    }
+    namespace F = torch::nn::functional;
+    return F::normalize(h, F::NormalizeFuncOptions().p(2).dim(1));
+  }
+
   void load_model(std::unique_ptr<ModelLoader> loader) {
     for (const auto& state_dict : loader->get_state_dicts()) {
       model_->load_state_dict(state_dict->get_dict_with_prefix("model."));
