@@ -509,25 +509,13 @@ Engine::KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
   }
 #endif
 
-  if (!FLAGS_enable_continuous_kvcache) {
-    // compute kv cache n_blocks
-    const int32_t block_size = options_.block_size();
-    const int64_t block_size_in_bytes =
-        block_size * (slot_size + index_slot_size + scale_slot_size) + linear_slot_size;
-    kv_cache_cap.n_blocks = kv_cache_cap.cache_size_in_bytes /
-                            (kv_cache_cap.n_layers * block_size_in_bytes);
-    CHECK_GT(kv_cache_cap.n_blocks, 0) << "no n_blocks for kv cache";
-  } else {
-    int32_t n_pages =
-        kv_cache_cap.cache_size_in_bytes / FLAGS_phy_page_granularity_size;
-    if (FLAGS_enable_mla) {
-      n_pages -= n_pages % (kv_cache_cap.n_layers);
-    } else {
-      n_pages -= n_pages % (2 * kv_cache_cap.n_layers);
-    }
-    kv_cache_cap.n_pages = n_pages;
-    CHECK_GT(kv_cache_cap.n_pages, 0) << "no n_pages for kv cache";
-  }
+  // compute kv cache n_blocks
+  const int32_t block_size = options_.block_size();
+  const int64_t block_size_in_bytes =
+      block_size * (slot_size + index_slot_size + scale_slot_size);
+  kv_cache_cap.n_blocks = kv_cache_cap.cache_size_in_bytes /
+                          (kv_cache_cap.n_layers * block_size_in_bytes);
+  CHECK_GT(kv_cache_cap.n_blocks, 0) << "no n_blocks for kv cache";
   return kv_cache_cap;
 }
 

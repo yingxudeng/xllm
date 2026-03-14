@@ -773,6 +773,14 @@ moe_init_routing_v2(MoeInitRoutingV2Params& params) {
 #endif
 }
 
+std::tuple<torch::Tensor, torch::Tensor> fp8_scaled_quantize(
+    Fp8ScaledQuantizeParams& params) {
+#if defined(USE_CUDA)
+  return cuda::fp8_scaled_quantize(params.input, params.output, params.scale);
+#else
+  NOT_IMPLEMENTED();
+#endif
+
 std::pair<torch::Tensor, torch::Tensor> fused_gdn_gating(
     FusedGdnGatingParams& params) {
 #if defined(USE_NPU)
