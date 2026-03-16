@@ -195,6 +195,7 @@ bool LLMEngine::init_model(MasterStatus master_status) {
   n_local_q_heads_ = std::max<int64_t>(1, n_heads / world_size);
   head_dim_ = args_.head_dim();
   dtype_ = util::parse_dtype(args_.dtype(), options_.devices()[0]);
+  // For qwen3_next hybrid attention.
   if (args_.full_attention_interval() > 1) {
     const int64_t linear_n_k_heads = args_.linear_num_key_heads();
     const int64_t linear_n_v_heads = args_.linear_num_value_heads();
@@ -490,6 +491,7 @@ Engine::KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
       scale_slot_size = 2 * sizeof(float) * n_local_kv_heads_;
     }
   }
+  // For qwen3_next linear-attention layers.
   if (args_.linear_num_value_heads() > 0) {
     int64_t head_k_dim = args_.linear_key_head_dim();
     int64_t head_v_dim = args_.linear_value_head_dim();

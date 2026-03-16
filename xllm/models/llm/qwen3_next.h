@@ -1,4 +1,4 @@
-/* Copyright 2025 The xLLM Authors. All Rights Reserved.
+/* Copyright 2026 The xLLM Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -136,8 +136,8 @@ class Qwen3NextModelImpl : public torch::nn::Module {
   std::vector<layer::Qwen3NextDecoderLayer> layers_;
   int32_t max_seq_len_ = 0;
   int32_t dp_size_;
-  at::Device device_;
-  torch::Dtype dtype_;
+  torch::Device device_;
+  torch::ScalarType dtype_;
   layer::Qwen3NextRMSNorm norm_{nullptr};
   layer::AttentionMask attn_mask_;
   layer::WordEmbedding embed_tokens_{nullptr};

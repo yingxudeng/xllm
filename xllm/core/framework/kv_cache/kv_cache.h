@@ -22,7 +22,6 @@ limitations under the License.
 
 #include "common/global_flags.h"
 #include "framework/model/model_input_params.h"
-#include "framework/xtensor/xtensor.h"
 
 namespace xllm {
 class KVCache final {
@@ -42,8 +41,6 @@ class KVCache final {
           torch::Tensor value_cache,
           torch::Tensor conv_cache,
           torch::Tensor ssm_cache);
-  KVCache(std::shared_ptr<XTensor> key_xtensor,
-          std::shared_ptr<XTensor> value_xtensor);
   ~KVCache() = default;
 
   // TODO: pass in kv_shape and options instead
@@ -73,7 +70,9 @@ class KVCache final {
   // scale tensors for quantized KV cache (int8)
   torch::Tensor key_cache_scale_;
   torch::Tensor value_cache_scale_;
+  // Convolutional state cache for linear-attention layers (conv_state).
   torch::Tensor conv_cache_;
+  // State space model cache for linear-attention layers (ssm_state).
   torch::Tensor ssm_cache_;
 };
 
