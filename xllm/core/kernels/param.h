@@ -1345,7 +1345,6 @@ struct GatedLayerNormParams {
   bool is_rms_norm = true;
 };
 
-
 struct PartialRotaryEmbeddingParams {
   torch::Tensor positions;
   torch::Tensor query;

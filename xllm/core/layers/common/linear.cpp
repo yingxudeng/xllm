@@ -566,7 +566,8 @@ void ColumnParallelLinearImpl::load_state_dict(
     LOAD_MERGED_WEIGHT_V2(qweight, 0);
     LOAD_MERGED_WEIGHT_V2(per_channel_scale, 0);
   } else {
-    // For regular weights, use the new merged weight loading with variable shard sizes
+    // For regular weights, use the new merged weight loading with variable
+    // shard sizes
     LOAD_MERGED_WEIGHT_V2(weight, 0);
   }
 

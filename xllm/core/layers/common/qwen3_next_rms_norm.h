@@ -26,8 +26,8 @@ namespace layer {
 class Qwen3NextRMSNormImpl : public torch::nn::Module {
  public:
   Qwen3NextRMSNormImpl(int64_t dim,
-                   double eps,
-                   const torch::TensorOptions& options);
+                       double eps,
+                       const torch::TensorOptions& options);
 
   torch::Tensor forward(torch::Tensor& input);
 

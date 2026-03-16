@@ -330,7 +330,8 @@ void load_merged_weight_v2(const StateDict& state_dict,
 
   // Check that shard_tensor_count matches the size of shard_sizes vector
   CHECK_EQ(shard_tensor_count, static_cast<int32_t>(shard_sizes.size()))
-      << "shard_tensor_count does not match shard_sizes vector size for " << state_dict.prefix() << name;
+      << "shard_tensor_count does not match shard_sizes vector size for "
+      << state_dict.prefix() << name;
 
   // Calculate total expected size
   int64_t total_expected_size = 0;
@@ -338,7 +339,8 @@ void load_merged_weight_v2(const StateDict& state_dict,
     total_expected_size += size * world_size;
   }
   CHECK_EQ(tensor.size(dim), total_expected_size)
-      << name << "[" << dim << "] size mismatch for " << state_dict.prefix() << name;
+      << name << "[" << dim << "] size mismatch for " << state_dict.prefix()
+      << name;
 
   std::vector<torch::Tensor> shard_tensors;
 

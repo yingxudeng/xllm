@@ -94,7 +94,7 @@ AttentionMetadata AttentionMetadataBuilder::build(
     attn_metadata.q_seq_lens = params.q_seq_lens;
 #else
     attn_metadata.kv_seq_lens = torch::diff(params.kv_seq_lens);  // kv seqlens
-    attn_metadata.q_seq_lens = torch::diff(params.q_seq_lens);  // q seqlens
+    attn_metadata.q_seq_lens = torch::diff(params.q_seq_lens);    // q seqlens
 #endif
   }
 #if defined(USE_NPU)

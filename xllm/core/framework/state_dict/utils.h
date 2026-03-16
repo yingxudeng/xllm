@@ -230,12 +230,12 @@ void load_merged_weight_v2(const StateDict& state_dict,
 
 #define LOAD_MERGED_WEIGHT_V2(name, dim)            \
   weight::load_merged_weight_v2(state_dict,         \
-                              #name,               \
-                              dim,                 \
-                              rank,                \
-                              world_size,          \
-                              shard_tensor_count,  \
-                              shard_sizes,         \
-                              name##_,             \
-                              name##_is_loaded_);
+                                #name,              \
+                                dim,                \
+                                rank,               \
+                                world_size,         \
+                                shard_tensor_count, \
+                                shard_sizes,        \
+                                name##_,            \
+                                name##_is_loaded_);
 }  // namespace xllm

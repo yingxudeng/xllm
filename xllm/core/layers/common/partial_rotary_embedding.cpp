@@ -20,17 +20,18 @@ limitations under the License.
 namespace xllm {
 namespace layer {
 
-PartialRotaryEmbeddingImpl::PartialRotaryEmbeddingImpl(int64_t rotary_dim,
-                                                       int64_t max_position_embeddings,
-                                                       int64_t rope_theta,
-                                                       int64_t head_size,
-                                                       bool is_neox_style,
-                                                       bool interleaved,
-                                                       const torch::TensorOptions& options)
+PartialRotaryEmbeddingImpl::PartialRotaryEmbeddingImpl(
+    int64_t rotary_dim,
+    int64_t max_position_embeddings,
+    int64_t rope_theta,
+    int64_t head_size,
+    bool is_neox_style,
+    bool interleaved,
+    const torch::TensorOptions& options)
     : head_size_(head_size),
       rotary_dim_(rotary_dim),
       is_neox_style_(is_neox_style),
-      interleaved_(interleaved) { 
+      interleaved_(interleaved) {
   auto dev_options = torch::TensorOptions().device(Device::type_torch());
 
   auto inv_freq_t = torch::arange(/*start=*/0,
@@ -52,8 +53,8 @@ PartialRotaryEmbeddingImpl::PartialRotaryEmbeddingImpl(int64_t rotary_dim,
 }
 
 void PartialRotaryEmbeddingImpl::forward(const torch::Tensor& positions,
-                                  torch::Tensor& q,
-                                  torch::Tensor& k) {
+                                         torch::Tensor& q,
+                                         torch::Tensor& k) {
   xllm::kernel::PartialRotaryEmbeddingParams partial_rotary_params;
   partial_rotary_params.positions = positions;
   partial_rotary_params.query = q;
@@ -62,7 +63,8 @@ void PartialRotaryEmbeddingImpl::forward(const torch::Tensor& positions,
   partial_rotary_params.rotary_dim = rotary_dim_;
   partial_rotary_params.cos_sin_cache = cos_sin_cache_;
   partial_rotary_params.is_neox_style = is_neox_style_;
-  auto [q_rot, k_rot] = xllm::kernel::partial_rotary_embedding(partial_rotary_params);
+  auto [q_rot, k_rot] =
+      xllm::kernel::partial_rotary_embedding(partial_rotary_params);
 
   q = q_rot;
   k = k_rot;
@@ -70,4 +72,3 @@ void PartialRotaryEmbeddingImpl::forward(const torch::Tensor& positions,
 
 }  // namespace layer
 }  // namespace xllm
-
