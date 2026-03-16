@@ -24,8 +24,8 @@ limitations under the License.
 #include "framework/quant_args.h"
 #include "framework/state_dict/state_dict.h"
 #include "linear.h"
-#include "qwen3_next_rms_norm.h"
 #include "partial_rotary_embedding.h"
+#include "qwen3_next_rms_norm.h"
 
 namespace xllm {
 namespace layer {
@@ -34,10 +34,10 @@ class Qwen3NextAttentionImpl : public torch::nn::Module {
  public:
   Qwen3NextAttentionImpl() = default;
   Qwen3NextAttentionImpl(const ModelArgs& args,
-                     const QuantArgs& quant_args,
-                     const ParallelArgs& parallel_args,
-                     const torch::TensorOptions& options,
-                     int32_t layer_id);
+                         const QuantArgs& quant_args,
+                         const ParallelArgs& parallel_args,
+                         const torch::TensorOptions& options,
+                         int32_t layer_id);
 
   torch::Tensor forward(const torch::Tensor& positions,
                         const torch::Tensor& hidden_states,

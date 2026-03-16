@@ -27,10 +27,12 @@ RmsNormGatedImpl::RmsNormGatedImpl(int64_t dim,
                                    double eps,
                                    const torch::TensorOptions& options)
     : norm_dim_(dim), eps_(eps) {
-  weight_ = register_parameter("weight", torch::empty({dim}, options), /*requires_grad=*/false);
+  weight_ = register_parameter(
+      "weight", torch::empty({dim}, options), /*requires_grad=*/false);
 }
 
-torch::Tensor RmsNormGatedImpl::forward(torch::Tensor& input, std::optional<torch::Tensor> gate) {
+torch::Tensor RmsNormGatedImpl::forward(torch::Tensor& input,
+                                        std::optional<torch::Tensor> gate) {
   xllm::kernel::GatedLayerNormParams params;
   auto input_type = input.dtype();
   input = input.to(torch::kFloat32);
@@ -43,8 +45,8 @@ torch::Tensor RmsNormGatedImpl::forward(torch::Tensor& input, std::optional<torc
     gate = gate.value().to(torch::kFloat32);
     params.z = gate;
   }
-  params.group_size = input.size(-1); 
-  params.is_rms_norm = true;  
+  params.group_size = input.size(-1);
+  params.is_rms_norm = true;
   auto ret = xllm::kernel::gated_layer_norm(params);
   return ret.to(input_type);
 }
