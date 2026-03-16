@@ -16,7 +16,6 @@ limitations under the License.
 #pragma once
 
 #include "param.h"
-#include "triton_npu/torch_api/triton_ops_api.h"
 
 namespace xllm::kernel {
 

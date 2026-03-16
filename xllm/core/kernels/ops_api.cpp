@@ -19,6 +19,7 @@ limitations under the License.
 #include "mlu/mlu_ops_api.h"
 #elif defined(USE_NPU)
 #include "npu/npu_ops_api.h"
+#include "triton_npu/torch_api/triton_ops_api.h"
 #elif defined(USE_CUDA)
 #include "cuda/attention_runner.h"
 #include "cuda/cuda_ops_api.h"
