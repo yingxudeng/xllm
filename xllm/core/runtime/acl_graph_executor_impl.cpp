@@ -261,7 +261,10 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
     // Update tiling tensor based on model type
     // For models with mixed attention types (e.g., qwen3_next), only update if
     // k/v cache is defined
-    if (need_update_attention_plan_ && k_cache.defined() && v_cache.defined()) {
+    // NOTE: linear attention may pass "defined but empty" k/v cache tensors.
+    // Only treat k/v cache as valid when they are defined and non-empty.
+    if (need_update_attention_plan_ && k_cache.defined() && v_cache.defined() &&
+        k_cache.numel() > 0 && v_cache.numel() > 0) {
       plan_paged_attention_tiling(
           tokens, k_cache, v_cache, persistent_block_tables_, params, stream);
     }
