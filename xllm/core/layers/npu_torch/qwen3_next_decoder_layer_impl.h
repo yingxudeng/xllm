@@ -19,24 +19,16 @@ limitations under the License.
 
 #include <functional>
 
-#include "common/dense_mlp.h"
-#include "common/qwen3_next_attention.h"
-#include "common/qwen3_next_gated_delta_net.h"
-#include "common/qwen3_next_rms_norm.h"
-#if defined(USE_MLU)
-#include "layers/mlu/fused_moe.h"
-#elif defined(USE_NPU)
-#include "layers/npu_torch/fused_moe.h"
-#elif defined(USE_ILU)
-#include "layers/ilu/fused_moe.h"
-#else
-#include "layers/common/fused_moe.h"
-#endif
 #include "framework/kv_cache/kv_cache.h"
 #include "framework/model/model_args.h"
 #include "framework/model/model_input_params.h"
 #include "framework/model_context.h"
 #include "framework/state_dict/state_dict.h"
+#include "layers/common/dense_mlp.h"
+#include "layers/common/qwen3_next_rms_norm.h"
+#include "layers/npu_torch/fused_moe.h"
+#include "layers/npu_torch/qwen3_next_attention.h"
+#include "layers/npu_torch/qwen3_next_gated_delta_net.h"
 
 namespace xllm {
 namespace layer {

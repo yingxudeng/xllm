@@ -24,8 +24,8 @@ limitations under the License.
 #include "framework/quant_args.h"
 #include "framework/state_dict/state_dict.h"
 #include "framework/state_dict/utils.h"
-#include "linear.h"
-#include "rms_norm_gated.h"
+#include "layers/common/linear.h"
+#include "layers/common/rms_norm_gated.h"
 
 namespace xllm {
 namespace layer {

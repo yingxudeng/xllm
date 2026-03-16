@@ -25,8 +25,9 @@ limitations under the License.
 #include "core/layers/common/attention_mask.h"
 #include "core/layers/common/attention_metadata_builder.h"
 #include "core/layers/common/lm_head.h"
+#include "core/layers/common/qwen3_next_rms_norm.h"
 #include "core/layers/common/word_embedding.h"
-#include "core/layers/qwen3_next_decoder_layer.h"
+#include "core/layers/npu_torch/qwen3_next_decoder_layer_impl.h"
 #include "models/model_registry.h"
 
 namespace xllm {

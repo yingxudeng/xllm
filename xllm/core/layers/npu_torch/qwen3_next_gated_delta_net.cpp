@@ -12,10 +12,8 @@ limitations under the License.
 
 #include "qwen3_next_gated_delta_net.h"
 
-#include <acl/acl.h>
 #include <glog/logging.h>
 #include <torch/torch.h>
-#include <torch_npu/torch_npu.h>
 
 #include <tuple>
 #include <unordered_map>

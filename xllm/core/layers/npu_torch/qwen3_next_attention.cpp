@@ -16,7 +16,6 @@ limitations under the License.
 #include "qwen3_next_attention.h"
 
 #include <glog/logging.h>
-#include <torch_npu/csrc/core/npu/NPUFormat.h>
 
 #include <tuple>
 namespace xllm {

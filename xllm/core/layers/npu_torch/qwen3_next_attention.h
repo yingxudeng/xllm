@@ -23,9 +23,9 @@ limitations under the License.
 #include "framework/parallel_state/parallel_args.h"
 #include "framework/quant_args.h"
 #include "framework/state_dict/state_dict.h"
-#include "linear.h"
-#include "partial_rotary_embedding.h"
-#include "qwen3_next_rms_norm.h"
+#include "layers/common/linear.h"
+#include "layers/common/partial_rotary_embedding.h"
+#include "layers/common/qwen3_next_rms_norm.h"
 
 namespace xllm {
 namespace layer {
