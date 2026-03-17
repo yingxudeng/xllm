@@ -89,7 +89,10 @@ REGISTER_CAUSAL_MODEL(qwen2, QWen2ForCausalLM);
 // https://huggingface.co/Qwen/Qwen2-7B-Instruct/blob/main/config.json
 REGISTER_MODEL_ARGS(qwen2, [&] {
   LOAD_ARG_OR(model_type, "model_type", "qwen2");
-  LOAD_ARG_OR(dtype, "torch_dtype", "");
+  LOAD_ARG_OR_FUNC(dtype, "torch_dtype", [&] {
+    return json.value_or<std::string>(
+        std::vector<std::string>{"torch_dtype", "dtype"}, "");
+  });
   LOAD_ARG_OR(vocab_size, "vocab_size", 152064);
   LOAD_ARG_OR(hidden_size, "hidden_size", 3584);
   LOAD_ARG_OR(n_layers, "num_hidden_layers", 28);
@@ -101,6 +104,7 @@ REGISTER_MODEL_ARGS(qwen2, [&] {
   LOAD_ARG_OR(intermediate_size, "intermediate_size", 18944);
   LOAD_ARG_OR(max_position_embeddings, "max_position_embeddings", 32768);
   LOAD_ARG_OR(rms_norm_eps, "rms_norm_eps", 1e-6);
+  LOAD_ARG_OR(bos_token_id, "bos_token_id", 151643);
   LOAD_ARG_OR(eos_token_id, "eos_token_id", 151643);
   LOAD_ARG_OR(rope_theta, "rope_theta", 1000000.0f);
 
@@ -108,7 +112,9 @@ REGISTER_MODEL_ARGS(qwen2, [&] {
   LOAD_ARG_OR(tie_word_embeddings, "tie_word_embeddings", false);
 
   LOAD_ARG_OR(use_sliding_window, "use_sliding_window", false);
-  LOAD_ARG_OR(sliding_window, "sliding_window", 4096);
+  LOAD_ARG_OR_FUNC(sliding_window, "sliding_window", [&] {
+    return args->max_position_embeddings();
+  });
   LOAD_ARG_OR(max_window_layers, "max_window_layers", 28);
 
   LOAD_ARG_OR_FUNC(head_dim, "head_dim", [&] {
