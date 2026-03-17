@@ -23,6 +23,7 @@ limitations under the License.
 
 #include <boost/algorithm/string.hpp>
 #include <filesystem>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -41,6 +42,107 @@ limitations under the License.
 namespace xllm {
 
 namespace {
+
+std::optional<bool> get_optional_bool(const nlohmann::json& data,
+                                      const std::string& key) {
+  auto it = data.find(key);
+  if (it == data.end() || it->is_null()) {
+    return std::nullopt;
+  }
+  return it->get<bool>();
+}
+
+std::optional<int64_t> get_optional_int64(const nlohmann::json& data,
+                                          const std::string& key) {
+  auto it = data.find(key);
+  if (it == data.end() || it->is_null()) {
+    return std::nullopt;
+  }
+  return it->get<int64_t>();
+}
+
+std::optional<std::string> get_optional_string(const nlohmann::json& data,
+                                               const std::string& key) {
+  auto it = data.find(key);
+  if (it == data.end() || it->is_null()) {
+    return std::nullopt;
+  }
+  return it->get<std::string>();
+}
+
+bool is_compressed_tensors_fp8_scheme(const nlohmann::json& config) {
+  const auto type = get_optional_string(config, "type");
+  const auto num_bits = get_optional_int64(config, "num_bits");
+  return type.has_value() && boost::iequals(*type, "float") &&
+         num_bits.value_or(0) == 8;
+}
+
+bool try_load_compressed_tensors_quant_cfg(const JsonReader& reader,
+                                           QuantArgs& quant_args) {
+  const auto quant_method =
+      reader.value<std::string>("quantization_config.quant_method");
+  if (!quant_method.has_value() ||
+      !boost::iequals(*quant_method, "compressed-tensors")) {
+    return false;
+  }
+
+  const auto& data = reader.data();
+  auto quant_config_it = data.find("quantization_config");
+  if (quant_config_it == data.end() || !quant_config_it->is_object()) {
+    return false;
+  }
+
+  auto config_groups_it = quant_config_it->find("config_groups");
+  if (config_groups_it == quant_config_it->end() ||
+      !config_groups_it->is_object()) {
+    return false;
+  }
+
+  bool found_fp8_group = false;
+  std::optional<bool> activation_dynamic;
+  for (const auto& [group_name, group] : config_groups_it->items()) {
+    if (!group.is_object()) {
+      continue;
+    }
+
+    auto weights_it = group.find("weights");
+    auto input_activations_it = group.find("input_activations");
+    if (weights_it == group.end() || input_activations_it == group.end() ||
+        !weights_it->is_object() || !input_activations_it->is_object()) {
+      continue;
+    }
+
+    if (!is_compressed_tensors_fp8_scheme(*weights_it) ||
+        !is_compressed_tensors_fp8_scheme(*input_activations_it)) {
+      continue;
+    }
+
+    found_fp8_group = true;
+    const auto dynamic = get_optional_bool(*input_activations_it, "dynamic");
+    if (!dynamic.has_value()) {
+      continue;
+    }
+    if (activation_dynamic.has_value() &&
+        activation_dynamic.value() != dynamic.value()) {
+      LOG(ERROR) << "compressed-tensors config group " << group_name
+                 << " has inconsistent input_activations.dynamic value.";
+      return false;
+    }
+    activation_dynamic = dynamic.value();
+  }
+
+  if (!found_fp8_group) {
+    return false;
+  }
+
+  quant_args.quant_method() = kQuantMethodFp8;
+  quant_args.bits() = 8;
+  quant_args.moe_weight_bits() = 8;
+  if (activation_dynamic.has_value()) {
+    quant_args.activation_dynamic() = activation_dynamic.value();
+  }
+  return true;
+}
 
 bool validate_smoothquant_mixed_w4a8(const JsonReader& reader,
                                      QuantArgs& quant_args,
@@ -115,6 +217,9 @@ bool load_quant_cfg(const JsonReader& reader, QuantArgs& quant_args) {
 
   if (auto v = reader.value<std::string>("quantization_config.quant_method")) {
     quant_args.quant_method() = v.value();
+  }
+  if (try_load_compressed_tensors_quant_cfg(reader, quant_args)) {
+    return true;
   }
   if (auto v = reader.value<int64_t>("quantization_config.bits")) {
     quant_args.bits() = v.value();
