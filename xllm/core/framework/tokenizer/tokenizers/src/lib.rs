@@ -28,8 +28,13 @@ fn read_file_as_u8(path: &str) -> Result<Vec<u8>, io::Error> {
 
 impl TokenizerWrapper {
     pub fn from_str(json: &str) -> TokenizerWrapper {
+        let mut tokenizer: Tokenizer = Tokenizer::from_str(json).unwrap().into();
+        // Server-side tokenization should not inherit HuggingFace export-time
+        // fixed padding/truncation settings such as pad-to-4096.
+        tokenizer.with_padding(None);
+        tokenizer.with_truncation(None).unwrap();
         TokenizerWrapper {
-            tokenizer: Tokenizer::from_str(json).unwrap().into(),
+            tokenizer,
             decode_str: String::new(),
             id_to_token_result: String::new(),
         }
