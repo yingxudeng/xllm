@@ -17,6 +17,8 @@ limitations under the License.
 
 #include <gtest/gtest.h>
 
+#include "core/platform/device.h"
+
 namespace xllm {
 
 TEST(HFModelLoaderTest, LoadCompressedTensorsFp8StaticConfig) {
@@ -43,11 +45,13 @@ TEST(HFModelLoaderTest, LoadCompressedTensorsFp8StaticConfig) {
   )json"));
 
   QuantArgs quant_args;
-  ASSERT_TRUE(load_quant_cfg(reader, quant_args));
-  EXPECT_EQ(quant_args.quant_method(), kQuantMethodFp8);
-  EXPECT_EQ(quant_args.bits(), 8);
-  EXPECT_EQ(quant_args.moe_weight_bits(), 8);
-  EXPECT_FALSE(quant_args.activation_dynamic());
+  if (Device::type_str() == "cuda") {
+    ASSERT_TRUE(load_quant_cfg(reader, quant_args));
+    EXPECT_EQ(quant_args.quant_method(), kQuantMethodFp8);
+    EXPECT_EQ(quant_args.bits(), 8);
+    EXPECT_EQ(quant_args.moe_weight_bits(), 8);
+    EXPECT_FALSE(quant_args.activation_dynamic());
+  }
 }
 
 TEST(HFModelLoaderTest, KeepLegacyFp8ConfigUnchanged) {

@@ -43,6 +43,7 @@ limitations under the License.
 #include "core/framework/tokenizer/sentencepiece_tokenizer.h"
 #include "core/framework/tokenizer/tiktoken_tokenizer.h"
 #include "core/framework/tokenizer/tokenizer_factory.h"
+#include "core/platform/device.h"
 #include "core/util/blocking_counter.h"
 #include "core/util/json_reader.h"
 #include "core/util/scope_guard.h"
@@ -74,12 +75,16 @@ bool try_load_compressed_tensors_quant_cfg(const JsonReader& reader,
   const auto& data = reader.data();
   auto quant_config_it = data.find("quantization_config");
   if (quant_config_it == data.end() || !quant_config_it->is_object()) {
+    LOG(ERROR) << "quantization_config must be an object for "
+                  "compressed-tensors quantization.";
     return false;
   }
 
   auto config_groups_it = quant_config_it->find("config_groups");
   if (config_groups_it == quant_config_it->end() ||
       !config_groups_it->is_object()) {
+    LOG(ERROR) << "quantization_config.config_groups must be an object for "
+                  "compressed-tensors quantization.";
     return false;
   }
 
@@ -111,6 +116,9 @@ bool try_load_compressed_tensors_quant_cfg(const JsonReader& reader,
     return true;
   }
 
+  LOG(ERROR) << "Failed to find an FP8 config_group in "
+                "quantization_config.config_groups for compressed-tensors "
+                "quantization.";
   return false;
 }
 
@@ -329,7 +337,11 @@ bool load_quant_cfg(const JsonReader& reader, QuantArgs& quant_args) {
   if (auto v = reader.value<std::string>("quantization_config.quant_method")) {
     quant_args.quant_method() = v.value();
   }
-  if (try_load_compressed_tensors_quant_cfg(reader, quant_args)) {
+  // Only CUDA currently adapts this compressed-tensors JSON layout.
+  // For other backends, skip this special parsing path and continue with the
+  // generic quantization config parsing path.
+  if (Device::type_str() == "cuda" &&
+      try_load_compressed_tensors_quant_cfg(reader, quant_args)) {
     return true;
   }
   if (auto v = reader.value<int64_t>("quantization_config.bits")) {
