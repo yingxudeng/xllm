@@ -30,6 +30,7 @@ limitations under the License.
 #include <cctype>
 #include <filesystem>
 #include <limits>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -51,6 +52,67 @@ limitations under the License.
 namespace xllm {
 
 namespace {
+
+bool is_compressed_tensors_fp8_scheme(const nlohmann::json& config) {
+  auto type_it = config.find("type");
+  auto num_bits_it = config.find("num_bits");
+  return type_it != config.end() && !type_it->is_null() &&
+         num_bits_it != config.end() && !num_bits_it->is_null() &&
+         boost::iequals(type_it->get<std::string>(), "float") &&
+         num_bits_it->get<int64_t>() == 8;
+}
+
+bool try_load_compressed_tensors_quant_cfg(const JsonReader& reader,
+                                           QuantArgs& quant_args) {
+  const auto quant_method =
+      reader.value<std::string>("quantization_config.quant_method");
+  if (!quant_method.has_value() ||
+      !boost::iequals(*quant_method, "compressed-tensors")) {
+    return false;
+  }
+
+  const auto& data = reader.data();
+  auto quant_config_it = data.find("quantization_config");
+  if (quant_config_it == data.end() || !quant_config_it->is_object()) {
+    return false;
+  }
+
+  auto config_groups_it = quant_config_it->find("config_groups");
+  if (config_groups_it == quant_config_it->end() ||
+      !config_groups_it->is_object()) {
+    return false;
+  }
+
+  for (const auto& [group_name, group] : config_groups_it->items()) {
+    if (!group.is_object()) {
+      continue;
+    }
+
+    auto weights_it = group.find("weights");
+    auto input_activations_it = group.find("input_activations");
+    if (weights_it == group.end() || input_activations_it == group.end() ||
+        !weights_it->is_object() || !input_activations_it->is_object()) {
+      continue;
+    }
+
+    if (!is_compressed_tensors_fp8_scheme(*weights_it) ||
+        !is_compressed_tensors_fp8_scheme(*input_activations_it)) {
+      continue;
+    }
+
+    quant_args.quant_method() = kQuantMethodFp8;
+    quant_args.bits() = 8;
+    quant_args.moe_weight_bits() = 8;
+
+    auto dynamic_it = input_activations_it->find("dynamic");
+    if (dynamic_it != input_activations_it->end() && !dynamic_it->is_null()) {
+      quant_args.activation_dynamic() = dynamic_it->get<bool>();
+    }
+    return true;
+  }
+
+  return false;
+}
 
 bool validate_smoothquant_mixed_w4a8(const JsonReader& reader,
                                      QuantArgs& quant_args,
@@ -266,6 +328,9 @@ bool load_quant_cfg(const JsonReader& reader, QuantArgs& quant_args) {
 
   if (auto v = reader.value<std::string>("quantization_config.quant_method")) {
     quant_args.quant_method() = v.value();
+  }
+  if (try_load_compressed_tensors_quant_cfg(reader, quant_args)) {
+    return true;
   }
   if (auto v = reader.value<int64_t>("quantization_config.bits")) {
     quant_args.bits() = v.value();
