@@ -32,9 +32,13 @@ void SamplingParameters::init(
     const std::vector<int32_t>& sample_idxes,
     const std::vector<std::vector<int64_t>>& unique_token_ids_vec,
     const std::vector<std::vector<int32_t>>& unique_token_counts_vec,
-    const std::vector<int32_t>& unique_token_lens_vec) {
+    const std::vector<int32_t>& unique_token_lens_vec,
+    const std::vector<std::vector<int32_t>>& generated_token_ids_vec) {
   CHECK_EQ(req_sampling_params.size(), selected_token_idxes.size());
   CHECK_GE(req_sampling_params.size(), sample_idxes.size());
+  if (!generated_token_ids_vec.empty()) {
+    CHECK_EQ(req_sampling_params.size(), generated_token_ids_vec.size());
+  }
 
   std::vector<float> frequency_penalties;
   std::vector<float> presence_penalties;
@@ -45,6 +49,12 @@ void SamplingParameters::init(
   bool logprobs = false;
   int64_t max_top_logprobs = 0;
   bool is_embeddings = false;
+  tool_call_constraint_modes.clear();
+  allowed_tool_names_vec.clear();
+  allowed_tool_schema_jsons_vec.clear();
+  tool_call_constraint_modes.reserve(sample_idxes.size());
+  allowed_tool_names_vec.reserve(sample_idxes.size());
+  allowed_tool_schema_jsons_vec.reserve(sample_idxes.size());
   for (const auto* p : req_sampling_params) {
     frequency_penalties.push_back(p->frequency_penalty);
     presence_penalties.push_back(p->presence_penalty);
@@ -134,12 +144,16 @@ void SamplingParameters::init(
     const bool sample = p->do_sample || p->temperature != 0.0 ||
                         p->top_p != 1.0 || p->top_k > 0;
     do_sample.push_back(sample ? 1 : 0);
+    tool_call_constraint_modes.push_back(p->tool_call_constraint_mode);
+    allowed_tool_names_vec.push_back(p->allowed_tool_names);
+    allowed_tool_schema_jsons_vec.push_back(p->allowed_tool_schema_jsons);
   }
   this->sample_idxes = torch::tensor(sample_idxes, int_tensor_options);
   this->do_sample = torch::tensor(do_sample, bool_tensor_options);
   this->logprobs = logprobs;
   this->max_top_logprobs = max_top_logprobs;
   this->is_embeddings = is_embeddings;
+  this->generated_token_ids_vec = generated_token_ids_vec;
   if (this->do_sample.defined()) {
     this->all_random_sample = this->do_sample.all().item<bool>();
     this->all_greedy_sample = !this->do_sample.any().item<bool>();
@@ -181,6 +195,20 @@ void SamplingParameters::concat(const SamplingParameters& param) {
   this->is_embeddings = this->is_embeddings || param.is_embeddings;
   this->max_top_logprobs =
       std::max(this->max_top_logprobs, param.max_top_logprobs);
+  this->generated_token_ids_vec.insert(this->generated_token_ids_vec.end(),
+                                       param.generated_token_ids_vec.begin(),
+                                       param.generated_token_ids_vec.end());
+  this->tool_call_constraint_modes.insert(
+      this->tool_call_constraint_modes.end(),
+      param.tool_call_constraint_modes.begin(),
+      param.tool_call_constraint_modes.end());
+  this->allowed_tool_names_vec.insert(this->allowed_tool_names_vec.end(),
+                                      param.allowed_tool_names_vec.begin(),
+                                      param.allowed_tool_names_vec.end());
+  this->allowed_tool_schema_jsons_vec.insert(
+      this->allowed_tool_schema_jsons_vec.end(),
+      param.allowed_tool_schema_jsons_vec.begin(),
+      param.allowed_tool_schema_jsons_vec.end());
   return;
 }
 

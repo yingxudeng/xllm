@@ -35,7 +35,8 @@ class Sampler final {
 
   // logits: [batch_size, vocab_size]
   SampleOutput forward(torch::Tensor& logits,
-                       const SamplingParameters& params) const;
+                       const SamplingParameters& params,
+                       const torch::Tensor& constraint_mask = {}) const;
 
   // helper functions
   // probs: [..., vocab_size]

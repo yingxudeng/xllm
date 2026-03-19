@@ -1,4 +1,4 @@
-/* Copyright 2025 The xLLM Authors. All Rights Reserved.
+/* Copyright 2026 The xLLM Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,27 +16,20 @@ limitations under the License.
 #pragma once
 
 #include "base_format_detector.h"
-#include "core_types.h"
-#include "deepseekv3_detector.h"
-#include "function_call_parser.h"
-#include "glm45_detector.h"
-#include "json_array_detector.h"
-#include "kimik2_detector.h"
-#include "qwen25_detector.h"
 
 namespace xllm {
 namespace function_call {
 
-inline std::vector<ToolCallItem> parse(const std::string& text,
-                                       const std::vector<JsonTool>& tools,
-                                       const std::string& format = "qwen25") {
-  return utils::parse_function_calls(text, tools, format);
-}
+class JsonArrayDetector final : public BaseFormatDetector {
+ public:
+  JsonArrayDetector();
 
-inline bool has_calls(const std::string& text,
-                      const std::string& format = "qwen25") {
-  return utils::has_function_calls(text, format);
-}
+  StreamingParseResult detect_and_parse(
+      const std::string& text,
+      const std::vector<JsonTool>& tools) override;
+
+  bool has_tool_call(const std::string& text) override;
+};
 
 }  // namespace function_call
 }  // namespace xllm

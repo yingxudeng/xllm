@@ -23,6 +23,353 @@ limitations under the License.
 namespace xllm {
 namespace function_call {
 
+namespace {
+
+const JsonTool* find_tool_by_name(const std::vector<JsonTool>& tools,
+                                  const std::string& name) {
+  for (const auto& tool : tools) {
+    if (tool.function.name == name) {
+      return &tool;
+    }
+  }
+  return nullptr;
+}
+
+int schema_branch_priority(const nlohmann::json& schema) {
+  if (!schema.is_object()) {
+    return 100;
+  }
+  if (schema.contains("default")) {
+    return 0;
+  }
+  if (schema.contains("enum") && schema["enum"].is_array() &&
+      !schema["enum"].empty()) {
+    return 1;
+  }
+  if (schema.contains("type") && schema["type"].is_string()) {
+    const auto& type = schema["type"];
+    if (type == "object") {
+      return 2;
+    }
+    if (type == "array") {
+      return 3;
+    }
+    if (type == "string") {
+      return 4;
+    }
+    if (type == "integer") {
+      return 5;
+    }
+    if (type == "number") {
+      return 6;
+    }
+    if (type == "boolean") {
+      return 7;
+    }
+  }
+  if (schema.contains("properties")) {
+    return 2;
+  }
+  if (schema.contains("items")) {
+    return 3;
+  }
+  return 50;
+}
+
+const nlohmann::json* choose_schema_branch(const nlohmann::json& schema) {
+  const nlohmann::json* best = nullptr;
+  int best_priority = 1000;
+  for (const auto& key : {"anyOf", "oneOf"}) {
+    if (!schema.contains(key) || !schema[key].is_array()) {
+      continue;
+    }
+    for (const auto& branch : schema[key]) {
+      int priority = schema_branch_priority(branch);
+      if (priority < best_priority) {
+        best_priority = priority;
+        best = &branch;
+      }
+    }
+    if (best) {
+      return best;
+    }
+  }
+  return nullptr;
+}
+
+bool matches_schema(const nlohmann::json& value, const nlohmann::json& schema);
+nlohmann::json synthesize_value_from_schema(const nlohmann::json& schema);
+nlohmann::json repair_value_with_schema(const nlohmann::json& value,
+                                        const nlohmann::json& schema);
+
+bool matches_schema_type(const nlohmann::json& value,
+                         const std::string& type_name) {
+  if (type_name == "object") {
+    return value.is_object();
+  }
+  if (type_name == "array") {
+    return value.is_array();
+  }
+  if (type_name == "string") {
+    return value.is_string();
+  }
+  if (type_name == "integer") {
+    return value.is_number_integer() || value.is_number_unsigned();
+  }
+  if (type_name == "number") {
+    return value.is_number();
+  }
+  if (type_name == "boolean") {
+    return value.is_boolean();
+  }
+  if (type_name == "null") {
+    return value.is_null();
+  }
+  return true;
+}
+
+bool matches_schema(const nlohmann::json& value, const nlohmann::json& schema) {
+  if (!schema.is_object()) {
+    return true;
+  }
+
+  if (schema.contains("enum") && schema["enum"].is_array()) {
+    for (const auto& enum_value : schema["enum"]) {
+      if (value == enum_value) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  for (const auto& key : {"anyOf", "oneOf"}) {
+    if (schema.contains(key) && schema[key].is_array()) {
+      for (const auto& branch : schema[key]) {
+        if (matches_schema(value, branch)) {
+          return true;
+        }
+      }
+      return false;
+    }
+  }
+
+  if (schema.contains("type") && schema["type"].is_string() &&
+      !matches_schema_type(value, schema["type"].get<std::string>())) {
+    return false;
+  }
+
+  if (schema.contains("properties") && schema["properties"].is_object()) {
+    if (!value.is_object()) {
+      return false;
+    }
+    if (schema.contains("required") && schema["required"].is_array()) {
+      for (const auto& required_key : schema["required"]) {
+        if (required_key.is_string() &&
+            !value.contains(required_key.get<std::string>())) {
+          return false;
+        }
+      }
+    }
+    for (auto it = schema["properties"].begin();
+         it != schema["properties"].end();
+         ++it) {
+      if (!value.contains(it.key())) {
+        continue;
+      }
+      if (!matches_schema(value[it.key()], it.value())) {
+        return false;
+      }
+    }
+  }
+
+  if (schema.contains("items") && schema["items"].is_object()) {
+    if (!value.is_array()) {
+      return false;
+    }
+    for (const auto& item : value) {
+      if (!matches_schema(item, schema["items"])) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+nlohmann::json synthesize_value_from_schema(const nlohmann::json& schema) {
+  if (!schema.is_object()) {
+    return nlohmann::json::object();
+  }
+  if (schema.contains("default")) {
+    return schema["default"];
+  }
+  if (schema.contains("enum") && schema["enum"].is_array() &&
+      !schema["enum"].empty()) {
+    return schema["enum"].front();
+  }
+  if (const auto* branch = choose_schema_branch(schema); branch != nullptr) {
+    return synthesize_value_from_schema(*branch);
+  }
+  if (schema.contains("type") && schema["type"].is_string()) {
+    const auto type_name = schema["type"].get<std::string>();
+    if (type_name == "object") {
+      nlohmann::json result = nlohmann::json::object();
+      if (schema.contains("required") && schema["required"].is_array() &&
+          schema.contains("properties") && schema["properties"].is_object()) {
+        for (const auto& required_key : schema["required"]) {
+          if (!required_key.is_string()) {
+            continue;
+          }
+          const auto key = required_key.get<std::string>();
+          if (schema["properties"].contains(key)) {
+            result[key] =
+                synthesize_value_from_schema(schema["properties"][key]);
+          }
+        }
+      }
+      return result;
+    }
+    if (type_name == "array") {
+      return nlohmann::json::array();
+    }
+    if (type_name == "string") {
+      return "";
+    }
+    if (type_name == "integer") {
+      return 0;
+    }
+    if (type_name == "number") {
+      return 0.0;
+    }
+    if (type_name == "boolean") {
+      return false;
+    }
+    if (type_name == "null") {
+      return nullptr;
+    }
+  }
+  if (schema.contains("properties")) {
+    return synthesize_value_from_schema(nlohmann::json{
+        {"type", "object"},
+        {"properties", schema["properties"]},
+        {"required", schema.value("required", nlohmann::json::array())}});
+  }
+  if (schema.contains("items")) {
+    return nlohmann::json::array();
+  }
+  return nlohmann::json::object();
+}
+
+nlohmann::json repair_value_with_schema(const nlohmann::json& value,
+                                        const nlohmann::json& schema) {
+  if (!schema.is_object()) {
+    return value;
+  }
+
+  for (const auto& key : {"anyOf", "oneOf"}) {
+    if (schema.contains(key) && schema[key].is_array()) {
+      for (const auto& branch : schema[key]) {
+        if (matches_schema(value, branch)) {
+          return repair_value_with_schema(value, branch);
+        }
+      }
+      if (const auto* branch = choose_schema_branch(schema);
+          branch != nullptr) {
+        return synthesize_value_from_schema(*branch);
+      }
+      return synthesize_value_from_schema(schema);
+    }
+  }
+
+  if (schema.contains("enum") && schema["enum"].is_array()) {
+    return matches_schema(value, schema) ? value
+                                         : synthesize_value_from_schema(schema);
+  }
+
+  if (schema.contains("type") && schema["type"].is_string()) {
+    const auto type_name = schema["type"].get<std::string>();
+    if (type_name == "object" || schema.contains("properties")) {
+      if (!value.is_object()) {
+        return synthesize_value_from_schema(schema);
+      }
+      nlohmann::json repaired = value;
+      if (schema.contains("properties") && schema["properties"].is_object()) {
+        for (auto it = schema["properties"].begin();
+             it != schema["properties"].end();
+             ++it) {
+          if (repaired.contains(it.key())) {
+            repaired[it.key()] =
+                repair_value_with_schema(repaired[it.key()], it.value());
+          }
+        }
+      }
+      if (schema.contains("required") && schema["required"].is_array() &&
+          schema.contains("properties") && schema["properties"].is_object()) {
+        for (const auto& required_key : schema["required"]) {
+          if (!required_key.is_string()) {
+            continue;
+          }
+          const auto key = required_key.get<std::string>();
+          if (!repaired.contains(key) && schema["properties"].contains(key)) {
+            repaired[key] =
+                synthesize_value_from_schema(schema["properties"][key]);
+          }
+        }
+      }
+      return repaired;
+    }
+    if (type_name == "array") {
+      if (!value.is_array()) {
+        return synthesize_value_from_schema(schema);
+      }
+      if (schema.contains("items") && schema["items"].is_object()) {
+        nlohmann::json repaired = nlohmann::json::array();
+        for (const auto& item : value) {
+          repaired.push_back(repair_value_with_schema(item, schema["items"]));
+        }
+        return repaired;
+      }
+      return value;
+    }
+    return matches_schema_type(value, type_name)
+               ? value
+               : synthesize_value_from_schema(schema);
+  }
+
+  if (schema.contains("properties")) {
+    return repair_value_with_schema(
+        value,
+        nlohmann::json{
+            {"type", "object"},
+            {"properties", schema["properties"]},
+            {"required", schema.value("required", nlohmann::json::array())}});
+  }
+
+  return value;
+}
+
+std::string normalize_parameters_for_tool(const std::string& tool_name,
+                                          const nlohmann::json& parameters,
+                                          const std::vector<JsonTool>& tools) {
+  const auto* tool = find_tool_by_name(tools, tool_name);
+  nlohmann::json normalized = parameters;
+  if (tool != nullptr && tool->function.parameters.is_object() &&
+      !tool->function.parameters.empty()) {
+    normalized =
+        repair_value_with_schema(parameters, tool->function.parameters);
+  }
+  try {
+    return normalized.dump(
+        -1, ' ', false, nlohmann::json::error_handler_t::ignore);
+  } catch (const std::exception& e) {
+    LOG(ERROR) << "Failed to serialize normalized arguments for tool: "
+               << tool_name << ", error: " << e.what();
+    return "{}";
+  }
+}
+
+}  // namespace
+
 BaseFormatDetector::BaseFormatDetector()
     : current_tool_id_(-1),
       current_tool_name_sent_(false),
@@ -95,15 +442,8 @@ std::vector<ToolCallItem> BaseFormatDetector::parse_base_json(
       parameters = nlohmann::json::object();
     }
 
-    std::string parameters_str;
-    try {
-      parameters_str = parameters.dump(
-          -1, ' ', false, nlohmann::json::error_handler_t::ignore);
-    } catch (const std::exception& e) {
-      LOG(ERROR) << "Failed to serialize arguments for tool: " << name
-                 << ", error: " << e.what();
-      parameters_str = "{}";
-    }
+    std::string parameters_str =
+        normalize_parameters_for_tool(name, parameters, tools);
 
     results.emplace_back(-1, name, parameters_str);
   }

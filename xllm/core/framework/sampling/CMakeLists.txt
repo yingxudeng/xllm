@@ -12,6 +12,7 @@ cc_library(
     rec_sampler.h
     beam_searcher.h
     rec_constrained_decoding.h
+    tool_call_constrained_decoding.h
   SRCS
     sampling_params.cpp
     logits_utils.cpp
@@ -20,9 +21,11 @@ cc_library(
     rec_sampler.cpp
     beam_searcher.cpp
     rec_constrained_decoding.cpp
+    tool_call_constrained_decoding.cpp
   DEPS
     :state_dict
     :common
+    :function_call
     glog::glog
     torch
     :kernels
@@ -36,6 +39,7 @@ cc_test(
     rejection_sampler_test.cpp
     rejection_sampler.cpp
     sampling_params_test.cpp
+    tool_call_constrained_decoding_test.cpp
   DEPS
     absl::strings
     GTest::gtest_main

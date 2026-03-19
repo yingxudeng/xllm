@@ -16,14 +16,21 @@ limitations under the License.
 
 #include "stream_output_parser.h"
 
+#include "function_call/tool_choice_constraint_utils.h"
+
 namespace xllm {
 StreamOutputParser::StreamOutputParser(
     const std::vector<function_call::JsonTool>& tools,
+    const std::string& tool_choice,
     const std::string& tool_call_parser_format,
     const std::string& reasoning_parser_format,
     bool force_reasoning)
     : tools_(tools),
-      tool_call_parser_format_(tool_call_parser_format),
+      tool_call_parser_format_(
+          function_call::resolve_tool_call_parser_for_choice(
+              tools,
+              tool_choice,
+              tool_call_parser_format)),
       reasoning_parser_format_(reasoning_parser_format),
       force_reasoning_(force_reasoning) {
   sequence_parsers_.resize(1);

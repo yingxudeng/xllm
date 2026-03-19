@@ -38,11 +38,11 @@ template <typename T>
 constexpr size_t type_size = sizeof(T);
 
 constexpr size_t sampling_param_fixed_size() {
-  return 5 * type_size<float>      // frequency_penalty, presence_penalty,
-                                   // repetition_penalty, temperature, top_p
-         + 2 * type_size<int64_t>  // top_k, top_logprobs
-         + 3 * type_size<bool>     // logprobs, do_sample, is_embeddings
-         + type_size<int32_t>;     // beam_width
+  return 5 * type_size<float>       // frequency_penalty, presence_penalty,
+                                    // repetition_penalty, temperature, top_p
+         + 2 * type_size<int64_t>   // top_k, top_logprobs
+         + 3 * type_size<bool>      // logprobs, do_sample, is_embeddings
+         + 2 * type_size<int32_t>;  // beam_width, tool_call_constraint_mode
 }
 
 constexpr size_t swap_block_info_fixed_size() {
@@ -57,6 +57,15 @@ inline size_t get_string_vector_size(const std::vector<std::string>& vec) {
   size_t size = type_size<uint64_t>;
   for (const auto& str : vec) {
     size += get_string_size(str);
+  }
+  return size;
+}
+
+inline size_t get_2d_string_vector_size(
+    const std::vector<std::vector<std::string>>& vec2d) {
+  size_t size = type_size<uint64_t>;
+  for (const auto& vec : vec2d) {
+    size += get_string_vector_size(vec);
   }
   return size;
 }
@@ -211,6 +220,10 @@ size_t get_sampling_params_size(const SamplingParameters& params) {
   total += type_size<bool> * 5    // all_random_sample + all_greedy_sample +
                                   // logprobs + is_embeddings + use_beam_search
            + type_size<int64_t>;  // max_top_logprobs
+  total += get_2d_vector_size(params.generated_token_ids_vec);
+  total += get_vector_size(params.tool_call_constraint_modes);
+  total += get_2d_string_vector_size(params.allowed_tool_names_vec);
+  total += get_2d_string_vector_size(params.allowed_tool_schema_jsons_vec);
   return total;
 }
 
@@ -291,7 +304,8 @@ size_t calculate_raw_forward_input_size(const RawForwardInput& input) {
                          input.sample_idxes,
                          input.unique_token_ids_vec,
                          input.unique_token_counts_vec,
-                         input.unique_token_lens_vec);
+                         input.unique_token_lens_vec,
+                         input.generated_token_ids_vec);
     total += get_sampling_params_size(sampling_params);
   }
   // acc_logprob
@@ -385,7 +399,12 @@ inline void write_sampling_param(char*& buffer,
   ptr += type_size<bool>;
   *reinterpret_cast<int32_t*>(ptr) = param.beam_width;
   ptr += type_size<int32_t>;
+  *reinterpret_cast<int32_t*>(ptr) =
+      static_cast<int32_t>(param.tool_call_constraint_mode);
+  ptr += type_size<int32_t>;
   buffer = ptr;
+  write_string_vector(buffer, param.allowed_tool_names);
+  write_string_vector(buffer, param.allowed_tool_schema_jsons);
 }
 
 template <typename T>
@@ -843,6 +862,11 @@ inline void read_sampling_param(const char*& buffer,
   param.beam_width = *reinterpret_cast<const int32_t*>(ptr);
   ptr += type_size<int32_t>;
   buffer = ptr;
+  param.tool_call_constraint_mode = static_cast<ToolCallConstraintMode>(
+      *reinterpret_cast<const int32_t*>(buffer));
+  buffer += type_size<int32_t>;
+  read_string_vector(buffer, param.allowed_tool_names);
+  read_string_vector(buffer, param.allowed_tool_schema_jsons);
 }
 
 inline void read_instance_info(const char*& buffer, InstanceInfo& info) {
@@ -1107,6 +1131,20 @@ inline void deserialize_raw_forward_input(const char*& buffer,
     read_data(buffer, sampling_params.is_embeddings, device_buffer);
     read_data(buffer, sampling_params.max_top_logprobs, device_buffer);
     read_data(buffer, sampling_params.use_beam_search, device_buffer);
+    read_2d_vector(buffer, sampling_params.generated_token_ids_vec);
+    read_vector(buffer, sampling_params.tool_call_constraint_modes);
+    uint64_t names_size;
+    read_data(buffer, names_size);
+    sampling_params.allowed_tool_names_vec.resize(names_size);
+    for (auto& names : sampling_params.allowed_tool_names_vec) {
+      read_string_vector(buffer, names);
+    }
+    uint64_t schemas_size;
+    read_data(buffer, schemas_size);
+    sampling_params.allowed_tool_schema_jsons_vec.resize(schemas_size);
+    for (auto& schemas : sampling_params.allowed_tool_schema_jsons_vec) {
+      read_string_vector(buffer, schemas);
+    }
   }
   // acc_logprob
   read_tensor(buffer, forward_input.acc_logprob, device_buffer);
@@ -1173,7 +1211,8 @@ inline void serialize_raw_forward_input(const RawForwardInput& input,
                          input.sample_idxes,
                          input.unique_token_ids_vec,
                          input.unique_token_counts_vec,
-                         input.unique_token_lens_vec);
+                         input.unique_token_lens_vec,
+                         input.generated_token_ids_vec);
 
     write_tensor(buffer, sampling_params.selected_token_idxes);
     write_tensor(buffer, sampling_params.frequency_penalties);
@@ -1193,6 +1232,20 @@ inline void serialize_raw_forward_input(const RawForwardInput& input,
     write_data(buffer, sampling_params.is_embeddings);
     write_data(buffer, sampling_params.max_top_logprobs);
     write_data(buffer, sampling_params.use_beam_search);
+    write_2d_vector(buffer, sampling_params.generated_token_ids_vec);
+    write_vector(buffer, sampling_params.tool_call_constraint_modes);
+    write_data(
+        buffer,
+        static_cast<uint64_t>(sampling_params.allowed_tool_names_vec.size()));
+    for (const auto& names : sampling_params.allowed_tool_names_vec) {
+      write_string_vector(buffer, names);
+    }
+    write_data(buffer,
+               static_cast<uint64_t>(
+                   sampling_params.allowed_tool_schema_jsons_vec.size()));
+    for (const auto& schemas : sampling_params.allowed_tool_schema_jsons_vec) {
+      write_string_vector(buffer, schemas);
+    }
   }
   // acc_logprob
   write_vector_to_tensor(buffer, input.acc_logprob_vec);
@@ -1398,7 +1451,8 @@ void convert_raw_forward_input_to_forward_input(RawForwardInput& raw_input,
         std::move(raw_input.sample_idxes),
         std::move(raw_input.unique_token_ids_vec),
         std::move(raw_input.unique_token_counts_vec),
-        std::move(raw_input.unique_token_lens_vec));
+        std::move(raw_input.unique_token_lens_vec),
+        std::move(raw_input.generated_token_ids_vec));
   }
 
   forward_input.acc_logprob = torch::tensor(

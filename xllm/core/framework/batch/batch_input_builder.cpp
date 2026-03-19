@@ -191,6 +191,9 @@ void BatchInputBuilder::process_sequences_multithreaded() {
     state_.unique_token_lens_vec.insert(state_.unique_token_lens_vec.end(),
                                         state.unique_token_lens_vec.begin(),
                                         state.unique_token_lens_vec.end());
+    state_.generated_token_ids_vec.insert(state_.generated_token_ids_vec.end(),
+                                          state.generated_token_ids_vec.begin(),
+                                          state.generated_token_ids_vec.end());
     state_.max_seq_len = std::max(state_.max_seq_len, state.max_seq_len);
     state_.q_max_seq_len = std::max(state_.q_max_seq_len, state.q_max_seq_len);
 #if defined(USE_NPU) || defined(USE_MUSA)
@@ -378,6 +381,13 @@ void BatchInputBuilder::handle_sampling_parameters(Sequence* sequence,
 
     state.unique_token_lens_vec.push_back(static_cast<int32_t>(ids.size()));
   }
+
+  auto generated_tokens = sequence->get_generated_tokens();
+  auto& generated_token_ids = state.generated_token_ids_vec.emplace_back();
+  generated_token_ids.reserve(generated_tokens.size());
+  generated_token_ids.insert(generated_token_ids.end(),
+                             generated_tokens.begin(),
+                             generated_tokens.end());
 }
 
 void BatchInputBuilder::setup_kv_cache_info(
@@ -553,7 +563,8 @@ ForwardInput BatchInputBuilder::state_to_forward_input() {
                                        state_.sample_idxes,
                                        state_.unique_token_ids_vec,
                                        state_.unique_token_counts_vec,
-                                       state_.unique_token_lens_vec);
+                                       state_.unique_token_lens_vec,
+                                       state_.generated_token_ids_vec);
   }
 
   return forward_input;
@@ -590,6 +601,8 @@ RawForwardInput BatchInputBuilder::state_to_raw_forward_input() {
       std::move(state_.unique_token_counts_vec);
   raw_forward_input.unique_token_lens_vec =
       std::move(state_.unique_token_lens_vec);
+  raw_forward_input.generated_token_ids_vec =
+      std::move(state_.generated_token_ids_vec);
   raw_forward_input.batch_forward_type = state_.batch_forward_type;
   raw_forward_input.max_seq_len = state_.max_seq_len;
   raw_forward_input.q_max_seq_len = state_.q_max_seq_len;

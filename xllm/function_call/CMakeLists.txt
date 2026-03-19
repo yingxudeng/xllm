@@ -15,8 +15,10 @@ cc_library (
         deepseekv32_detector.h
         glm45_detector.h
         glm47_detector.h
+        json_array_detector.h
         function_call_parser.h
         function_call.h
+        tool_choice_constraint_utils.h
         utils.h
   SRCS
         base_format_detector.cpp
@@ -26,7 +28,9 @@ cc_library (
         deepseekv32_detector.cpp
         glm45_detector.cpp
         glm47_detector.cpp
+        json_array_detector.cpp
         function_call_parser.cpp
+        tool_choice_constraint_utils.cpp
         utils.cpp
   DEPS
     nlohmann_json::nlohmann_json
@@ -57,3 +61,13 @@ add_detector_test(glm45_detector_test)
 add_detector_test(glm47_detector_test)
 add_detector_test(deepseekv32_detector_test)
 
+cc_test(
+  NAME
+    function_call_parser_test
+  SRCS
+    function_call_parser_test.cpp
+  DEPS
+    :function_call
+    GTest::gtest
+    GTest::gtest_main
+)

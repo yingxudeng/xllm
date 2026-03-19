@@ -23,6 +23,7 @@ limitations under the License.
 #include <boost/algorithm/string.hpp>
 #include <csignal>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -31,6 +32,7 @@ limitations under the License.
 #include "common/metrics.h"
 #include "framework/model/model_args.h"
 #include "framework/request/request.h"
+#include "function_call/tool_choice_constraint_utils.h"
 #include "models/model_registry.h"
 #include "runtime/xservice_client.h"
 #include "scheduler/scheduler_factory.h"
@@ -48,40 +50,6 @@ bool should_use_ssm_engine(const Options& options) {
   return !options.draft_model_path().value_or("").empty() ||
          (options.speculative_algorithm() == "Suffix" &&
           options.num_speculative_tokens() > 0);
-}
-
-bool supports_qwen_required_tool_call_prefix(const std::string& model_type) {
-  return model_type == "qwen2" || model_type == "qwen3";
-}
-
-bool should_force_required_tool_call(const RequestParams& params,
-                                     const std::string& model_type) {
-  return supports_qwen_required_tool_call_prefix(model_type) &&
-         !params.tools.empty() && params.tool_choice == "required";
-}
-
-const std::string& required_tool_call_output_prefix() {
-  static const std::string kPrefix = "<tool_call>\n{";
-  return kPrefix;
-}
-
-const std::string& required_tool_call_stop_sequence() {
-  static const std::string kStopSequence = "\n</tool_call>";
-  return kStopSequence;
-}
-
-bool encode_required_tool_call_output_prefix(const Tokenizer& tokenizer,
-                                             std::vector<int32_t>* token_ids) {
-  return tokenizer.encode(required_tool_call_output_prefix(),
-                          token_ids,
-                          /*add_special_tokens=*/false);
-}
-
-bool encode_required_tool_call_stop_sequence(const Tokenizer& tokenizer,
-                                             std::vector<int32_t>* token_ids) {
-  return tokenizer.encode(required_tool_call_stop_sequence(),
-                          token_ids,
-                          /*add_special_tokens=*/false);
 }
 
 }  // namespace
@@ -341,16 +309,6 @@ std::shared_ptr<Request> LLMMaster::generate_request(
   COUNTER_ADD(tokenization_latency_seconds, timer.elapsed_seconds());
 
   std::vector<int32_t> output_prefix_tokens;
-  const bool force_required_tool_call =
-      should_force_required_tool_call(sp, model_args_.model_type());
-  if (force_required_tool_call && !encode_required_tool_call_output_prefix(
-                                      *tokenizer_, &output_prefix_tokens)) {
-    LOG(ERROR) << "Failed to encode required tool-call output prefix";
-    CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT,
-                        "Failed to encode required tool-call output prefix",
-                        sp.service_request_id);
-    return nullptr;
-  }
 
   int32_t max_context_len = model_args_.max_position_embeddings();
   if (!options_.enable_chunked_prefill()) {
@@ -393,6 +351,20 @@ std::shared_ptr<Request> LLMMaster::generate_request(
   sampling_param.top_logprobs = sp.top_logprobs;
   sampling_param.is_embeddings = sp.is_embeddings;
   sampling_param.beam_width = sp.beam_width;
+  const auto tool_choice_constraint =
+      function_call::resolve_tool_choice_constraint(sp.tools, sp.tool_choice);
+  sampling_param.tool_call_constraint_mode = tool_choice_constraint.mode;
+  sampling_param.allowed_tool_names = tool_choice_constraint.allowed_tool_names;
+  sampling_param.allowed_tool_schema_jsons.reserve(
+      tool_choice_constraint.allowed_tools.size());
+  for (const auto& tool : tool_choice_constraint.allowed_tools) {
+    sampling_param.allowed_tool_schema_jsons.push_back(nlohmann::json{
+        {"type", tool.type},
+        {"function",
+         {{"name", tool.function.name},
+          {"description", tool.function.description},
+          {"parameters", tool.function.parameters}}}}.dump());
+  }
   if (best_of > sp.n) {
     // enable logprobs for best_of to generate sequence logprob
     sampling_param.logprobs = true;
@@ -441,19 +413,6 @@ std::shared_ptr<Request> LLMMaster::generate_request(
       stop_sequences.push_back(std::move(tmp_tokens));
     }
   }
-  if (force_required_tool_call) {
-    std::vector<int32_t> tool_call_stop_tokens;
-    if (!encode_required_tool_call_stop_sequence(*tokenizer_,
-                                                 &tool_call_stop_tokens)) {
-      LOG(ERROR) << "Failed to encode required tool-call stop sequence";
-      CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT,
-                          "Failed to encode required tool-call stop sequence",
-                          sp.service_request_id);
-      return nullptr;
-    }
-    stop_sequences.push_back(std::move(tool_call_stop_tokens));
-  }
-
   StoppingChecker stopping_checker(
       max_tokens,
       max_context_len - options_.num_speculative_tokens(),
@@ -461,6 +420,12 @@ std::shared_ptr<Request> LLMMaster::generate_request(
       sp.ignore_eos,
       std::move(stop_tokens),
       std::move(stop_sequences));
+  if (tool_choice_constraint.enabled()) {
+    stopping_checker.set_tool_call_constraint(
+        std::shared_ptr<Tokenizer>(tokenizer_->clone().release()),
+        tool_choice_constraint.mode,
+        tool_choice_constraint.allowed_tools);
+  }
 
   if (task_type_ != "embed" && task_type_ != "mm_embed") {
     auto finish_reason =

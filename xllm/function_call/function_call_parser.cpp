@@ -25,6 +25,7 @@ limitations under the License.
 #include "deepseekv3_detector.h"
 #include "glm45_detector.h"
 #include "glm47_detector.h"
+#include "json_array_detector.h"
 #include "kimik2_detector.h"
 #include "qwen25_detector.h"
 
@@ -67,6 +68,7 @@ const std::unordered_map<std::string,
         {"glm47", [] { return std::make_unique<Glm47Detector>(); }},
         // glm5 use glm47 detector
         {"glm5", [] { return std::make_unique<Glm47Detector>(); }},
+        {"json_array", [] { return std::make_unique<JsonArrayDetector>(); }},
 };
 
 std::string get_supported_detector_factories() {
@@ -82,6 +84,11 @@ std::string get_supported_detector_factories() {
 std::string FunctionCallParser::get_parser_auto(const std::string& parser,
                                                 const std::string& model_type) {
   if (parser.empty()) {
+    // Enable the built-in Qwen tool parser by default so qwen2/qwen3
+    // tool-calling works without requiring an explicit startup flag.
+    if (model_type == "qwen2" || model_type == "qwen3") {
+      return "qwen25";
+    }
     return "";
   }
   if (parser == "auto") {
@@ -163,6 +170,9 @@ std::vector<ToolCallItem> parse_function_calls(
     const std::vector<JsonTool>& tools,
     const std::string& parser_type) {
   try {
+    if (parser_type.empty()) {
+      return {};
+    }
     FunctionCallParser parser(tools, parser_type);
     auto [normal_text, calls] = parser.parse_non_stream(text);
     return calls;
@@ -175,6 +185,9 @@ std::vector<ToolCallItem> parse_function_calls(
 bool has_function_calls(const std::string& text,
                         const std::string& parser_type) {
   try {
+    if (parser_type.empty()) {
+      return false;
+    }
     FunctionCallParser parser({}, parser_type);
     return parser.has_tool_call(text);
   } catch (const std::exception& e) {
@@ -188,6 +201,9 @@ StreamingParseResult parse_streaming_increment(
     const std::vector<JsonTool>& tools,
     const std::string& parser_type) {
   try {
+    if (parser_type.empty()) {
+      return StreamingParseResult();
+    }
     FunctionCallParser parser(tools, parser_type);
     return parser.parse_streaming_increment(new_text);
   } catch (const std::exception& e) {

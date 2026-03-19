@@ -36,6 +36,7 @@ limitations under the License.
 #include "framework/sampling/beam_searcher.h"
 #include "framework/sampling/sampler.h"
 #include "framework/state_dict/state_dict.h"
+#include "framework/tokenizer/tokenizer.h"
 #include "framework/xtensor/xtensor.h"
 #include "options.h"
 #include "platform/device.h"
@@ -247,6 +248,7 @@ class WorkerImpl {
   std::unique_ptr<Executor> model_executor_;
 
   std::unique_ptr<Sampler> sampler_;
+  std::unique_ptr<Tokenizer> tokenizer_;
 
   std::unique_ptr<EplbExecutor> eplb_executor_;
 

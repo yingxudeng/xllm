@@ -66,6 +66,7 @@ cc_library(
     :prefix_cache
     :block
     :tokenizer
+    :function_call
     :chat_template
     glog::glog
     absl::strings
@@ -73,4 +74,26 @@ cc_library(
     proto::xllm_proto
     torch
     ${OpenCV_LIBS}
+)
+
+cc_test(
+  NAME
+    request_params_test
+  SRCS
+    request_params_test.cpp
+  DEPS
+    :request
+    GTest::gtest
+    GTest::gtest_main
+)
+
+cc_test(
+  NAME
+    stopping_checker_test
+  SRCS
+    stopping_checker_test.cpp
+  DEPS
+    :request
+    GTest::gtest
+    GTest::gtest_main
 )

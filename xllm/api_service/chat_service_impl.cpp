@@ -41,6 +41,7 @@ limitations under the License.
 #include "core/framework/request/request_params.h"
 #include "core/util/utils.h"
 #include "core/util/uuid.h"
+#include "function_call/tool_choice_constraint_utils.h"
 #include "mm_service_utils.h"
 
 namespace xllm {
@@ -354,7 +355,8 @@ bool send_delta_to_client_brpc(
       choice->mutable_delta();
 
       if (stream_parser && stream_parser->get_has_tool_call(index) &&
-          seq_output.finish_reason.value() == "stop") {
+          (seq_output.finish_reason.value() == "stop" ||
+           seq_output.finish_reason.value() == "function_call")) {
         choice->set_finish_reason("tool_calls");
       } else {
         choice->set_finish_reason(std::move(seq_output.finish_reason.value()));
@@ -804,12 +806,18 @@ void ChatServiceImpl::process_async_impl(std::shared_ptr<ChatCall> call) {
 
   const bool is_force_reasoning = get_enable_thinking_from_request(
       request_params.chat_template_kwargs, reasoning_parser_format_);
+  const std::string resolved_tool_call_parser_format =
+      function_call::resolve_tool_call_parser_for_choice(
+          request_params.tools,
+          request_params.tool_choice,
+          tool_call_parser_format_);
 
   std::shared_ptr<StreamOutputParser> stream_parser;
-  if (request_params.streaming && (!tool_call_parser_format_.empty() ||
+  if (request_params.streaming && (!resolved_tool_call_parser_format.empty() ||
                                    !reasoning_parser_format_.empty())) {
     stream_parser =
         std::make_shared<StreamOutputParser>(request_params.tools,
+                                             request_params.tool_choice,
                                              tool_call_parser_format_,
                                              reasoning_parser_format_,
                                              is_force_reasoning);
@@ -817,6 +825,7 @@ void ChatServiceImpl::process_async_impl(std::shared_ptr<ChatCall> call) {
   }
 
   auto saved_tools = request_params.tools;
+  auto saved_tool_choice = request_params.tool_choice;
   auto saved_streaming = request_params.streaming;
   auto saved_request_id = request_params.request_id;
 
@@ -834,6 +843,7 @@ void ChatServiceImpl::process_async_impl(std::shared_ptr<ChatCall> call) {
        request_id = std::move(saved_request_id),
        created_time = absl::ToUnixSeconds(absl::Now()),
        json_tools = std::move(saved_tools),
+       tool_choice = std::move(saved_tool_choice),
        tool_call_parser_format = tool_call_parser_format_,
        reasoning_parser_format = reasoning_parser_format_,
        is_force_reasoning = is_force_reasoning,
@@ -868,15 +878,17 @@ void ChatServiceImpl::process_async_impl(std::shared_ptr<ChatCall> call) {
                                            req_output,
                                            stream_parser);
         }
-        return send_result_to_client_brpc(call,
-                                          request_id,
-                                          created_time,
-                                          model,
-                                          req_output,
-                                          tool_call_parser_format,
-                                          reasoning_parser_format,
-                                          is_force_reasoning,
-                                          json_tools);
+        return send_result_to_client_brpc(
+            call,
+            request_id,
+            created_time,
+            model,
+            req_output,
+            function_call::resolve_tool_call_parser_for_choice(
+                json_tools, tool_choice, tool_call_parser_format),
+            reasoning_parser_format,
+            is_force_reasoning,
+            json_tools);
       });
 }
 

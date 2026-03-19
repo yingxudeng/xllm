@@ -806,6 +806,7 @@ bool WorkerImpl::init_model(const std::string& model_weights_path,
   model_weights_path_ = std::move(model_weights_path);
   auto tokenizer = model_loader->tokenizer();
   CHECK(tokenizer != nullptr);
+  tokenizer_ = tokenizer->clone();
 
   auto args = model_loader->model_args();
   auto quant_args = model_loader->quant_args();

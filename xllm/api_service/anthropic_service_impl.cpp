@@ -661,6 +661,7 @@ void AnthropicServiceImpl::process_async_impl(
                                    !reasoning_parser_format_.empty())) {
     stream_parser =
         std::make_shared<StreamOutputParser>(request_params.tools,
+                                             request_params.tool_choice,
                                              tool_call_parser_format_,
                                              reasoning_parser_format_,
                                              false /*is_force_reasoning_*/);

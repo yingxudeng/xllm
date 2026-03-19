@@ -29,7 +29,7 @@ JsonTool make_tool(const std::string& name, const std::string& description) {
   return tool;
 }
 
-TEST(ToolChoiceUtilsTest, InjectsInstructionForRequiredToolChoice) {
+TEST(ToolChoiceUtilsTest, DoesNotInjectForRequiredToolChoice) {
   RequestParams params;
   params.tool_choice = "required";
   params.tools = {make_tool("get_weather", "Get the current weather")};
@@ -45,10 +45,7 @@ TEST(ToolChoiceUtilsTest, InjectsInstructionForRequiredToolChoice) {
   EXPECT_TRUE(std::holds_alternative<std::string>(messages[0].content));
 
   const auto& content = std::get<std::string>(messages[0].content);
-  EXPECT_NE(content.find("You are helpful."), std::string::npos);
-  EXPECT_NE(content.find("Tool choice is required."), std::string::npos);
-  EXPECT_NE(content.find("<tool_call>...</tool_call>"), std::string::npos);
-  EXPECT_NE(content.find("get_weather"), std::string::npos);
+  EXPECT_EQ(content, "You are helpful.");
 }
 
 TEST(ToolChoiceUtilsTest, DoesNotInjectWithoutRequiredToolChoice) {
@@ -76,7 +73,7 @@ TEST(ToolChoiceUtilsTest, DoesNotInjectWhenToolsAreMissing) {
   EXPECT_EQ(messages[0].role, "user");
 }
 
-TEST(ToolChoiceUtilsTest, InsertsInstructionAtFrontWithoutSystemMessage) {
+TEST(ToolChoiceUtilsTest, DoesNotInsertInstructionAtFrontWithoutSystemMessage) {
   RequestParams params;
   params.tool_choice = "required";
   params.tools = {make_tool("get_weather", "Get the current weather")};
@@ -85,9 +82,8 @@ TEST(ToolChoiceUtilsTest, InsertsInstructionAtFrontWithoutSystemMessage) {
 
   inject_tool_choice_instruction(messages, params);
 
-  ASSERT_EQ(messages.size(), 2);
-  EXPECT_EQ(messages[0].role, "system");
-  EXPECT_EQ(messages[1].role, "user");
+  ASSERT_EQ(messages.size(), 1);
+  EXPECT_EQ(messages[0].role, "user");
 }
 
 }  // namespace

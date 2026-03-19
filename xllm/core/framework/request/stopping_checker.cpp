@@ -23,6 +23,7 @@ limitations under the License.
 #include <vector>
 
 #include "core/util/utils.h"
+#include "function_call/tool_choice_constraint_utils.h"
 
 namespace xllm {
 
@@ -86,6 +87,19 @@ FinishReason StoppingChecker::check(const Slice<int32_t>& token_ids,
   for (const auto& seq : stop_sequences_) {
     if (seq.back() == last_token_id && util::match_suffix(token_ids, seq)) {
       return FinishReason::STOP;
+    }
+  }
+
+  if (tokenizer_ &&
+      tool_call_constraint_mode_ != ToolCallConstraintMode::NONE &&
+      !allowed_tools_.empty() && total_tokens > num_prompt_tokens) {
+    const auto generated_tokens =
+        token_ids.slice(num_prompt_tokens, total_tokens);
+    const auto generated_text =
+        tokenizer_->decode(generated_tokens, /*skip_special_tokens=*/false);
+    if (function_call::is_complete_tool_call_json(generated_text,
+                                                  allowed_tools_)) {
+      return FinishReason::FUNCTION_CALL;
     }
   }
 

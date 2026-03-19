@@ -31,6 +31,7 @@ limitations under the License.
 #include "core/common/global_flags.h"
 #include "framework/kv_cache/kv_cache.h"
 #include "framework/model/model_input_params.h"
+#include "framework/sampling/tool_call_constrained_decoding.h"
 #include "framework/state_dict/state_dict.h"
 #if defined(USE_CUDA) || defined(USE_ILU) || defined(USE_MUSA)
 #include "layers/cuda/flashinfer_workspace.h"
@@ -169,7 +170,23 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
     output.logprobs = sampling_params.logprobs;
     output.max_top_logprobs = sampling_params.max_top_logprobs;
     if (!input.skip_sampling_for_logits_only) {
-      auto sample_output = sampler_->forward(logits, sampling_params);
+      torch::Tensor constraint_mask;
+      if (tokenizer_ && !sampling_params.generated_token_ids_vec.empty() &&
+          !sampling_params.tool_call_constraint_modes.empty()) {
+        ToolCallConstrainedDecoding constrained_decoding(
+            *tokenizer_,
+            logits.size(1),
+            logits.scalar_type(),
+            logits.device(),
+            sampling_params.tool_call_constraint_modes,
+            sampling_params.allowed_tool_names_vec,
+            sampling_params.allowed_tool_schema_jsons_vec);
+        constrained_decoding.build_mask_cache();
+        constraint_mask = constrained_decoding.generate_mask(
+            sampling_params.generated_token_ids_vec);
+      }
+      auto sample_output =
+          sampler_->forward(logits, sampling_params, constraint_mask);
 
       // beam search kernel
       BeamSearchOutput beam_search_output;

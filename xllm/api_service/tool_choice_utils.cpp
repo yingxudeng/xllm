@@ -50,7 +50,7 @@ std::string build_required_tool_choice_instruction(
 }  // namespace
 
 bool should_inject_tool_choice_instruction(const RequestParams& params) {
-  return !params.tools.empty() && params.tool_choice == "required";
+  return false;
 }
 
 void inject_tool_choice_instruction(std::vector<Message>& messages,

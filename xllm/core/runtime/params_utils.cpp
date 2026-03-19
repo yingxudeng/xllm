@@ -122,6 +122,13 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
   std::vector<int32_t> unique_token_lens_vec =
       std::vector<int32_t>(pb_forward_input->unique_token_lens_vec().begin(),
                            pb_forward_input->unique_token_lens_vec().end());
+  std::vector<std::vector<int32_t>> generated_token_ids_vec;
+  for (size_t i = 0; i < pb_forward_input->generated_token_ids_vec().size();
+       ++i) {
+    generated_token_ids_vec.emplace_back(std::vector<int32_t>(
+        pb_forward_input->generated_token_ids_vec()[i].token_ids().begin(),
+        pb_forward_input->generated_token_ids_vec()[i].token_ids().end()));
+  }
   // aprint<int32_t>(unique_token_lens_vec, "unique_token_lens_vec",
   // global_rank_);
 
@@ -165,6 +172,13 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
     tmp.do_sample = sp.do_sample();
     tmp.is_embeddings = sp.is_embeddings();
     tmp.beam_width = sp.beam_width();
+    tmp.tool_call_constraint_mode =
+        static_cast<ToolCallConstraintMode>(sp.tool_call_constraint_mode());
+    tmp.allowed_tool_names = std::vector<std::string>(
+        sp.allowed_tool_names().begin(), sp.allowed_tool_names().end());
+    tmp.allowed_tool_schema_jsons =
+        std::vector<std::string>(sp.allowed_tool_schema_jsons().begin(),
+                                 sp.allowed_tool_schema_jsons().end());
     tmp_sampling_params.emplace_back(tmp);
   }
   for (size_t i = 0; i < tmp_sampling_params.size(); ++i) {
@@ -261,7 +275,8 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
                                         sample_idxes,
                                         unique_token_ids_vec,
                                         unique_token_counts_vec,
-                                        unique_token_lens_vec);
+                                        unique_token_lens_vec,
+                                        generated_token_ids_vec);
   }
 
   forward_inputs.transfer_kv_infos.reserve(
@@ -382,6 +397,12 @@ void forward_input_to_proto(const RawForwardInput& inputs,
     pb_sp.set_do_sample(sp->do_sample);
     pb_sp.set_is_embeddings(sp->is_embeddings);
     pb_sp.set_beam_width(sp->beam_width);
+    pb_sp.set_tool_call_constraint_mode(
+        static_cast<int32_t>(sp->tool_call_constraint_mode));
+    ADD_VECTOR_TO_PROTO(pb_sp.mutable_allowed_tool_names(),
+                        sp->allowed_tool_names);
+    ADD_VECTOR_TO_PROTO(pb_sp.mutable_allowed_tool_schema_jsons(),
+                        sp->allowed_tool_schema_jsons);
     pb_sampling_params.emplace_back(pb_sp);
   }
   ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_sampling_params(),
@@ -409,6 +430,14 @@ void forward_input_to_proto(const RawForwardInput& inputs,
   }
   ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_unique_token_lens_vec(),
                       inputs.unique_token_lens_vec);
+  pb_forward_input->mutable_generated_token_ids_vec()->Reserve(
+      inputs.generated_token_ids_vec.size());
+  for (const auto& token_ids : inputs.generated_token_ids_vec) {
+    proto::GeneratedTokenIds pb_generated_token_ids;
+    ADD_VECTOR_TO_PROTO(pb_generated_token_ids.mutable_token_ids(), token_ids);
+    *pb_forward_input->mutable_generated_token_ids_vec()->Add() =
+        pb_generated_token_ids;
+  }
   pb_forward_input->set_batch_forward_type(inputs.batch_forward_type.value());
   pb_forward_input->set_max_seq_len(inputs.max_seq_len);
   pb_forward_input->set_q_max_seq_len(inputs.q_max_seq_len);

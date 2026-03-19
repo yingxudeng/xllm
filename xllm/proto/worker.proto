@@ -156,6 +156,9 @@ message RequestSamplingParam {
   bool do_sample = 9;
   bool is_embeddings = 10;
   int32 beam_width = 11;
+  int32 tool_call_constraint_mode = 12;
+  repeated string allowed_tool_names = 13;
+  repeated string allowed_tool_schema_jsons = 14;
 }
 
 message UniqueTokenIds {
@@ -164,6 +167,10 @@ message UniqueTokenIds {
 
 message UniqueTokenCounts {
   repeated int32 unique_token_counts = 1;
+}
+
+message GeneratedTokenIds {
+  repeated int32 token_ids = 1;
 }
 
 message BlockTables {
@@ -205,6 +212,7 @@ message ForwardInput {
   repeated UniqueTokenIds unique_token_ids_vec = 6;
   repeated UniqueTokenCounts unique_token_counts_vec = 7;
   repeated int32 unique_token_lens_vec = 8;
+  repeated GeneratedTokenIds generated_token_ids_vec = 45;
   // bool empty_kv_cache = 9;
   uint32 max_seq_len = 10;
   uint32 q_max_seq_len = 11;

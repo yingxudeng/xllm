@@ -26,8 +26,14 @@ limitations under the License.
 namespace xllm {
 
 SampleOutput Sampler::forward(torch::Tensor& logits,
-                              const SamplingParameters& params) const {
+                              const SamplingParameters& params,
+                              const torch::Tensor& constraint_mask) const {
   SampleOutput output;
+  if (constraint_mask.defined()) {
+    CHECK_EQ(logits.sizes(), constraint_mask.sizes())
+        << "Constraint mask shape must match logits shape";
+    logits = logits + constraint_mask;
+  }
   // apply frequency and presence penalties
   if (params.frequency_penalties.defined()) {
     apply_frequency_presence_penalties(logits,

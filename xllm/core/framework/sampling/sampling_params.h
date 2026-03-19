@@ -18,11 +18,18 @@ limitations under the License.
 #include <torch/torch.h>
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "core/util/tensor_helper.h"
 
 namespace xllm {
+
+enum class ToolCallConstraintMode : int32_t {
+  NONE = 0,
+  REQUIRED = 1,
+  NAMED = 2,
+};
 
 struct RequestSamplingParam {
   float frequency_penalty = 0.0;
@@ -36,16 +43,22 @@ struct RequestSamplingParam {
   bool do_sample = false;
   bool is_embeddings = false;
   int32_t beam_width = 0;
+  ToolCallConstraintMode tool_call_constraint_mode =
+      ToolCallConstraintMode::NONE;
+  std::vector<std::string> allowed_tool_names;
+  std::vector<std::string> allowed_tool_schema_jsons;
 };
 
 struct SamplingParameters {
  public:
-  void init(const std::vector<const RequestSamplingParam*>& req_sampling_params,
-            const std::vector<int32_t>& selected_token_idxes,
-            const std::vector<int32_t>& sample_idxes,
-            const std::vector<std::vector<int64_t>>& unique_token_ids_vec,
-            const std::vector<std::vector<int32_t>>& unique_token_counts_vec,
-            const std::vector<int32_t>& unique_token_lens_vec);
+  void init(
+      const std::vector<const RequestSamplingParam*>& req_sampling_params,
+      const std::vector<int32_t>& selected_token_idxes,
+      const std::vector<int32_t>& sample_idxes,
+      const std::vector<std::vector<int64_t>>& unique_token_ids_vec,
+      const std::vector<std::vector<int32_t>>& unique_token_counts_vec,
+      const std::vector<int32_t>& unique_token_lens_vec,
+      const std::vector<std::vector<int32_t>>& generated_token_ids_vec = {});
 
   SamplingParameters to(const torch::Device& device,
                         torch::ScalarType dtype) const {
@@ -73,6 +86,10 @@ struct SamplingParameters {
     params.logprobs = logprobs;
     params.max_top_logprobs = max_top_logprobs;
     params.is_embeddings = is_embeddings;
+    params.generated_token_ids_vec = generated_token_ids_vec;
+    params.tool_call_constraint_modes = tool_call_constraint_modes;
+    params.allowed_tool_names_vec = allowed_tool_names_vec;
+    params.allowed_tool_schema_jsons_vec = allowed_tool_schema_jsons_vec;
 
     // for beam search
     params.use_beam_search = use_beam_search;
@@ -135,6 +152,18 @@ struct SamplingParameters {
   // max number of top logprobs in the batch.
   // only used when logprobs is true.
   int64_t max_top_logprobs = 0;
+
+  // Generated tokens for each sampled sequence, used by constrained decoding.
+  std::vector<std::vector<int32_t>> generated_token_ids_vec;
+
+  // Tool constraint mode for each sampled sequence.
+  std::vector<ToolCallConstraintMode> tool_call_constraint_modes;
+
+  // Allowed tool names for each sampled sequence.
+  std::vector<std::vector<std::string>> allowed_tool_names_vec;
+
+  // Allowed tool schemas for each sampled sequence, serialized as JSON.
+  std::vector<std::vector<std::string>> allowed_tool_schema_jsons_vec;
 
   // for beam search
   bool use_beam_search = false;

@@ -30,6 +30,7 @@ struct SequenceParser {
 class StreamOutputParser {
  public:
   StreamOutputParser(const std::vector<function_call::JsonTool>& tools,
+                     const std::string& tool_choice,
                      const std::string& tool_call_parser_format,
                      const std::string& reasoning_parser_format,
                      bool force_reasoning = false);

@@ -66,16 +66,16 @@ namespace utils {
 std::vector<ToolCallItem> parse_function_calls(
     const std::string& text,
     const std::vector<JsonTool>& tools,
-    const std::string& parser_type = "qwen25");
+    const std::string& parser_type = "");
 
 bool has_function_calls(const std::string& text,
-                        const std::string& parser_type = "qwen25");
+                        const std::string& parser_type = "");
 
 // Streaming parsing utility function
 StreamingParseResult parse_streaming_increment(
     const std::string& new_text,
     const std::vector<JsonTool>& tools,
-    const std::string& parser_type = "qwen25");
+    const std::string& parser_type = "");
 
 std::string generate_tool_call_id();
 }  // namespace utils

@@ -98,7 +98,7 @@ inline ToolCallResult process_tool_calls(
     return result;
   }
 
-  if (finish_reason == "stop") {
+  if (finish_reason == "stop" || finish_reason == "function_call") {
     result.finish_reason = "tool_calls";
   } else {
     result.finish_reason = std::move(finish_reason);

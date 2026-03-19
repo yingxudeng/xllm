@@ -542,6 +542,13 @@ bool RequestParams::verify_params(OutputCallback callback) const {
     }
   }
 
+  if (tool_choice == "required" && tools.empty()) {
+    CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT,
+                        "tools cannot be empty when tool_choice is required",
+                        service_request_id);
+    return false;
+  }
+
   // up to 4 stop sequences
   if (stop.has_value() && stop.value().size() > 4) {
     CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT,
