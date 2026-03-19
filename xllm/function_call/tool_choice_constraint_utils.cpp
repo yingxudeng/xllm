@@ -217,6 +217,9 @@ std::string resolve_tool_call_parser_for_choice(
     const std::vector<JsonTool>& tools,
     const std::string& tool_choice,
     const std::string& default_parser) {
+  if (default_parser == "__disabled__") {
+    return "";
+  }
   auto constraint = resolve_tool_choice_constraint(tools, tool_choice);
   if (constraint.enabled()) {
     return "json_array";

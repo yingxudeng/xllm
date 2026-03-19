@@ -46,7 +46,9 @@ class ToolCallConstrainedDecoding final : public ConstrainedDecoding {
       const std::vector<ToolCallConstraintMode>& modes,
       const std::vector<std::vector<std::string>>& allowed_tool_names_vec,
       const std::vector<std::vector<std::string>>&
-          allowed_tool_schema_jsons_vec);
+          allowed_tool_schema_jsons_vec,
+      const std::vector<std::vector<int32_t>>& tool_call_stop_token_ids_vec =
+          {});
 
   bool build_mask_cache() override;
 
@@ -72,6 +74,7 @@ class ToolCallConstrainedDecoding final : public ConstrainedDecoding {
   std::vector<ToolCallConstraintMode> modes_;
   std::vector<std::vector<std::string>> allowed_tool_names_vec_;
   std::vector<std::vector<std::string>> allowed_tool_schema_jsons_vec_;
+  std::vector<std::vector<int32_t>> tool_call_stop_token_ids_vec_;
   std::vector<std::shared_ptr<const xgrammar::CompiledGrammar>>
       compiled_grammars_;
   std::vector<std::shared_ptr<const JsonSchemaCursor>> root_cursors_;

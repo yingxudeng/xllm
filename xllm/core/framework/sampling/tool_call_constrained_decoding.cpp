@@ -36,8 +36,6 @@ namespace xllm {
 struct ToolCallTokenCache {
   std::vector<std::string> token_text_cache;
   std::array<std::vector<int32_t>, 256> token_ids_by_first_byte;
-  std::shared_ptr<xgrammar::TokenizerInfo> xgrammar_tokenizer_info;
-  std::shared_ptr<xgrammar::GrammarCompiler> xgrammar_compiler;
 };
 
 class JsonSchemaCursor {
@@ -116,18 +114,6 @@ std::shared_ptr<const ToolCallTokenCache> get_or_build_token_cache(
     }
   }
 
-  try {
-    built->xgrammar_tokenizer_info = std::make_shared<xgrammar::TokenizerInfo>(
-        built->token_text_cache, xgrammar::VocabType::RAW, vocab_size);
-    built->xgrammar_compiler = std::make_shared<xgrammar::GrammarCompiler>(
-        *built->xgrammar_tokenizer_info);
-  } catch (const std::exception& e) {
-    LOG(WARNING) << "Failed to initialize xgrammar tokenizer/compiler cache: "
-                 << e.what();
-    built->xgrammar_tokenizer_info.reset();
-    built->xgrammar_compiler.reset();
-  }
-
   std::lock_guard<std::mutex> lock(cache_mutex);
   auto& slot = cache_by_key[key];
   if (auto cached = slot.lock()) {
@@ -135,6 +121,61 @@ std::shared_ptr<const ToolCallTokenCache> get_or_build_token_cache(
   }
   slot = built;
   return built;
+}
+
+std::shared_ptr<xgrammar::GrammarCompiler> get_or_build_xgrammar_compiler(
+    const std::shared_ptr<const ToolCallTokenCache>& token_cache,
+    int32_t vocab_size,
+    const std::vector<int32_t>& stop_token_ids) {
+  static std::mutex cache_mutex;
+  static std::unordered_map<std::string,
+                            std::weak_ptr<xgrammar::GrammarCompiler>>
+      cache_by_key;
+
+  std::string cache_key =
+      std::to_string(reinterpret_cast<uintptr_t>(token_cache.get()));
+  cache_key.push_back('\n');
+  for (int32_t token_id : stop_token_ids) {
+    cache_key.append(std::to_string(token_id));
+    cache_key.push_back(',');
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    auto it = cache_by_key.find(cache_key);
+    if (it != cache_by_key.end()) {
+      if (auto cached = it->second.lock()) {
+        return cached;
+      }
+    }
+  }
+
+  std::optional<std::vector<int32_t>> stop_ids = std::nullopt;
+  if (!stop_token_ids.empty()) {
+    stop_ids = stop_token_ids;
+  }
+
+  std::shared_ptr<xgrammar::GrammarCompiler> compiler;
+  try {
+    auto tokenizer_info =
+        std::make_shared<xgrammar::TokenizerInfo>(token_cache->token_text_cache,
+                                                  xgrammar::VocabType::RAW,
+                                                  vocab_size,
+                                                  stop_ids);
+    compiler = std::make_shared<xgrammar::GrammarCompiler>(*tokenizer_info);
+  } catch (const std::exception& e) {
+    LOG(WARNING) << "Failed to initialize xgrammar compiler cache: "
+                 << e.what();
+    return nullptr;
+  }
+
+  std::lock_guard<std::mutex> lock(cache_mutex);
+  auto& slot = cache_by_key[cache_key];
+  if (auto cached = slot.lock()) {
+    return cached;
+  }
+  slot = compiler;
+  return compiler;
 }
 
 void add_byte(std::array<bool, 256>& mask, unsigned char c) { mask[c] = true; }
@@ -1391,14 +1432,16 @@ ToolCallConstrainedDecoding::ToolCallConstrainedDecoding(
     torch::Device device,
     const std::vector<ToolCallConstraintMode>& modes,
     const std::vector<std::vector<std::string>>& allowed_tool_names_vec,
-    const std::vector<std::vector<std::string>>& allowed_tool_schema_jsons_vec)
+    const std::vector<std::vector<std::string>>& allowed_tool_schema_jsons_vec,
+    const std::vector<std::vector<int32_t>>& tool_call_stop_token_ids_vec)
     : tokenizer_(tokenizer),
       vocab_size_(vocab_size),
       dtype_(dtype),
       device_(device),
       modes_(modes),
       allowed_tool_names_vec_(allowed_tool_names_vec),
-      allowed_tool_schema_jsons_vec_(allowed_tool_schema_jsons_vec) {}
+      allowed_tool_schema_jsons_vec_(allowed_tool_schema_jsons_vec),
+      tool_call_stop_token_ids_vec_(tool_call_stop_token_ids_vec) {}
 
 bool ToolCallConstrainedDecoding::build_mask_cache() {
   build_token_cache();
@@ -1460,12 +1503,21 @@ std::shared_ptr<const xgrammar::CompiledGrammar>
 ToolCallConstrainedDecoding::build_compiled_grammar_for_sequence(
     size_t index) const {
   if (index >= modes_.size() || modes_[index] == ToolCallConstraintMode::NONE ||
-      !token_cache_ || !token_cache_->xgrammar_compiler) {
+      !token_cache_) {
     return nullptr;
   }
 
   auto tools = parse_tools_for_sequence(index);
   if (tools.empty()) {
+    return nullptr;
+  }
+  const std::vector<int32_t> empty_stop_token_ids;
+  const auto& stop_token_ids = index < tool_call_stop_token_ids_vec_.size()
+                                   ? tool_call_stop_token_ids_vec_[index]
+                                   : empty_stop_token_ids;
+  auto compiler =
+      get_or_build_xgrammar_compiler(token_cache_, vocab_size_, stop_token_ids);
+  if (!compiler) {
     return nullptr;
   }
 
@@ -1477,8 +1529,8 @@ ToolCallConstrainedDecoding::build_compiled_grammar_for_sequence(
                             std::weak_ptr<const xgrammar::CompiledGrammar>>
       cache_by_key;
 
-  std::string cache_key = std::to_string(
-      reinterpret_cast<uintptr_t>(token_cache_->xgrammar_compiler.get()));
+  std::string cache_key =
+      std::to_string(reinterpret_cast<uintptr_t>(compiler.get()));
   cache_key.push_back('\n');
   cache_key.append(schema_json);
 
@@ -1495,7 +1547,7 @@ ToolCallConstrainedDecoding::build_compiled_grammar_for_sequence(
   std::shared_ptr<const xgrammar::CompiledGrammar> compiled;
   try {
     compiled = std::make_shared<xgrammar::CompiledGrammar>(
-        token_cache_->xgrammar_compiler->CompileJSONSchema(schema_json));
+        compiler->CompileJSONSchema(schema_json));
   } catch (const std::exception& e) {
     LOG(WARNING) << "Failed to compile tool schema with xgrammar: " << e.what();
     return nullptr;
@@ -1572,6 +1624,24 @@ torch::Tensor ToolCallConstrainedDecoding::generate_mask(
       options);
 
   bool any_constrained = false;
+  auto apply_stop_token_constraint =
+      [&](size_t seq_idx, const std::vector<int32_t>& stop_token_ids) {
+        if (stop_token_ids.empty()) {
+          return false;
+        }
+
+        any_constrained = true;
+        auto row =
+            torch::full({vocab_size_}, PRE_MASK_FACTOR, torch::dtype(dtype_));
+        for (int32_t token_id : stop_token_ids) {
+          if (token_id >= 0 && token_id < vocab_size_) {
+            row[token_id] = 0.0f;
+          }
+        }
+        mask.index_put_({static_cast<int64_t>(seq_idx)},
+                        safe_to(row, device_, true));
+        return true;
+      };
   auto apply_cursor_constraint =
       [&](size_t seq_idx, const std::vector<int32_t>& generated_ids) {
         if (seq_idx >= root_cursors_.size() || !root_cursors_[seq_idx]) {
@@ -1595,6 +1665,10 @@ torch::Tensor ToolCallConstrainedDecoding::generate_mask(
                 active.begin(), active.end(), [](const CursorPtr& state) {
                   return state->is_complete();
                 })) {
+          if (seq_idx < tool_call_stop_token_ids_vec_.size()) {
+            apply_stop_token_constraint(seq_idx,
+                                        tool_call_stop_token_ids_vec_[seq_idx]);
+          }
           return;
         }
 
@@ -1646,6 +1720,11 @@ torch::Tensor ToolCallConstrainedDecoding::generate_mask(
         xgrammar::GrammarMatcher matcher(*compiled_grammars_[i]);
         bool accepted = true;
         for (int32_t token_id : generated_ids) {
+          // Align with sglang/xgrammar flow: once the matcher has terminated,
+          // do not continue replaying later tokens into it.
+          if (matcher.IsTerminated()) {
+            break;
+          }
           if (!matcher.AcceptToken(token_id)) {
             accepted = false;
             break;
@@ -1654,35 +1733,35 @@ torch::Tensor ToolCallConstrainedDecoding::generate_mask(
 
         if (accepted) {
           handled_by_xgrammar = true;
-          if (!matcher.IsCompleted()) {
-            std::vector<int32_t> bitmask_buffer(
-                xgrammar::GetBitmaskSize(vocab_size_));
-            int64_t shape = static_cast<int64_t>(bitmask_buffer.size());
-            int64_t stride = 1;
-            DLTensor bitmask_tensor{bitmask_buffer.data(),
-                                    DLDevice{kDLCPU, 0},
-                                    1,
-                                    xgrammar::GetBitmaskDLType(),
-                                    &shape,
-                                    &stride,
-                                    0};
-            const bool need_apply =
-                matcher.FillNextTokenBitmask(&bitmask_tensor);
-            if (need_apply) {
-              std::vector<int> rejected_token_ids;
-              xgrammar::_DebugGetMaskedTokensFromBitmask(
-                  &rejected_token_ids, bitmask_tensor, vocab_size_);
-              if (!rejected_token_ids.empty()) {
-                any_constrained = true;
-                auto row = torch::zeros({vocab_size_}, torch::dtype(dtype_));
-                for (int32_t token_id : rejected_token_ids) {
-                  if (token_id >= 0 && token_id < vocab_size_) {
-                    row[token_id] = PRE_MASK_FACTOR;
-                  }
+          if (matcher.IsTerminated()) {
+            continue;
+          }
+          std::vector<int32_t> bitmask_buffer(
+              xgrammar::GetBitmaskSize(vocab_size_));
+          int64_t shape = static_cast<int64_t>(bitmask_buffer.size());
+          int64_t stride = 1;
+          DLTensor bitmask_tensor{bitmask_buffer.data(),
+                                  DLDevice{kDLCPU, 0},
+                                  1,
+                                  xgrammar::GetBitmaskDLType(),
+                                  &shape,
+                                  &stride,
+                                  0};
+          const bool need_apply = matcher.FillNextTokenBitmask(&bitmask_tensor);
+          if (need_apply) {
+            std::vector<int> rejected_token_ids;
+            xgrammar::_DebugGetMaskedTokensFromBitmask(
+                &rejected_token_ids, bitmask_tensor, vocab_size_);
+            if (!rejected_token_ids.empty()) {
+              any_constrained = true;
+              auto row = torch::zeros({vocab_size_}, torch::dtype(dtype_));
+              for (int32_t token_id : rejected_token_ids) {
+                if (token_id >= 0 && token_id < vocab_size_) {
+                  row[token_id] = PRE_MASK_FACTOR;
                 }
-                mask.index_put_({static_cast<int64_t>(i)},
-                                safe_to(row, device_, true));
               }
+              mask.index_put_({static_cast<int64_t>(i)},
+                              safe_to(row, device_, true));
             }
           }
         }

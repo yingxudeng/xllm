@@ -401,5 +401,79 @@ TEST(ToolCallConstrainedDecodingTest, SupportsTypeUnionWithNull) {
   EXPECT_EQ(mask.index({0, static_cast<int>('n')}).item<float>(), 0.0f);
 }
 
+TEST(ToolCallConstrainedDecodingTest, CompletedJsonOnlyAllowsStopTokens) {
+  CharTokenizer tokenizer;
+  ToolCallConstrainedDecoding decoding(tokenizer,
+                                       /*vocab_size=*/256,
+                                       torch::kFloat32,
+                                       torch::kCPU,
+                                       {ToolCallConstraintMode::NAMED},
+                                       {{"SkuCommentInfo"}},
+                                       {{R"({
+        "type":"function",
+        "function":{
+          "name":"SkuCommentInfo",
+          "parameters":{
+            "type":"object",
+            "properties":{
+              "sku_ids":{"type":"string","enum":["ALL"]}
+            },
+            "required":["sku_ids"]
+          }
+        }
+      })"}},
+                                       {{'\n'}});
+
+  ASSERT_TRUE(decoding.build_mask_cache());
+
+  std::vector<int32_t> generated;
+  ASSERT_TRUE(tokenizer.encode(
+      R"([{"name":"SkuCommentInfo","parameters":{"sku_ids":"ALL"}}])",
+      &generated,
+      false));
+  auto mask = decoding.generate_mask({generated});
+  ASSERT_TRUE(mask.defined());
+
+  EXPECT_EQ(mask.index({0, static_cast<int>('\n')}).item<float>(), 0.0f);
+  EXPECT_EQ(mask.index({0, static_cast<int>('a')}).item<float>(), -10000.0f);
+  EXPECT_EQ(mask.index({0, static_cast<int>(' ')}).item<float>(), -10000.0f);
+}
+
+TEST(ToolCallConstrainedDecodingTest,
+     IgnoresTrailingTokensAfterGrammarStopToken) {
+  CharTokenizer tokenizer;
+  ToolCallConstrainedDecoding decoding(tokenizer,
+                                       /*vocab_size=*/256,
+                                       torch::kFloat32,
+                                       torch::kCPU,
+                                       {ToolCallConstraintMode::NAMED},
+                                       {{"SkuCommentInfo"}},
+                                       {{R"({
+        "type":"function",
+        "function":{
+          "name":"SkuCommentInfo",
+          "parameters":{
+            "type":"object",
+            "properties":{
+              "sku_ids":{"type":"string","enum":["ALL"]}
+            },
+            "required":["sku_ids"]
+          }
+        }
+      })"}},
+                                       {{'\n'}});
+
+  ASSERT_TRUE(decoding.build_mask_cache());
+
+  std::vector<int32_t> generated;
+  ASSERT_TRUE(tokenizer.encode(
+      "[{\"name\":\"SkuCommentInfo\",\"parameters\":{\"sku_ids\":\"ALL\"}}]\na",
+      &generated,
+      false));
+
+  auto mask = decoding.generate_mask({generated});
+  EXPECT_FALSE(mask.defined());
+}
+
 }  // namespace
 }  // namespace xllm

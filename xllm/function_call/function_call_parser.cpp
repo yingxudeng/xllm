@@ -83,6 +83,9 @@ std::string get_supported_detector_factories() {
 
 std::string FunctionCallParser::get_parser_auto(const std::string& parser,
                                                 const std::string& model_type) {
+  if (parser == "none") {
+    return "__disabled__";
+  }
   if (parser.empty()) {
     // Enable the built-in Qwen tool parser by default so qwen2/qwen3
     // tool-calling works without requiring an explicit startup flag.

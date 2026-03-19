@@ -224,6 +224,7 @@ size_t get_sampling_params_size(const SamplingParameters& params) {
   total += get_vector_size(params.tool_call_constraint_modes);
   total += get_2d_string_vector_size(params.allowed_tool_names_vec);
   total += get_2d_string_vector_size(params.allowed_tool_schema_jsons_vec);
+  total += get_2d_vector_size(params.tool_call_stop_token_ids_vec);
   return total;
 }
 
@@ -1145,6 +1146,7 @@ inline void deserialize_raw_forward_input(const char*& buffer,
     for (auto& schemas : sampling_params.allowed_tool_schema_jsons_vec) {
       read_string_vector(buffer, schemas);
     }
+    read_2d_vector(buffer, sampling_params.tool_call_stop_token_ids_vec);
   }
   // acc_logprob
   read_tensor(buffer, forward_input.acc_logprob, device_buffer);
@@ -1246,6 +1248,7 @@ inline void serialize_raw_forward_input(const RawForwardInput& input,
     for (const auto& schemas : sampling_params.allowed_tool_schema_jsons_vec) {
       write_string_vector(buffer, schemas);
     }
+    write_2d_vector(buffer, sampling_params.tool_call_stop_token_ids_vec);
   }
   // acc_logprob
   write_vector_to_tensor(buffer, input.acc_logprob_vec);

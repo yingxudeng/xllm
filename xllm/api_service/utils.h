@@ -18,6 +18,7 @@ limitations under the License.
 #include <glog/logging.h>
 #include <google/protobuf/util/json_util.h>
 
+#include <cctype>
 #include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -82,6 +83,70 @@ struct ToolCallResult {
   std::string finish_reason;
 };
 
+inline std::tuple<std::string, std::vector<function_call::ToolCallItem>>
+try_parse_leading_json_tool_calls(const std::string& text,
+                                  const std::vector<xllm::JsonTool>& tools) {
+  size_t start = 0;
+  while (start < text.size() &&
+         std::isspace(static_cast<unsigned char>(text[start])) != 0) {
+    ++start;
+  }
+  if (start >= text.size() || (text[start] != '[' && text[start] != '{')) {
+    return {"", {}};
+  }
+
+  bool in_string = false;
+  bool escaped = false;
+  int depth = 0;
+  size_t end = std::string::npos;
+  for (size_t i = start; i < text.size(); ++i) {
+    const char c = text[i];
+    if (in_string) {
+      if (escaped) {
+        escaped = false;
+      } else if (c == '\\') {
+        escaped = true;
+      } else if (c == '"') {
+        in_string = false;
+      }
+      continue;
+    }
+
+    if (c == '"') {
+      in_string = true;
+      continue;
+    }
+    if (c == '[' || c == '{') {
+      ++depth;
+      continue;
+    }
+    if (c == ']' || c == '}') {
+      --depth;
+      if (depth == 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+
+  if (end == std::string::npos) {
+    return {"", {}};
+  }
+
+  const std::string json_prefix = text.substr(start, end - start + 1);
+  try {
+    function_call::FunctionCallParser json_array_parser(tools, "json_array");
+    auto [ignored_text, calls] =
+        json_array_parser.parse_non_stream(json_prefix);
+    if (calls.empty()) {
+      return {"", {}};
+    }
+    return {ignored_text, std::move(calls)};
+  } catch (const std::exception&) {
+    return {"", {}};
+  }
+}
+
 inline ToolCallResult process_tool_calls(
     std::string text,
     const std::vector<xllm::JsonTool>& tools,
@@ -91,8 +156,10 @@ inline ToolCallResult process_tool_calls(
   ToolCallResult result;
 
   function_call::FunctionCallParser parser(tools, parser_format);
+  auto leading_json_parse = try_parse_leading_json_tool_calls(text, tools);
+  auto leading_json_calls = std::move(std::get<1>(leading_json_parse));
 
-  if (!parser.has_tool_call(text)) {
+  if (!parser.has_tool_call(text) && leading_json_calls.empty()) {
     result.text = std::move(text);
     result.finish_reason = std::move(finish_reason);
     return result;
@@ -106,7 +173,13 @@ inline ToolCallResult process_tool_calls(
 
   try {
     auto [parsed_text, call_info_list] = parser.parse_non_stream(text);
-    result.text = std::move(parsed_text);
+    bool used_leading_json_fallback = false;
+    if (call_info_list.empty() && !leading_json_calls.empty()) {
+      parsed_text.clear();
+      call_info_list = std::move(leading_json_calls);
+      used_leading_json_fallback = true;
+    }
+    result.text = used_leading_json_fallback ? "" : std::move(parsed_text);
 
     google::protobuf::RepeatedPtrField<proto::ToolCall> tool_calls;
 

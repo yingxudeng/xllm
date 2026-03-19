@@ -17,125 +17,48 @@ limitations under the License.
 
 #include <gtest/gtest.h>
 
-#include <memory>
-#include <string>
-#include <unordered_map>
 #include <vector>
 
 namespace xllm {
 namespace {
 
-function_call::JsonTool make_tool(const std::string& name,
-                                  const nlohmann::json& parameters) {
-  function_call::JsonTool tool;
-  tool.type = "function";
-  tool.function.name = name;
-  tool.function.parameters = parameters;
-  return tool;
+TEST(StoppingCheckerTest, StopsOnEosToken) {
+  StoppingChecker checker(/*max_generated_tokens=*/128,
+                          /*max_context_len=*/0,
+                          /*eos_token=*/42,
+                          /*ignore_eos=*/false,
+                          /*stop_tokens=*/{},
+                          /*stop_sequences=*/{});
+
+  std::vector<int32_t> token_ids = {1, 2, 42};
+  EXPECT_EQ(checker.check(token_ids, /*num_prompt_tokens=*/1),
+            FinishReason::STOP);
 }
 
-class MockTokenizer final : public Tokenizer {
- public:
-  explicit MockTokenizer(std::unordered_map<int32_t, std::string> token_map)
-      : token_map_(std::move(token_map)) {}
-
-  std::string decode(const Slice<int32_t>& ids,
-                     bool /*skip_special_tokens*/) const override {
-    std::string out;
-    for (auto id : ids) {
-      auto it = token_map_.find(id);
-      if (it != token_map_.end()) {
-        out += it->second;
-      }
-    }
-    return out;
-  }
-
- private:
-  std::unordered_map<int32_t, std::string> token_map_;
-};
-
-TEST(StoppingCheckerTest, DetectsCompletedRequiredToolCallJson) {
+TEST(StoppingCheckerTest, StopsOnStopSequence) {
   StoppingChecker checker(/*max_generated_tokens=*/128,
                           /*max_context_len=*/0,
                           /*eos_token=*/-1,
                           /*ignore_eos=*/false,
                           /*stop_tokens=*/{},
-                          /*stop_sequences=*/{});
-  checker.set_tool_call_constraint(
-      std::make_shared<MockTokenizer>(std::unordered_map<int32_t, std::string>{
-          {101, "["},
-          {102,
-           "{\"name\":\"get_weather\",\"parameters\":{\"city\":\"Beijing\"}}"},
-          {103, "]"},
-      }),
-      ToolCallConstraintMode::REQUIRED,
-      {make_tool("get_weather", nlohmann::json::parse(R"({
-            "type":"object",
-            "properties":{"city":{"type":"string"}},
-            "required":["city"]
-          })"))});
+                          /*stop_sequences=*/{{11, 12, 13}});
 
-  std::vector<int32_t> token_ids = {1, 101, 102, 103};
+  std::vector<int32_t> token_ids = {1, 10, 11, 12, 13};
   EXPECT_EQ(checker.check(token_ids, /*num_prompt_tokens=*/1),
-            FinishReason::FUNCTION_CALL);
+            FinishReason::STOP);
 }
 
-TEST(StoppingCheckerTest, RejectsUnknownToolInCompletedJson) {
-  StoppingChecker checker(/*max_generated_tokens=*/128,
+TEST(StoppingCheckerTest, StopsOnMaxGeneratedTokens) {
+  StoppingChecker checker(/*max_generated_tokens=*/2,
                           /*max_context_len=*/0,
                           /*eos_token=*/-1,
                           /*ignore_eos=*/false,
                           /*stop_tokens=*/{},
                           /*stop_sequences=*/{});
-  checker.set_tool_call_constraint(
-      std::make_shared<MockTokenizer>(std::unordered_map<int32_t, std::string>{
-          {201, "["},
-          {202, "{\"name\":\"reply\",\"parameters\":{\"text\":\"hello\"}}"},
-          {203, "]"},
-      }),
-      ToolCallConstraintMode::REQUIRED,
-      {make_tool("get_weather", nlohmann::json::parse(R"({
-            "type":"object",
-            "properties":{"city":{"type":"string"}},
-            "required":["city"]
-          })"))});
 
-  std::vector<int32_t> token_ids = {1, 201, 202, 203};
+  std::vector<int32_t> token_ids = {1, 2, 3};
   EXPECT_EQ(checker.check(token_ids, /*num_prompt_tokens=*/1),
-            FinishReason::NONE);
-}
-
-TEST(StoppingCheckerTest, RejectsMissingRequiredArgumentsInCompletedJson) {
-  StoppingChecker checker(/*max_generated_tokens=*/128,
-                          /*max_context_len=*/0,
-                          /*eos_token=*/-1,
-                          /*ignore_eos=*/false,
-                          /*stop_tokens=*/{},
-                          /*stop_sequences=*/{});
-  checker.set_tool_call_constraint(
-      std::make_shared<MockTokenizer>(std::unordered_map<int32_t, std::string>{
-          {301, "["},
-          {302, "{\"name\":\"SkuCommentInfo\",\"parameters\":{}}"},
-          {303, "]"},
-      }),
-      ToolCallConstraintMode::REQUIRED,
-      {make_tool("SkuCommentInfo", nlohmann::json::parse(R"({
-            "type":"object",
-            "properties":{
-              "sku_ids":{
-                "anyOf":[
-                  {"type":"array","items":{"type":"string"}},
-                  {"type":"string","enum":["ALL"]}
-                ]
-              }
-            },
-            "required":["sku_ids"]
-          })"))});
-
-  std::vector<int32_t> token_ids = {1, 301, 302, 303};
-  EXPECT_EQ(checker.check(token_ids, /*num_prompt_tokens=*/1),
-            FinishReason::NONE);
+            FinishReason::LENGTH);
 }
 
 }  // namespace

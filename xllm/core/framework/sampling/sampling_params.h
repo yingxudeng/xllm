@@ -47,6 +47,7 @@ struct RequestSamplingParam {
       ToolCallConstraintMode::NONE;
   std::vector<std::string> allowed_tool_names;
   std::vector<std::string> allowed_tool_schema_jsons;
+  std::vector<int32_t> tool_call_stop_token_ids;
 };
 
 struct SamplingParameters {
@@ -90,6 +91,7 @@ struct SamplingParameters {
     params.tool_call_constraint_modes = tool_call_constraint_modes;
     params.allowed_tool_names_vec = allowed_tool_names_vec;
     params.allowed_tool_schema_jsons_vec = allowed_tool_schema_jsons_vec;
+    params.tool_call_stop_token_ids_vec = tool_call_stop_token_ids_vec;
 
     // for beam search
     params.use_beam_search = use_beam_search;
@@ -164,6 +166,9 @@ struct SamplingParameters {
 
   // Allowed tool schemas for each sampled sequence, serialized as JSON.
   std::vector<std::vector<std::string>> allowed_tool_schema_jsons_vec;
+
+  // Stop token ids to allow after a constrained tool-call JSON is complete.
+  std::vector<std::vector<int32_t>> tool_call_stop_token_ids_vec;
 
   // for beam search
   bool use_beam_search = false;

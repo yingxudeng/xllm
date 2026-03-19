@@ -16,16 +16,13 @@ limitations under the License.
 #pragma once
 
 #include <cstdint>
-#include <memory>
 #include <string>
 #include <unordered_set>
 #include <vector>
 
 #include "core/framework/sampling/sampling_params.h"
-#include "core/framework/tokenizer/tokenizer.h"
 #include "core/util/slice.h"
 #include "finish_reason.h"
-#include "function_call/core_types.h"
 
 namespace xllm {
 
@@ -80,15 +77,6 @@ class StoppingChecker {
     return stop_sequences_;
   }
 
-  inline void set_tool_call_constraint(
-      std::shared_ptr<Tokenizer> tokenizer,
-      ToolCallConstraintMode mode,
-      const std::vector<function_call::JsonTool>& allowed_tools) {
-    tokenizer_ = std::move(tokenizer);
-    tool_call_constraint_mode_ = mode;
-    allowed_tools_ = allowed_tools;
-  }
-
  private:
   size_t max_generated_tokens_ = 5120;
 
@@ -105,12 +93,6 @@ class StoppingChecker {
 
   // stopping sequences
   std::vector<std::vector<int32_t>> stop_sequences_;
-
-  // Optional constrained tool-call completion detection.
-  std::shared_ptr<Tokenizer> tokenizer_;
-  ToolCallConstraintMode tool_call_constraint_mode_ =
-      ToolCallConstraintMode::NONE;
-  std::vector<function_call::JsonTool> allowed_tools_;
 };
 
 }  // namespace xllm

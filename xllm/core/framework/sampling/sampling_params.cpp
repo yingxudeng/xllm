@@ -52,9 +52,11 @@ void SamplingParameters::init(
   tool_call_constraint_modes.clear();
   allowed_tool_names_vec.clear();
   allowed_tool_schema_jsons_vec.clear();
+  tool_call_stop_token_ids_vec.clear();
   tool_call_constraint_modes.reserve(sample_idxes.size());
   allowed_tool_names_vec.reserve(sample_idxes.size());
   allowed_tool_schema_jsons_vec.reserve(sample_idxes.size());
+  tool_call_stop_token_ids_vec.reserve(sample_idxes.size());
   for (const auto* p : req_sampling_params) {
     frequency_penalties.push_back(p->frequency_penalty);
     presence_penalties.push_back(p->presence_penalty);
@@ -147,6 +149,7 @@ void SamplingParameters::init(
     tool_call_constraint_modes.push_back(p->tool_call_constraint_mode);
     allowed_tool_names_vec.push_back(p->allowed_tool_names);
     allowed_tool_schema_jsons_vec.push_back(p->allowed_tool_schema_jsons);
+    tool_call_stop_token_ids_vec.push_back(p->tool_call_stop_token_ids);
   }
   this->sample_idxes = torch::tensor(sample_idxes, int_tensor_options);
   this->do_sample = torch::tensor(do_sample, bool_tensor_options);
@@ -209,6 +212,10 @@ void SamplingParameters::concat(const SamplingParameters& param) {
       this->allowed_tool_schema_jsons_vec.end(),
       param.allowed_tool_schema_jsons_vec.begin(),
       param.allowed_tool_schema_jsons_vec.end());
+  this->tool_call_stop_token_ids_vec.insert(
+      this->tool_call_stop_token_ids_vec.end(),
+      param.tool_call_stop_token_ids_vec.begin(),
+      param.tool_call_stop_token_ids_vec.end());
   return;
 }
 

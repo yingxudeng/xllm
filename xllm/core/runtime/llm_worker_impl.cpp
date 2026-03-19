@@ -180,7 +180,8 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
             logits.device(),
             sampling_params.tool_call_constraint_modes,
             sampling_params.allowed_tool_names_vec,
-            sampling_params.allowed_tool_schema_jsons_vec);
+            sampling_params.allowed_tool_schema_jsons_vec,
+            sampling_params.tool_call_stop_token_ids_vec);
         constrained_decoding.build_mask_cache();
         constraint_mask = constrained_decoding.generate_mask(
             sampling_params.generated_token_ids_vec);

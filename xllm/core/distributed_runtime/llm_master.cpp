@@ -19,6 +19,7 @@ limitations under the License.
 #include <glog/logging.h>
 #include <pybind11/pybind11.h>
 
+#include <algorithm>
 #include <atomic>
 #include <boost/algorithm/string.hpp>
 #include <csignal>
@@ -399,6 +400,15 @@ std::shared_ptr<Request> LLMMaster::generate_request(
   } else {
     stop_tokens = model_args_.stop_token_ids();
   }
+  if (sp.ignore_eos) {
+    stop_tokens.erase(model_args_.eos_token_id());
+  } else if (model_args_.eos_token_id() >= 0) {
+    stop_tokens.insert(model_args_.eos_token_id());
+  }
+  sampling_param.tool_call_stop_token_ids.assign(stop_tokens.begin(),
+                                                 stop_tokens.end());
+  std::sort(sampling_param.tool_call_stop_token_ids.begin(),
+            sampling_param.tool_call_stop_token_ids.end());
   std::vector<std::vector<int32_t>> stop_sequences;
   if (sp.stop.has_value()) {
     for (const auto& s : sp.stop.value()) {
@@ -420,12 +430,6 @@ std::shared_ptr<Request> LLMMaster::generate_request(
       sp.ignore_eos,
       std::move(stop_tokens),
       std::move(stop_sequences));
-  if (tool_choice_constraint.enabled()) {
-    stopping_checker.set_tool_call_constraint(
-        std::shared_ptr<Tokenizer>(tokenizer_->clone().release()),
-        tool_choice_constraint.mode,
-        tool_choice_constraint.allowed_tools);
-  }
 
   if (task_type_ != "embed" && task_type_ != "mm_embed") {
     auto finish_reason =
