@@ -125,6 +125,10 @@ struct RequestState final {
 
   std::vector<int32_t> prompt_tokens;
 
+  // Forced assistant output prefix that is prefixed into the sequence state
+  // while remaining outside the prompt token count.
+  std::vector<int32_t> output_prefix_tokens;
+
   bool stream = false;
 
   // max tokens for a seq

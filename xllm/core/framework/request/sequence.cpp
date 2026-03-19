@@ -127,7 +127,10 @@ Sequence::Sequence(size_t index,
 
   CHECK(!prompt_token_ids.empty()) << "empty prompt token ids";
   auto capacity = sequence_params_.seq_capacity;
-  CHECK_GT(capacity, prompt_token_ids.size()) << "capacity too small";
+  CHECK_GT(
+      capacity,
+      prompt_token_ids.size() + sequence_params_.output_prefix_token_ids.size())
+      << "capacity too small";
 
   num_prompt_tokens_ = prompt_token_ids.size();
   volatile_num_prompt_tokens_ = num_prompt_tokens_;
@@ -151,6 +154,14 @@ Sequence::Sequence(size_t index,
   }
   // need one token to padding even dont need token count
   token_to_count_map_[prompt_token_ids.back()] = 0;
+
+  for (const auto token_id : sequence_params_.output_prefix_token_ids) {
+    tokens_[num_tokens_++] = token_id;
+    if (need_unique_tokens_) {
+      token_to_count_map_[token_id]++;
+    }
+  }
+
   input_embedding_ = input_embedding;
   cur_generated_token_idx_ = num_prompt_tokens_;
 }

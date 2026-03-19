@@ -419,6 +419,10 @@ void init_from_chat_request(RequestParams& params, const ChatRequest& request) {
     params.chat_template_kwargs =
         proto_struct_to_json(request.chat_template_kwargs());
   }
+
+  if (!params.tool_choice.empty()) {
+    params.chat_template_kwargs["tool_choice"] = params.tool_choice;
+  }
 }
 }  // namespace
 
@@ -517,6 +521,9 @@ RequestParams::RequestParams(const proto::AnthropicMessagesRequest& request,
   }
   tool_choice = std::move(handle_tool_choice(request));
   tools = std::move(handle_tools(request));
+  if (!tool_choice.empty()) {
+    chat_template_kwargs["tool_choice"] = tool_choice;
+  }
 }
 
 bool RequestParams::verify_params(OutputCallback callback) const {

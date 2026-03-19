@@ -21,6 +21,7 @@ limitations under the License.
 
 #include <cstdint>
 
+#include "core/framework/tokenizer/tokenizer.h"
 #include "framework/block/block.h"
 #include "framework/block/block_manager_impl.h"
 #include "framework/model/model_args.h"
@@ -43,6 +44,29 @@ bool equal(const torch::Tensor& t, const std::vector<T>& d) {
   }
   return true;
 }
+
+class FakeTokenizer final : public Tokenizer {
+ public:
+  std::string decode(const Slice<int32_t>& ids,
+                     bool /*skip_special_tokens*/) const override {
+    std::string output;
+    for (size_t i = 0; i < ids.size(); ++i) {
+      output += id_to_token(ids[i]);
+    }
+    return output;
+  }
+
+  std::string id_to_token(int32_t id) const override {
+    switch (id) {
+      case 11:
+        return "<tool_call>\n";
+      case 12:
+        return "{";
+      default:
+        return "";
+    }
+  }
+};
 
 TEST(BatchTest, Basic) {
   // use init device to trigger the loading of torch backend for different
@@ -220,6 +244,38 @@ TEST(BatchTest, Basic) {
   EXPECT_TRUE(equal(sampling_params.sample_idxes, expected_sample_idxes));
 
   // clang-format on
+}
+
+TEST(BatchTest, SequenceTreatsOutputPrefixAsGeneratedOutput) {
+  RequestSamplingParam sampling_param;
+  StoppingChecker stopping_checker;
+  SequenceParams seq_params;
+  seq_params.seq_capacity = 16;
+  seq_params.stopping_checker = &stopping_checker;
+  seq_params.sampling_param = &sampling_param;
+  seq_params.skip_special_tokens = true;
+  seq_params.echo = false;
+  seq_params.logprobs = false;
+  seq_params.enable_schedule_overlap = false;
+  seq_params.output_prefix_token_ids = {11, 12};
+
+  torch::Tensor input_embedding;
+  MMData mm_data;
+  IncrementalDecoder decoder("", /*num_prompt_tokens=*/2, false, true);
+  Sequence seq(/*index=*/0,
+               /*token_ids=*/{1, 2},
+               input_embedding,
+               mm_data,
+               std::move(decoder),
+               seq_params);
+
+  FakeTokenizer tokenizer;
+  auto output = seq.generate_output(tokenizer);
+
+  EXPECT_EQ(seq.num_prompt_tokens(), 2);
+  EXPECT_EQ(seq.num_generated_tokens(), 2);
+  EXPECT_EQ(output.text, "<tool_call>\n{");
+  EXPECT_EQ(output.token_ids, std::vector<int32_t>({11, 12}));
 }
 
 TEST(BatchTest, DPBalanceShuffle) {

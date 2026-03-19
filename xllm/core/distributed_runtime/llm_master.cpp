@@ -50,6 +50,40 @@ bool should_use_ssm_engine(const Options& options) {
           options.num_speculative_tokens() > 0);
 }
 
+bool supports_qwen_required_tool_call_prefix(const std::string& model_type) {
+  return model_type == "qwen2" || model_type == "qwen3";
+}
+
+bool should_force_required_tool_call(const RequestParams& params,
+                                     const std::string& model_type) {
+  return supports_qwen_required_tool_call_prefix(model_type) &&
+         !params.tools.empty() && params.tool_choice == "required";
+}
+
+const std::string& required_tool_call_output_prefix() {
+  static const std::string kPrefix = "<tool_call>\n{";
+  return kPrefix;
+}
+
+const std::string& required_tool_call_stop_sequence() {
+  static const std::string kStopSequence = "\n</tool_call>";
+  return kStopSequence;
+}
+
+bool encode_required_tool_call_output_prefix(const Tokenizer& tokenizer,
+                                             std::vector<int32_t>* token_ids) {
+  return tokenizer.encode(required_tool_call_output_prefix(),
+                          token_ids,
+                          /*add_special_tokens=*/false);
+}
+
+bool encode_required_tool_call_stop_sequence(const Tokenizer& tokenizer,
+                                             std::vector<int32_t>* token_ids) {
+  return tokenizer.encode(required_tool_call_stop_sequence(),
+                          token_ids,
+                          /*add_special_tokens=*/false);
+}
+
 }  // namespace
 
 volatile bool LLMAssistantMaster::running_ = false;
@@ -306,13 +340,27 @@ std::shared_ptr<Request> LLMMaster::generate_request(
 
   COUNTER_ADD(tokenization_latency_seconds, timer.elapsed_seconds());
 
+  std::vector<int32_t> output_prefix_tokens;
+  const bool force_required_tool_call =
+      should_force_required_tool_call(sp, model_args_.model_type());
+  if (force_required_tool_call && !encode_required_tool_call_output_prefix(
+                                      *tokenizer_, &output_prefix_tokens)) {
+    LOG(ERROR) << "Failed to encode required tool-call output prefix";
+    CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT,
+                        "Failed to encode required tool-call output prefix",
+                        sp.service_request_id);
+    return nullptr;
+  }
+
   int32_t max_context_len = model_args_.max_position_embeddings();
   if (!options_.enable_chunked_prefill()) {
     max_context_len =
         std::min(max_context_len, options_.max_tokens_per_batch());
   }
-  if (local_prompt_tokens.size() >= max_context_len) {
-    LOG(ERROR) << "Prompt is too long: " << local_prompt_tokens.size();
+  const size_t total_prefill_tokens =
+      local_prompt_tokens.size() + output_prefix_tokens.size();
+  if (total_prefill_tokens >= max_context_len) {
+    LOG(ERROR) << "Prompt is too long: " << total_prefill_tokens;
     CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT,
                         "Prompt is too long",
                         sp.service_request_id);
@@ -327,7 +375,7 @@ std::shared_ptr<Request> LLMMaster::generate_request(
 
   // allocate enough capacity for prompt tokens, max tokens, and speculative
   // tokens
-  size_t capacity = local_prompt_tokens.size() + max_tokens +
+  size_t capacity = total_prefill_tokens + max_tokens +
                     options_.num_speculative_tokens() + /*bouns_token*/ 1;
   if (options_.enable_schedule_overlap()) {
     capacity += options_.num_speculative_tokens() + 1;
@@ -392,6 +440,18 @@ std::shared_ptr<Request> LLMMaster::generate_request(
       }
       stop_sequences.push_back(std::move(tmp_tokens));
     }
+  }
+  if (force_required_tool_call) {
+    std::vector<int32_t> tool_call_stop_tokens;
+    if (!encode_required_tool_call_stop_sequence(*tokenizer_,
+                                                 &tool_call_stop_tokens)) {
+      LOG(ERROR) << "Failed to encode required tool-call stop sequence";
+      CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT,
+                          "Failed to encode required tool-call stop sequence",
+                          sp.service_request_id);
+      return nullptr;
+    }
+    stop_sequences.push_back(std::move(tool_call_stop_tokens));
   }
 
   StoppingChecker stopping_checker(
@@ -461,6 +521,7 @@ std::shared_ptr<Request> LLMMaster::generate_request(
                          batch_callback,
                          sp.decode_address,
                          call);
+  req_state.output_prefix_tokens = std::move(output_prefix_tokens);
 
   auto request = std::make_shared<Request>(sp.request_id,
                                            sp.x_request_id,

@@ -74,4 +74,3 @@ cc_library(
     torch
     ${OpenCV_LIBS}
 )
-

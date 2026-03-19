@@ -9,6 +9,7 @@ cc_library(
     api_service_impl.h
     call.h
     chat_json_utils.h
+    tool_choice_utils.h
     completion_service_impl.h
     rec_completion_service_impl.h
     chat_service_impl.h
@@ -28,6 +29,7 @@ cc_library(
   SRCS
     api_service.cpp
     call.cpp
+    tool_choice_utils.cpp
     completion_service_impl.cpp
     rec_completion_service_impl.cpp
     chat_service_impl.cpp
@@ -92,4 +94,14 @@ cc_test(
     api_service
     GTest::gtest_main
     nlohmann_json::nlohmann_json
+)
+
+cc_test(
+  NAME
+    tool_choice_utils_test
+  SRCS
+    tool_choice_utils_test.cpp
+  DEPS
+    api_service
+    GTest::gtest_main
 )

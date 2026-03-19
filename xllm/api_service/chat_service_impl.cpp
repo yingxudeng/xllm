@@ -30,6 +30,7 @@ limitations under the License.
 #include <unordered_set>
 
 #include "api_service/stream_output_parser.h"
+#include "api_service/tool_choice_utils.h"
 #include "api_service/utils.h"
 #include "core/common/instance_name.h"
 #include "core/common/types.h"
@@ -561,6 +562,8 @@ void ChatServiceImpl::process_rec_chat_request(std::shared_ptr<ChatCall> call) {
     }
   }
 
+  inject_tool_choice_instruction(messages, request_params);
+
   bool include_usage = false;
   if (rpc_request.has_stream_options()) {
     include_usage = rpc_request.stream_options().include_usage();
@@ -695,6 +698,8 @@ void ChatServiceImpl::process_async_rpc_impl(
     }
   }
 
+  inject_tool_choice_instruction(messages, request_params);
+
   std::optional<std::vector<int>> prompt_tokens = std::nullopt;
   if (rpc_request.has_routing()) {
     prompt_tokens = std::vector<int>{};
@@ -779,6 +784,8 @@ void ChatServiceImpl::process_async_impl(std::shared_ptr<ChatCall> call) {
       msg.tool_calls = std::move(tool_calls);
     }
   }
+
+  inject_tool_choice_instruction(messages, request_params);
 
   bool include_usage = false;
   if (rpc_request.has_stream_options()) {
@@ -904,6 +911,8 @@ void MMChatServiceImpl::process_async_impl(std::shared_ptr<MMChatCall> call) {
           req_messages, messages, call, master_->get_image_limit())) {
     return;
   }
+
+  inject_tool_choice_instruction(messages, request_params);
 
   bool include_usage = false;
   if (rpc_request.has_stream_options()) {

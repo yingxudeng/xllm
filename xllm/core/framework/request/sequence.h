@@ -97,6 +97,10 @@ struct SequenceParams {
   // stopping checker
   // reference from request
   StoppingChecker* stopping_checker;  // not owned
+
+  // Forced assistant output prefix that should be treated as generated tokens
+  // instead of prompt tokens.
+  std::vector<int32_t> output_prefix_token_ids;
 };
 
 class Sequence final {
