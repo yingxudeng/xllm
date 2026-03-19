@@ -26,6 +26,7 @@ limitations under the License.
 #include <boost/algorithm/string.hpp>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <unordered_set>
 
@@ -46,6 +47,27 @@ limitations under the License.
 
 namespace xllm {
 namespace {
+
+std::string normalize_model_id(std::string model) {
+  boost::algorithm::trim(model);
+  boost::algorithm::to_lower(model);
+  return model;
+}
+
+std::optional<std::string> resolve_supported_model(
+    const absl::flat_hash_set<std::string>& models,
+    const std::string& requested_model) {
+  if (models.contains(requested_model)) {
+    return requested_model;
+  }
+  const auto normalized = normalize_model_id(requested_model);
+  for (const auto& candidate : models) {
+    if (normalize_model_id(candidate) == normalized) {
+      return candidate;
+    }
+  }
+  return std::nullopt;
+}
 
 void set_logprobs(proto::ChatChoice* choice,
                   const std::optional<std::vector<LogProb>>& logprobs) {
@@ -508,6 +530,12 @@ LLMMaster* ChatServiceImpl::get_model_master(const std::string& model) const {
   std::shared_lock<std::shared_mutex> lock(llm_model_to_master_mutex_);
   auto it = llm_model_to_master_.find(model);
   if (it == llm_model_to_master_.end()) {
+    const auto normalized = normalize_model_id(model);
+    for (const auto& [candidate, master] : llm_model_to_master_) {
+      if (normalize_model_id(candidate) == normalized) {
+        return master;
+      }
+    }
     return nullptr;
   }
   return it->second;
@@ -664,7 +692,8 @@ void ChatServiceImpl::process_async_rpc_impl(
   // check if model is supported
   const auto& rpc_request = *request;
   const auto& model = rpc_request.model();
-  if (unlikely(!models_.contains(model))) {
+  auto resolved_model = resolve_supported_model(models_, model);
+  if (unlikely(!resolved_model.has_value())) {
     CALLBACK_WITH_ERROR(
         StatusCode::UNKNOWN, "Model not supported", service_request_id);
     return;
@@ -728,7 +757,7 @@ void ChatServiceImpl::process_async_impl(std::shared_ptr<ChatCall> call) {
 
   // Route to RecMaster if configured
   if (rec_master_) {
-    if (unlikely(!models_.contains(model))) {
+    if (unlikely(!resolve_supported_model(models_, model).has_value())) {
       call->finish_with_error(StatusCode::UNKNOWN, "Model not supported");
       return;
     }

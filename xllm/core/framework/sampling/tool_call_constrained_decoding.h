@@ -17,7 +17,8 @@ limitations under the License.
 
 #include <torch/torch.h>
 
-#include <nlohmann/json.hpp>
+#include <array>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,9 @@ limitations under the License.
 #include "sampling_params.h"
 
 namespace xllm {
+
+class JsonSchemaCursor;
+struct ToolCallTokenCache;
 
 class ToolCallConstrainedDecoding final : public ConstrainedDecoding {
  public:
@@ -46,12 +50,11 @@ class ToolCallConstrainedDecoding final : public ConstrainedDecoding {
       const std::vector<std::vector<int32_t>>& generated_token_list) override;
 
  private:
-  std::vector<std::vector<std::vector<int32_t>>> build_scaffold_tokens() const;
-  std::vector<std::vector<int32_t>> build_tool_prefix_paths(
-      const function_call::JsonTool& tool) const;
-  std::vector<int32_t> encode_text(const std::string& text) const;
   std::vector<function_call::JsonTool> parse_tools_for_sequence(
       size_t index) const;
+  std::shared_ptr<const JsonSchemaCursor> build_root_cursor_for_sequence(
+      size_t index) const;
+  void build_token_cache();
 
  private:
   constexpr static float PRE_MASK_FACTOR = -10000.0f;
@@ -63,7 +66,8 @@ class ToolCallConstrainedDecoding final : public ConstrainedDecoding {
   std::vector<ToolCallConstraintMode> modes_;
   std::vector<std::vector<std::string>> allowed_tool_names_vec_;
   std::vector<std::vector<std::string>> allowed_tool_schema_jsons_vec_;
-  std::vector<std::vector<std::vector<int32_t>>> scaffold_token_ids_vec_;
+  std::vector<std::shared_ptr<const JsonSchemaCursor>> root_cursors_;
+  std::shared_ptr<const ToolCallTokenCache> token_cache_;
 };
 
 }  // namespace xllm

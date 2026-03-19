@@ -128,5 +128,278 @@ TEST(ToolCallConstrainedDecodingTest, AllowsSchemaDrivenValuePrefixes) {
   EXPECT_EQ(mask.index({0, static_cast<int>('}')}).item<float>(), -10000.0f);
 }
 
+TEST(ToolCallConstrainedDecodingTest, BlocksTrailingCommaWhenNoMoreProperties) {
+  CharTokenizer tokenizer;
+  ToolCallConstrainedDecoding decoding(tokenizer,
+                                       /*vocab_size=*/256,
+                                       torch::kFloat32,
+                                       torch::kCPU,
+                                       {ToolCallConstraintMode::REQUIRED},
+                                       {{"SkuCommentInfo"}},
+                                       {{R"({
+        "type":"function",
+        "function":{
+          "name":"SkuCommentInfo",
+          "parameters":{
+            "type":"object",
+            "properties":{
+              "sku_ids":{"type":"string","enum":["ALL"]}
+            },
+            "required":["sku_ids"]
+          }
+        }
+      })"}});
+
+  ASSERT_TRUE(decoding.build_mask_cache());
+
+  std::vector<int32_t> generated;
+  ASSERT_TRUE(tokenizer.encode(
+      R"([{"name":"SkuCommentInfo","parameters":{"sku_ids":"ALL")",
+      &generated,
+      false));
+  auto mask = decoding.generate_mask({generated});
+  ASSERT_TRUE(mask.defined());
+
+  EXPECT_EQ(mask.index({0, static_cast<int>('}')}).item<float>(), 0.0f);
+  EXPECT_EQ(mask.index({0, static_cast<int>(',')}).item<float>(), -10000.0f);
+}
+
+TEST(ToolCallConstrainedDecodingTest,
+     AllowsOptionalPropertyBeforeRemainingRequiredProperty) {
+  CharTokenizer tokenizer;
+  ToolCallConstrainedDecoding decoding(tokenizer,
+                                       /*vocab_size=*/256,
+                                       torch::kFloat32,
+                                       torch::kCPU,
+                                       {ToolCallConstraintMode::REQUIRED},
+                                       {{"SkuCommentInfo"}},
+                                       {{R"({
+        "type":"function",
+        "function":{
+          "name":"SkuCommentInfo",
+          "parameters":{
+            "type":"object",
+            "properties":{
+              "query_type":{
+                "type":"array",
+                "items":{"type":"string","enum":["detail"]}
+              },
+              "sku_ids":{
+                "type":"array",
+                "items":{"type":"string"}
+              }
+            },
+            "required":["sku_ids"]
+          }
+        }
+      })"}});
+
+  ASSERT_TRUE(decoding.build_mask_cache());
+
+  std::vector<int32_t> generated;
+  ASSERT_TRUE(tokenizer.encode(
+      R"([{"name":"SkuCommentInfo","parameters":{"query_type":["detail"])",
+      &generated,
+      false));
+  auto mask = decoding.generate_mask({generated});
+  ASSERT_TRUE(mask.defined());
+
+  EXPECT_EQ(mask.index({0, static_cast<int>(',')}).item<float>(), 0.0f);
+  EXPECT_EQ(mask.index({0, static_cast<int>('}')}).item<float>(), -10000.0f);
+}
+
+TEST(ToolCallConstrainedDecodingTest, NamedModeLimitsArrayToSingleToolCall) {
+  CharTokenizer tokenizer;
+  ToolCallConstrainedDecoding decoding(tokenizer,
+                                       /*vocab_size=*/256,
+                                       torch::kFloat32,
+                                       torch::kCPU,
+                                       {ToolCallConstraintMode::NAMED},
+                                       {{"SkuCommentInfo"}},
+                                       {{R"({
+        "type":"function",
+        "function":{
+          "name":"SkuCommentInfo",
+          "parameters":{
+            "type":"object",
+            "properties":{
+              "sku_ids":{"type":"string","enum":["ALL"]}
+            },
+            "required":["sku_ids"]
+          }
+        }
+      })"}});
+
+  ASSERT_TRUE(decoding.build_mask_cache());
+
+  std::vector<int32_t> generated;
+  ASSERT_TRUE(tokenizer.encode(
+      R"([{"name":"SkuCommentInfo","parameters":{"sku_ids":"ALL"}})",
+      &generated,
+      false));
+  auto mask = decoding.generate_mask({generated});
+  ASSERT_TRUE(mask.defined());
+
+  EXPECT_EQ(mask.index({0, static_cast<int>(']')}).item<float>(), 0.0f);
+  EXPECT_EQ(mask.index({0, static_cast<int>(',')}).item<float>(), -10000.0f);
+}
+
+TEST(ToolCallConstrainedDecodingTest, AllowsEmptyOptionalObjectValue) {
+  CharTokenizer tokenizer;
+  ToolCallConstrainedDecoding decoding(tokenizer,
+                                       /*vocab_size=*/256,
+                                       torch::kFloat32,
+                                       torch::kCPU,
+                                       {ToolCallConstraintMode::REQUIRED},
+                                       {{"Ping"}},
+                                       {{R"({
+        "type":"function",
+        "function":{
+          "name":"Ping",
+          "parameters":{
+            "type":"object",
+            "properties":{
+              "metadata":{
+                "type":"object",
+                "properties":{
+                  "region":{"type":"string"}
+                }
+              }
+            },
+            "required":["metadata"]
+          }
+        }
+      })"}});
+
+  ASSERT_TRUE(decoding.build_mask_cache());
+
+  std::vector<int32_t> generated;
+  ASSERT_TRUE(tokenizer.encode(
+      R"([{"name":"Ping","parameters":{"metadata":{)", &generated, false));
+  auto mask = decoding.generate_mask({generated});
+  ASSERT_TRUE(mask.defined());
+
+  EXPECT_EQ(mask.index({0, static_cast<int>('}')}).item<float>(), 0.0f);
+  EXPECT_EQ(mask.index({0, static_cast<int>('"')}).item<float>(), 0.0f);
+}
+
+TEST(ToolCallConstrainedDecodingTest, AllowsEmptyOptionalArrayValue) {
+  CharTokenizer tokenizer;
+  ToolCallConstrainedDecoding decoding(tokenizer,
+                                       /*vocab_size=*/256,
+                                       torch::kFloat32,
+                                       torch::kCPU,
+                                       {ToolCallConstraintMode::REQUIRED},
+                                       {{"SkuCommentInfo"}},
+                                       {{R"({
+        "type":"function",
+        "function":{
+          "name":"SkuCommentInfo",
+          "parameters":{
+            "type":"object",
+            "properties":{
+              "sku_ids":{"type":"string","enum":["ALL"]},
+              "query_type":{
+                "type":"array",
+                "items":{"type":"string","enum":["detail","good_comment"]}
+              }
+            },
+            "required":["sku_ids"]
+          }
+        }
+      })"}});
+
+  ASSERT_TRUE(decoding.build_mask_cache());
+
+  std::vector<int32_t> generated;
+  ASSERT_TRUE(tokenizer.encode(
+      R"([{"name":"SkuCommentInfo","parameters":{"sku_ids":"ALL","query_type":[)",
+      &generated,
+      false));
+  auto mask = decoding.generate_mask({generated});
+  ASSERT_TRUE(mask.defined());
+
+  EXPECT_EQ(mask.index({0, static_cast<int>(']')}).item<float>(), 0.0f);
+  EXPECT_EQ(mask.index({0, static_cast<int>('"')}).item<float>(), 0.0f);
+}
+
+TEST(ToolCallConstrainedDecodingTest, ResolvesLocalDefsRefs) {
+  CharTokenizer tokenizer;
+  ToolCallConstrainedDecoding decoding(tokenizer,
+                                       /*vocab_size=*/256,
+                                       torch::kFloat32,
+                                       torch::kCPU,
+                                       {ToolCallConstraintMode::REQUIRED},
+                                       {{"SkuCommentInfo"}},
+                                       {{R"({
+        "type":"function",
+        "function":{
+          "name":"SkuCommentInfo",
+          "parameters":{
+            "type":"object",
+            "$defs":{
+              "SkuIds":{
+                "anyOf":[
+                  {"type":"array","items":{"type":"string"}},
+                  {"type":"string","enum":["ALL"]}
+                ]
+              }
+            },
+            "properties":{
+              "sku_ids":{"$ref":"#/$defs/SkuIds"}
+            },
+            "required":["sku_ids"]
+          }
+        }
+      })"}});
+
+  ASSERT_TRUE(decoding.build_mask_cache());
+
+  std::vector<int32_t> generated;
+  ASSERT_TRUE(
+      tokenizer.encode(R"([{"name":"SkuCommentInfo","parameters":{"sku_ids":)",
+                       &generated,
+                       false));
+  auto mask = decoding.generate_mask({generated});
+  ASSERT_TRUE(mask.defined());
+
+  EXPECT_EQ(mask.index({0, static_cast<int>('[')}).item<float>(), 0.0f);
+  EXPECT_EQ(mask.index({0, static_cast<int>('"')}).item<float>(), 0.0f);
+}
+
+TEST(ToolCallConstrainedDecodingTest, SupportsTypeUnionWithNull) {
+  CharTokenizer tokenizer;
+  ToolCallConstrainedDecoding decoding(tokenizer,
+                                       /*vocab_size=*/256,
+                                       torch::kFloat32,
+                                       torch::kCPU,
+                                       {ToolCallConstraintMode::REQUIRED},
+                                       {{"NullableEcho"}},
+                                       {{R"({
+        "type":"function",
+        "function":{
+          "name":"NullableEcho",
+          "parameters":{
+            "type":"object",
+            "properties":{
+              "value":{"type":["string","null"]}
+            },
+            "required":["value"]
+          }
+        }
+      })"}});
+
+  ASSERT_TRUE(decoding.build_mask_cache());
+
+  std::vector<int32_t> generated;
+  ASSERT_TRUE(tokenizer.encode(
+      R"([{"name":"NullableEcho","parameters":{"value":)", &generated, false));
+  auto mask = decoding.generate_mask({generated});
+  ASSERT_TRUE(mask.defined());
+
+  EXPECT_EQ(mask.index({0, static_cast<int>('"')}).item<float>(), 0.0f);
+  EXPECT_EQ(mask.index({0, static_cast<int>('n')}).item<float>(), 0.0f);
+}
+
 }  // namespace
 }  // namespace xllm
