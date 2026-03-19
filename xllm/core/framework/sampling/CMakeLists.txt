@@ -28,6 +28,7 @@ cc_library(
     :function_call
     glog::glog
     torch
+    xgrammar
     :kernels
     $<$<BOOL:${USE_NPU}>:xllm_ops>
 )

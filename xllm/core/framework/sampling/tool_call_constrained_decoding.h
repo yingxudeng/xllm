@@ -27,6 +27,10 @@ limitations under the License.
 #include "function_call/core_types.h"
 #include "sampling_params.h"
 
+namespace xgrammar {
+class CompiledGrammar;
+}  // namespace xgrammar
+
 namespace xllm {
 
 class JsonSchemaCursor;
@@ -52,6 +56,8 @@ class ToolCallConstrainedDecoding final : public ConstrainedDecoding {
  private:
   std::vector<function_call::JsonTool> parse_tools_for_sequence(
       size_t index) const;
+  std::shared_ptr<const xgrammar::CompiledGrammar>
+  build_compiled_grammar_for_sequence(size_t index) const;
   std::shared_ptr<const JsonSchemaCursor> build_root_cursor_for_sequence(
       size_t index) const;
   void build_token_cache();
@@ -66,6 +72,8 @@ class ToolCallConstrainedDecoding final : public ConstrainedDecoding {
   std::vector<ToolCallConstraintMode> modes_;
   std::vector<std::vector<std::string>> allowed_tool_names_vec_;
   std::vector<std::vector<std::string>> allowed_tool_schema_jsons_vec_;
+  std::vector<std::shared_ptr<const xgrammar::CompiledGrammar>>
+      compiled_grammars_;
   std::vector<std::shared_ptr<const JsonSchemaCursor>> root_cursors_;
   std::shared_ptr<const ToolCallTokenCache> token_cache_;
 };
