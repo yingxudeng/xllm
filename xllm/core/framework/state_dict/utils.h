@@ -91,6 +91,8 @@ void load_moe_all_expert_weight(const StateDict& state_dict,
                                 torch::Tensor& weight,
                                 bool& weight_is_loaded);
 
+// load_merged_weight: assumes all shards have the same size (uniform shard
+// sizes)
 void load_moe_fused_weight(const StateDict& state_dict,
                            const std::vector<std::string>& prefixes,
                            const std::string& name,
@@ -105,6 +107,8 @@ void load_moe_fused_weight(const StateDict& state_dict,
                            bool& w3_is_loaded,
                            bool& w13_is_loaded);
 
+// load_merged_weight_v2: supports variable shard sizes (each shard can have
+// different size)
 void load_merged_weight(const StateDict& state_dict,
                         const std::string& name,
                         int64_t dim,

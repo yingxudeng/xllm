@@ -87,14 +87,13 @@ bool CommChannel::allocate_kv_cache(
   }
 
   // add index shape if exists
-  if (kv_cache_shape.size() == 3) {
+  if (kv_cache_shape.size() == kKVCacheShapeSizeWithIndex) {
     shape->mutable_index_shape()->Reserve(kv_cache_shape[2].size());
     for (size_t i = 0; i < kv_cache_shape[2].size(); ++i) {
       shape->add_index_shape(kv_cache_shape[2][i]);
     }
-  }
-
-  if (kv_cache_shape.size() == 4) {
+  } else if (kv_cache_shape.size() == kKVCacheShapeSizeWithConvAndSsm) {
+    // Use for Qwen-3.5, Qwen3-next, etc
     shape->mutable_conv_shape()->Reserve(kv_cache_shape[2].size());
     shape->mutable_ssm_shape()->Reserve(kv_cache_shape[3].size());
     for (size_t i = 0; i < kv_cache_shape[2].size(); ++i) {

@@ -449,7 +449,6 @@ Engine::KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
   int64_t index_slot_size = 0;
   int64_t scale_slot_size =
       0;  // Extra overhead for scale tensors in quant mode
-  int64_t linear_slot_size = 0;
   if (FLAGS_enable_mla) {
 #if defined(USE_NPU)
     if (args_.model_type() == "deepseek_v3" && FLAGS_enable_prefix_cache) {
@@ -492,6 +491,7 @@ Engine::KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
     }
   }
   // For qwen3_next linear-attention layers.
+  int64_t linear_slot_size = 0;
   if (args_.linear_num_value_heads() > 0) {
     int64_t head_k_dim = args_.linear_key_head_dim();
     int64_t head_v_dim = args_.linear_value_head_dim();
@@ -538,7 +538,7 @@ bool LLMEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
   CHECK_GT(kv_cache_cap.n_blocks, 0) << "no memory for kv cache";
   const int32_t block_size = options_.block_size();
   bool enable_lighting_indexer = args_.index_n_heads() > 1;
-  bool enable_linear_attention = args_.full_attention_interval() > 1;
+  bool enable_gdn_attention = args_.full_attention_interval() > 1;
 
   // init kv cache for each worker
   std::vector<std::vector<int64_t>> kv_cache_shape;
@@ -578,7 +578,7 @@ bool LLMEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
     kv_cache_shape.emplace_back(std::vector<int64_t>{
         kv_cache_cap.n_blocks, block_size, 1, args_.index_head_dim()});
   }
-  if (enable_linear_attention) {
+  if (enable_gdn_attention) {
     kv_cache_shape.emplace_back(std::vector<int64_t>{
         kv_cache_cap.n_blocks,
         args_.linear_key_head_dim() * n_local_linear_k_heads_ * 2 +
@@ -614,7 +614,7 @@ bool LLMEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
     LOG(INFO) << "Initializing indexer cache with shape: [" << kv_cache_shape[2]
               << "]";
   }
-  if (enable_linear_attention) {
+  if (enable_gdn_attention) {
     LOG(INFO) << "Initializing conv cache with shape: [" << kv_cache_shape[2]
               << "]";
     LOG(INFO) << "Initializing ssm cache with shape: [" << kv_cache_shape[3]

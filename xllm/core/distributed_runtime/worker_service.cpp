@@ -25,6 +25,7 @@ limitations under the License.
 #include "common/global_flags.h"
 #include "common/metrics.h"
 #include "common/types.h"
+#include "core/distributed_runtime/comm_channel.h"
 #include "core/runtime/params_utils.h"
 #include "framework/request/sequence.h"
 #include "framework/sampling/sampling_params.h"
@@ -290,11 +291,14 @@ void WorkerService::AllocateKVCache(
         request->kv_cache_shape().index_shape_size() > 0;
     const bool has_conv_shape = request->kv_cache_shape().conv_shape_size() > 0;
     const bool has_ssm_shape = request->kv_cache_shape().ssm_shape_size() > 0;
-    CHECK(!(has_index_shape && (has_conv_shape || has_ssm_shape)))
+    const bool enable_gdn_attention = has_conv_shape || has_ssm_shape;
+    CHECK(!(has_index_shape && enable_gdn_attention))
         << "KVCacheShape does not support index_shape with conv/ssm shapes "
         << "simultaneously.";
     // Reserve for key, value, and optional extra shapes
-    kv_cache_shape.reserve(has_conv_shape || has_ssm_shape ? 4 : 3);
+    kv_cache_shape.reserve(enable_gdn_attention
+                               ? kKVCacheShapeSizeWithConvAndSsm
+                               : kKVCacheShapeSizeWithIndex);
     kv_cache_shape.emplace_back(
         std::vector<int64_t>(request->kv_cache_shape().key_shape().begin(),
                              request->kv_cache_shape().key_shape().end()));
@@ -306,7 +310,7 @@ void WorkerService::AllocateKVCache(
       kv_cache_shape.emplace_back(
           std::vector<int64_t>(request->kv_cache_shape().index_shape().begin(),
                                request->kv_cache_shape().index_shape().end()));
-    } else if (has_conv_shape || has_ssm_shape) {
+    } else if (enable_gdn_attention) {
       CHECK(has_conv_shape && has_ssm_shape)
           << "conv_shape and ssm_shape must be provided together.";
       kv_cache_shape.emplace_back(
@@ -336,10 +340,13 @@ void WorkerService::AllocateKVCacheWithTransfer(
     const bool has_index_shape = shape_req.index_shape_size() > 0;
     const bool has_conv_shape = shape_req.conv_shape_size() > 0;
     const bool has_ssm_shape = shape_req.ssm_shape_size() > 0;
-    CHECK(!(has_index_shape && (has_conv_shape || has_ssm_shape)))
+    const bool enable_gdn_attention = has_conv_shape || has_ssm_shape;
+    CHECK(!(has_index_shape && enable_gdn_attention))
         << "KVCacheShape does not support index_shape with conv/ssm shapes "
         << "simultaneously.";
-    kv_cache_shape.reserve(has_conv_shape || has_ssm_shape ? 4 : 3);
+    kv_cache_shape.reserve(enable_gdn_attention
+                               ? kKVCacheShapeSizeWithConvAndSsm
+                               : kKVCacheShapeSizeWithIndex);
     kv_cache_shape.emplace_back(std::vector<int64_t>(
         shape_req.key_shape().begin(), shape_req.key_shape().end()));
     kv_cache_shape.emplace_back(std::vector<int64_t>(
@@ -348,7 +355,7 @@ void WorkerService::AllocateKVCacheWithTransfer(
     if (has_index_shape) {
       kv_cache_shape.emplace_back(std::vector<int64_t>(
           shape_req.index_shape().begin(), shape_req.index_shape().end()));
-    } else if (has_conv_shape || has_ssm_shape) {
+    } else if (enable_gdn_attention) {
       CHECK(has_conv_shape && has_ssm_shape)
           << "conv_shape and ssm_shape must be provided together.";
       kv_cache_shape.emplace_back(std::vector<int64_t>(
