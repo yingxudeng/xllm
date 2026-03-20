@@ -88,19 +88,21 @@ AttentionMetadata AttentionMetadataBuilder::build(
   attn_metadata.is_prefill = params.batch_forward_type.is_prefill();
   if (!attn_metadata.is_prefill || FLAGS_enable_mla) {
     attn_metadata.block_table = params.block_tables;
-#if defined(USE_NPU)
-    // NPU path uses per-sequence lengths (not cumulative), so no diff.
-    if (params.kv_seq_lens.defined()) {
-      attn_metadata.kv_seq_lens = params.kv_seq_lens;
-    }
-    if (params.q_seq_lens.defined()) {
-      attn_metadata.q_seq_lens = params.q_seq_lens;
-    }
-#else
+#if !defined(USE_NPU)
     attn_metadata.kv_seq_lens = torch::diff(params.kv_seq_lens);  // kv seqlens
     attn_metadata.q_seq_lens = torch::diff(params.q_seq_lens);    // q seqlens
 #endif
   }
+#if defined(USE_NPU)
+  // NPU path uses per-sequence lengths (not cumulative), so no diff.
+  // Ensure per-sequence lengths are available for NPU kernels in all phases.
+  if (params.kv_seq_lens.defined()) {
+    attn_metadata.kv_seq_lens = params.kv_seq_lens;
+  }
+  if (params.q_seq_lens.defined()) {
+    attn_metadata.q_seq_lens = params.q_seq_lens;
+  }
+#endif
 
   attn_metadata.is_dummy = (params.q_max_seq_len == 0);
   if (attn_metadata.is_dummy) {
