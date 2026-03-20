@@ -615,6 +615,7 @@ bool LLMEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
               << "]";
   }
   if (enable_gdn_attention) {
+    LOG(INFO) << "GND Attention is enabled";
     LOG(INFO) << "Initializing conv cache with shape: [" << kv_cache_shape[2]
               << "]";
     LOG(INFO) << "Initializing ssm cache with shape: [" << kv_cache_shape[3]
