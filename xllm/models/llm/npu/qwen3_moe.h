@@ -35,6 +35,7 @@ class Qwen3MoeDecoderLayerImpl : public torch::nn::Module {
   }
 
   torch::Tensor forward(torch::Tensor x,
+                        std::optional<torch::Tensor>& residual,
                         torch::Tensor cos_pos,
                         torch::Tensor sin_pos,
                         torch::Tensor attn_mask,
@@ -43,6 +44,7 @@ class Qwen3MoeDecoderLayerImpl : public torch::nn::Module {
                         aclrtEvent* event = nullptr,
                         std::atomic<bool>* event_flag = nullptr) {
     return decoder_layer_(x,
+                          residual,
                           cos_pos,
                           sin_pos,
                           attn_mask,
@@ -56,7 +58,6 @@ class Qwen3MoeDecoderLayerImpl : public torch::nn::Module {
     auto experts_state_dict = state_dict.get_dict_with_prefix("mlp.experts.");
     auto fused_gate_up = experts_state_dict.get_tensor("gate_up_proj");
     auto fused_down = experts_state_dict.get_tensor("down_proj");
-
     bool is_fused = fused_gate_up.defined() && fused_down.defined();
 
     if (is_fused) {
@@ -99,15 +100,11 @@ class Qwen3MoeDecoderLayerImpl : public torch::nn::Module {
   }
 
   void merge_loaded_weights() { decoder_layer_->merge_loaded_weights(); }
-
   void merge_and_move_pinned_host() {
     decoder_layer_->merge_and_move_pinned_host();
   }
-
   void free_weights() { decoder_layer_->free_weights(); }
-
   void reload_weights() { decoder_layer_->reload_weights(); }
-
   void reload_weights_from_device() {
     decoder_layer_->reload_weights_from_device();
   }
@@ -168,6 +165,25 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
     for (int i = 0; i < parallel_args.world_size(); i += dp_local_tp_size_) {
       indices.push_back(i);
     }
+
+    // Eagle3: layer ids to capture (can be read from layers_to_capture in
+    // config.json)
+    if (FLAGS_speculative_algorithm == "Eagle3") {
+      const auto& layer_ids_from_config = model_args.layers_to_capture();
+      if (!layer_ids_from_config.empty()) {
+        set_eagle3_layers_to_capture(
+            std::make_optional<std::vector<int32_t>>(layer_ids_from_config));
+      } else {
+        set_eagle3_layers_to_capture();
+      }
+      // Pre-allocate aux output buffer [max_tokens_per_batch, hidden_size *
+      // num_captured]
+      const size_t num_captured = layers_to_capture_set_.size();
+      const int64_t aux_dim =
+          model_args.hidden_size() * static_cast<int64_t>(num_captured);
+      aux_output_buffer_ =
+          torch::empty({FLAGS_max_tokens_per_batch, aux_dim}, options);
+    }
   }
 
   torch::Tensor deepstack_process(torch::Tensor hidden_states,
@@ -178,6 +194,25 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
     auto local_this = selected + visual_embeds;
     hidden_states.index_put_({visual_pos_masks}, local_this);
     return hidden_states;
+  }
+
+  void set_eagle3_layers_to_capture(
+      const std::optional<std::vector<int32_t>>& layer_ids = std::nullopt) {
+    capture_aux_hidden_states_ = true;
+    layers_to_capture_set_.clear();
+    if (!layer_ids.has_value()) {
+      int32_t num_layers = static_cast<int32_t>(layers_.size());
+      layers_to_capture_set_.insert(2);
+      layers_to_capture_set_.insert(num_layers / 2);
+      layers_to_capture_set_.insert(num_layers - 3);
+    } else {
+      // Config uses 0-based layer indices, same as default {2, n/2, n-3}
+      for (int32_t val : layer_ids.value()) {
+        layers_to_capture_set_.insert(val);
+      }
+    }
+    LOG(INFO) << "layers_to_capture_set_ size: "
+              << layers_to_capture_set_.size();
   }
 
   // tokens: [num_tokens]
@@ -279,6 +314,14 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
     input_params_new.expert_array = expert_array;
 
     RollingLayerGuard rolling_guard(rolling_mgr_);
+
+    std::optional<torch::Tensor> residual;
+    if (FLAGS_enable_intralayer_addnorm) {
+      residual = torch::zeros_like(h);
+    }
+    const int64_t num_tokens = h.size(0);
+    const int64_t hidden_size = h.size(-1);
+    size_t capture_idx = 0;
     for (size_t i = 0; i < layers_.size(); i++) {
       aclrtEvent* event = nullptr;
       std::atomic<bool>* event_flag = nullptr;
@@ -290,10 +333,24 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
         return ModelOutput();
       }
 
+      if (capture_aux_hidden_states_ &&
+          layers_to_capture_set_.count(static_cast<int32_t>(i)) != 0) {
+        // auto aux_h = h;
+        auto aux_h =
+            (FLAGS_enable_intralayer_addnorm) ? h + residual.value() : h;
+        aux_output_buffer_.slice(0, 0, num_tokens)
+            .slice(1,
+                   static_cast<int64_t>(capture_idx) * hidden_size,
+                   static_cast<int64_t>(capture_idx + 1) * hidden_size)
+            .copy_(aux_h.reshape({num_tokens, hidden_size}));
+        capture_idx++;
+      }
+
       auto& layer = layers_[i];
       const int32_t layer_index = i;
       rolling_guard.before_layer(layer_index);
       layer(h,
+            residual,
             cos_pos,
             sin_pos,
             attn_mask,
@@ -302,11 +359,19 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
             event,
             event_flag);
       rolling_guard.after_layer(layer_index);
+
       if (deep_stack_size && i < deep_stack_size) {
         h = deepstack_process(h, input_params.visual_pos_masks, deep_stacks[i]);
       }
     }
+
+    if (FLAGS_enable_intralayer_addnorm) h = h + residual.value();
     auto hidden_states = norm_(h, 0);
+    if (capture_aux_hidden_states_) {
+      torch::Tensor aux_hidden_states =
+          aux_output_buffer_.slice(0, 0, num_tokens);
+      return ModelOutput(hidden_states, torch::Tensor(), aux_hidden_states);
+    }
     return ModelOutput(hidden_states);
   }
 
@@ -422,6 +487,11 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
   layer::NpuPosEmbedding atb_pos_emb_{nullptr};
   std::vector<int64_t> mrope_section_;
   RollingLoadManager* rolling_mgr_ = nullptr;
+
+  // egale3
+  std::unordered_set<int32_t> layers_to_capture_set_;
+  bool capture_aux_hidden_states_ = false;
+  torch::Tensor aux_output_buffer_;
 };
 TORCH_MODULE(Qwen3MoeModel);
 
@@ -469,6 +539,10 @@ REGISTER_MODEL_ARGS(qwen3_moe, [&] {
   LOAD_ARG_OR(tie_word_embeddings, "tie_word_embeddings", false);
   LOAD_ARG_OR(vocab_size, "vocab_size", 151936);
   LOAD_ARG_OR(mlp_only_layers, "mlp_only_layers", std::vector<int>());
+
+  // Eagle3: layer ids (0-based) to capture from config, e.g.
+  // "layers_to_capture": [2, 14, 25]; defaults to empty if missing
+  LOAD_ARG_OR(layers_to_capture, "layers_to_capture", std::vector<int32_t>{});
 
   SET_ARG(stop_token_ids, std::unordered_set<int32_t>({args->eos_token_id()}));
 });

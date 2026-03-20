@@ -1,4 +1,4 @@
-/* Copyright 2025 The xLLM Authors. All Rights Reserved.
+/* Copyright 2026 The xLLM Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,29 +15,25 @@ limitations under the License.
 
 #pragma once
 
-#include <functional>
+#include <map>
 #include <vector>
 
+#include "base_loader.h"
+
 namespace xllm {
-class ForwardInterruptedException : public std::exception {};
+namespace layer {
 
-class InterruptionBus {
+class Glm4DecoderLoader : public BaseLoader {
  public:
-  void subscribe(std::function<void(bool)> func) { observers_.push_back(func); }
+  Glm4DecoderLoader(uint64_t weight_count, const ModelContext& context);
 
-  void publish(bool interruption) {
-    for (auto it = observers_.cbegin(); it != observers_.cend(); ++it) {
-      const auto& observer = *it;
-      observer(interruption);
-    }
-  }
-
-  static InterruptionBus& get_instance() {
-    static InterruptionBus instance;
-    return instance;
-  }
+  void load_state_dict(const StateDict& state_dict) override;
+  void verify_loaded_weights() const override;
+  void merge_loaded_weights() override;
 
  private:
-  std::vector<std::function<void(bool)>> observers_;
+  at::Tensor at_placeholder_;
 };
+
+}  // namespace layer
 }  // namespace xllm
