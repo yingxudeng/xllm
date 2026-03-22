@@ -45,7 +45,10 @@ struct SamplingParameters {
             const std::vector<int32_t>& sample_idxes,
             const std::vector<std::vector<int64_t>>& unique_token_ids_vec,
             const std::vector<std::vector<int32_t>>& unique_token_counts_vec,
-            const std::vector<int32_t>& unique_token_lens_vec);
+            const std::vector<int32_t>& unique_token_lens_vec,
+            const std::vector<std::vector<int32_t>>&
+                required_tool_choice_bitmasks = {},
+            int32_t required_tool_choice_bitmask_size = 0);
 
   SamplingParameters to(const torch::Device& device,
                         torch::ScalarType dtype) const {
@@ -68,6 +71,10 @@ struct SamplingParameters {
 
     params.sample_idxes = safe_to(sample_idxes, device, true);
     params.do_sample = safe_to(do_sample, device, true);
+    params.required_tool_choice_bitmasks =
+        safe_to(required_tool_choice_bitmasks, device, true);
+    params.required_tool_choice_bitmask_size =
+        required_tool_choice_bitmask_size;
     params.all_random_sample = all_random_sample;
     params.all_greedy_sample = all_greedy_sample;
     params.logprobs = logprobs;
@@ -123,6 +130,12 @@ struct SamplingParameters {
   // whether to sample for each sequence.
   // [num_seqs] BoolTensor
   torch::Tensor do_sample;
+
+  // accepted-token bitmask for hard-constrained tool_choice=required rows.
+  // [num_seqs, bitmask_size] IntTensor
+  torch::Tensor required_tool_choice_bitmasks;
+  int32_t required_tool_choice_bitmask_size = 0;
+
   bool all_random_sample = false;
   bool all_greedy_sample = true;
 

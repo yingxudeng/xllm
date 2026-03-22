@@ -103,12 +103,15 @@ struct RequestParams {
   // temperature of the sampling, between [0, 2]. default = 0.0
   // higher value will make the ouput more random.
   float temperature = 0.0;
+  bool has_explicit_temperature = false;
 
   // top_p sampling cutoff, between [0.0, 1.0]. default = 1.0
   float top_p = 1.0;
+  bool has_explicit_top_p = false;
 
   // top_k sampling cutoff. default = -1 to disable.
   int64_t top_k = -1;
+  bool has_explicit_top_k = false;
 
   // whether to return the log probabilities of the tokens. default = false.
   bool logprobs = false;
@@ -138,7 +141,7 @@ struct RequestParams {
   // JSON-based tools (replacing proto_tools)
   std::vector<xllm::JsonTool> tools;
 
-  std::string tool_choice = "auto";
+  std::string tool_choice;
 
   bool offline = false;
 

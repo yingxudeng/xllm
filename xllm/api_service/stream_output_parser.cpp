@@ -19,15 +19,17 @@ limitations under the License.
 namespace xllm {
 StreamOutputParser::StreamOutputParser(
     const std::vector<function_call::JsonTool>& tools,
+    const std::string& tool_choice,
     const std::string& tool_call_parser_format,
     const std::string& reasoning_parser_format,
     bool force_reasoning)
     : tools_(tools),
+      tool_choice_(tool_choice),
       tool_call_parser_format_(tool_call_parser_format),
       reasoning_parser_format_(reasoning_parser_format),
       force_reasoning_(force_reasoning) {
   sequence_parsers_.resize(1);
-  if (is_tool_call()) {
+  if (is_tool_call() && tool_choice_ != "required") {
     sequence_parsers_[0].tool_call_parser =
         std::make_unique<function_call::FunctionCallParser>(
             tools_, tool_call_parser_format_);
@@ -39,7 +41,13 @@ StreamOutputParser::StreamOutputParser(
 }
 
 bool StreamOutputParser::is_tool_call() {
-  return !tools_.empty() && !tool_call_parser_format_.empty();
+  if (tools_.empty()) {
+    return false;
+  }
+  if (tool_choice_ == "required") {
+    return true;
+  }
+  return !tool_call_parser_format_.empty();
 }
 
 bool StreamOutputParser::is_reasoning() {
@@ -52,9 +60,30 @@ void StreamOutputParser::check_resize_for_index(size_t index) {
   }
 }
 
+function_call::RequiredToolCallStreamingResult
+StreamOutputParser::parse_required_tool_call_stream(
+    size_t index,
+    const std::string& delta_text) {
+  function_call::RequiredToolCallStreamingResult result;
+  if (tool_choice_ != "required" || delta_text.empty()) {
+    return result;
+  }
+
+  check_resize_for_index(index);
+  auto& state = sequence_parsers_[index];
+  const std::string current_text = state.previous_text + delta_text;
+  result = function_call::extract_required_tool_choice_streaming_delta(
+      state.previous_text,
+      current_text,
+      delta_text,
+      &state.function_name_returned);
+  state.previous_text = current_text;
+  return result;
+}
+
 function_call::FunctionCallParser* StreamOutputParser::get_tool_call_parser(
     size_t index) {
-  if (!is_tool_call()) {
+  if (!is_tool_call() || tool_choice_ == "required") {
     return nullptr;
   }
 

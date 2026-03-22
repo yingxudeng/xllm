@@ -67,6 +67,12 @@ BatchInputBuilder::BatchInputBuilder(
   }
   write_block_ids_.clear();
   state_.batch_forward_type = batch_forward_type;
+  for (auto* sequence : sequences_) {
+    required_tool_choice_bitmask_size_ =
+        std::max(required_tool_choice_bitmask_size_,
+                 sequence->required_tool_choice_bitmask_size());
+  }
+  state_.required_tool_choice_bitmask_size = required_tool_choice_bitmask_size_;
 }
 
 ForwardInput BatchInputBuilder::build_forward_input(
@@ -182,6 +188,15 @@ void BatchInputBuilder::process_sequences_multithreaded() {
     for (const auto& idx : state.sample_idxes) {
       state_.sample_idxes.emplace_back(idx + sample_idxes_offset);
     }
+    CHECK(state.required_tool_choice_bitmask_size == 0 ||
+          state.required_tool_choice_bitmask_size ==
+              required_tool_choice_bitmask_size_);
+    state_.required_tool_choice_bitmask_size =
+        required_tool_choice_bitmask_size_;
+    state_.required_tool_choice_bitmasks.insert(
+        state_.required_tool_choice_bitmasks.end(),
+        state.required_tool_choice_bitmasks.begin(),
+        state.required_tool_choice_bitmasks.end());
     state_.unique_token_ids_vec.insert(state_.unique_token_ids_vec.end(),
                                        state.unique_token_ids_vec.begin(),
                                        state.unique_token_ids_vec.end());
@@ -360,6 +375,18 @@ void BatchInputBuilder::handle_sampling_parameters(Sequence* sequence,
   state.selected_token_idxes.push_back(state.flatten_tokens_vec.size() - 1);
   state.sampling_params.push_back(sequence->sampling_param());
   state.sample_idxes.push_back(state.selected_token_idxes.size() - 1);
+
+  if (required_tool_choice_bitmask_size_ > 0) {
+    std::vector<int32_t> bitmask(required_tool_choice_bitmask_size_, -1);
+    if (sequence->has_required_tool_choice_matcher()) {
+      CHECK_EQ(sequence->required_tool_choice_bitmask_size(),
+               required_tool_choice_bitmask_size_);
+      sequence->fill_required_tool_choice_bitmask(&bitmask);
+    }
+    state.required_tool_choice_bitmasks.emplace_back(std::move(bitmask));
+    state.required_tool_choice_bitmask_size =
+        required_tool_choice_bitmask_size_;
+  }
 
   // Process unique tokens
   if (need_unique_tokens_) {
@@ -548,12 +575,15 @@ ForwardInput BatchInputBuilder::state_to_forward_input() {
     util::pad_2d_vector<int64_t>(state_.unique_token_ids_vec, /*pad_value=*/0);
     util::pad_2d_vector(state_.unique_token_counts_vec, /*pad_value=*/0);
 
-    forward_input.sampling_params.init(state_.sampling_params,
-                                       state_.selected_token_idxes,
-                                       state_.sample_idxes,
-                                       state_.unique_token_ids_vec,
-                                       state_.unique_token_counts_vec,
-                                       state_.unique_token_lens_vec);
+    forward_input.sampling_params.init(
+        state_.sampling_params,
+        state_.selected_token_idxes,
+        state_.sample_idxes,
+        state_.unique_token_ids_vec,
+        state_.unique_token_counts_vec,
+        state_.unique_token_lens_vec,
+        state_.required_tool_choice_bitmasks,
+        state_.required_tool_choice_bitmask_size);
   }
 
   return forward_input;
@@ -590,6 +620,10 @@ RawForwardInput BatchInputBuilder::state_to_raw_forward_input() {
       std::move(state_.unique_token_counts_vec);
   raw_forward_input.unique_token_lens_vec =
       std::move(state_.unique_token_lens_vec);
+  raw_forward_input.required_tool_choice_bitmasks =
+      std::move(state_.required_tool_choice_bitmasks);
+  raw_forward_input.required_tool_choice_bitmask_size =
+      state_.required_tool_choice_bitmask_size;
   raw_forward_input.batch_forward_type = state_.batch_forward_type;
   raw_forward_input.max_seq_len = state_.max_seq_len;
   raw_forward_input.q_max_seq_len = state_.q_max_seq_len;

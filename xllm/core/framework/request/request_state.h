@@ -38,6 +38,10 @@ using OutputsFunc =
 
 class Call;
 
+namespace function_call {
+class RequiredToolChoiceGrammar;
+}
+
 enum class RequestPriority { DEFAULT = 0, HIGH = 1, NORMAL = 2, LOW = 3 };
 
 struct SchedulerParam {
@@ -172,6 +176,9 @@ struct RequestState final {
   bool handle_last_token_done = false;
 
   std::optional<Call*> call_;
+
+  std::shared_ptr<const function_call::RequiredToolChoiceGrammar>
+      required_tool_choice_grammar;
 };
 
 }  // namespace xllm

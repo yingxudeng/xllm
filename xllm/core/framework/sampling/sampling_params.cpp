@@ -22,6 +22,7 @@ limitations under the License.
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace xllm {
@@ -32,7 +33,9 @@ void SamplingParameters::init(
     const std::vector<int32_t>& sample_idxes,
     const std::vector<std::vector<int64_t>>& unique_token_ids_vec,
     const std::vector<std::vector<int32_t>>& unique_token_counts_vec,
-    const std::vector<int32_t>& unique_token_lens_vec) {
+    const std::vector<int32_t>& unique_token_lens_vec,
+    const std::vector<std::vector<int32_t>>& required_tool_choice_bitmasks,
+    int32_t required_tool_choice_bitmask_size) {
   CHECK_EQ(req_sampling_params.size(), selected_token_idxes.size());
   CHECK_GE(req_sampling_params.size(), sample_idxes.size());
 
@@ -137,6 +140,12 @@ void SamplingParameters::init(
   }
   this->sample_idxes = torch::tensor(sample_idxes, int_tensor_options);
   this->do_sample = torch::tensor(do_sample, bool_tensor_options);
+  if (required_tool_choice_bitmask_size > 0) {
+    CHECK_EQ(required_tool_choice_bitmasks.size(), sample_idxes.size());
+    this->required_tool_choice_bitmasks =
+        create_2d_tensor(required_tool_choice_bitmasks, torch::kInt);
+    this->required_tool_choice_bitmask_size = required_tool_choice_bitmask_size;
+  }
   this->logprobs = logprobs;
   this->max_top_logprobs = max_top_logprobs;
   this->is_embeddings = is_embeddings;
@@ -145,6 +154,23 @@ void SamplingParameters::init(
     this->all_greedy_sample = !this->do_sample.any().item<bool>();
   }
 }
+
+namespace {
+
+torch::Tensor make_all_allowed_required_tool_choice_bitmasks(
+    int64_t num_rows,
+    int32_t bitmask_size) {
+  if (num_rows <= 0 || bitmask_size <= 0) {
+    return {};
+  }
+  auto options = torch::TensorOptions()
+                     .device(torch::kCPU)
+                     .dtype(torch::kInt)
+                     .pinned_memory(true);
+  return torch::full({num_rows, bitmask_size}, -1, options);
+}
+
+}  // namespace
 
 void SamplingParameters::concat(const SamplingParameters& param) {
   // selected_token_idxes and sample_idxes are accumulated variable across
@@ -177,6 +203,37 @@ void SamplingParameters::concat(const SamplingParameters& param) {
   this->unique_token_ids_lens =
       safe_concat(this->unique_token_ids_lens, param.unique_token_ids_lens, 0);
   this->do_sample = safe_concat(this->do_sample, param.do_sample, 0);
+
+  const int32_t merged_required_tool_choice_bitmask_size =
+      std::max(this->required_tool_choice_bitmask_size,
+               param.required_tool_choice_bitmask_size);
+  if (merged_required_tool_choice_bitmask_size > 0) {
+    auto lhs_required_tool_choice_bitmasks =
+        this->required_tool_choice_bitmasks;
+    if (!lhs_required_tool_choice_bitmasks.defined()) {
+      lhs_required_tool_choice_bitmasks =
+          make_all_allowed_required_tool_choice_bitmasks(
+              this->sample_idxes.size(0) - param.sample_idxes.size(0),
+              merged_required_tool_choice_bitmask_size);
+    }
+
+    auto rhs_required_tool_choice_bitmasks =
+        param.required_tool_choice_bitmasks;
+    if (!rhs_required_tool_choice_bitmasks.defined()) {
+      rhs_required_tool_choice_bitmasks =
+          make_all_allowed_required_tool_choice_bitmasks(
+              param.sample_idxes.defined() ? param.sample_idxes.size(0) : 0,
+              merged_required_tool_choice_bitmask_size);
+    }
+
+    this->required_tool_choice_bitmasks =
+        safe_concat(lhs_required_tool_choice_bitmasks,
+                    rhs_required_tool_choice_bitmasks,
+                    0);
+    this->required_tool_choice_bitmask_size =
+        merged_required_tool_choice_bitmask_size;
+  }
+
   this->logprobs = this->logprobs || param.logprobs;
   this->is_embeddings = this->is_embeddings || param.is_embeddings;
   this->max_top_logprobs =

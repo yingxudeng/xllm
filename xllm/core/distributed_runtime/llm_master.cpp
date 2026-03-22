@@ -22,6 +22,7 @@ limitations under the License.
 #include <atomic>
 #include <boost/algorithm/string.hpp>
 #include <csignal>
+#include <fstream>
 #include <memory>
 #include <thread>
 #include <utility>
@@ -31,6 +32,7 @@ limitations under the License.
 #include "common/metrics.h"
 #include "framework/model/model_args.h"
 #include "framework/request/request.h"
+#include "function_call/required_tool_choice.h"
 #include "models/model_registry.h"
 #include "runtime/xservice_client.h"
 #include "scheduler/scheduler_factory.h"
@@ -50,6 +52,40 @@ bool should_use_ssm_engine(const Options& options) {
           options.num_speculative_tokens() > 0);
 }
 
+GenerationConfigDefaults load_generation_config_defaults(
+    const std::string& model_path) {
+  GenerationConfigDefaults defaults;
+  const std::string config_path = model_path + "/generation_config.json";
+  std::ifstream in(config_path);
+  if (!in.is_open()) {
+    return defaults;
+  }
+
+  try {
+    nlohmann::json config = nlohmann::json::parse(in);
+    auto load_float = [&](const char* key, std::optional<float>* value) {
+      auto it = config.find(key);
+      if (it != config.end() && it->is_number()) {
+        *value = it->get<float>();
+      }
+    };
+    auto load_int64 = [&](const char* key, std::optional<int64_t>* value) {
+      auto it = config.find(key);
+      if (it != config.end() && it->is_number_integer()) {
+        *value = it->get<int64_t>();
+      }
+    };
+    load_float("temperature", &defaults.temperature);
+    load_float("top_p", &defaults.top_p);
+    load_int64("top_k", &defaults.top_k);
+  } catch (const std::exception& e) {
+    LOG(WARNING) << "Failed to parse generation_config.json from "
+                 << config_path << ": " << e.what();
+  }
+
+  return defaults;
+}
+
 }  // namespace
 
 volatile bool LLMAssistantMaster::running_ = false;
@@ -62,6 +98,17 @@ LLMMaster::LLMMaster(const Options& options)
   task_type_ = options_.task_type();
 
   model_args_ = engine_->model_args();
+  generation_config_defaults_ =
+      load_generation_config_defaults(options_.model_path());
+
+  if (generation_config_defaults_.temperature.has_value() ||
+      generation_config_defaults_.top_p.has_value() ||
+      generation_config_defaults_.top_k.has_value()) {
+    LOG(INFO) << "Loaded generation_config defaults: temperature="
+              << generation_config_defaults_.temperature.value_or(0.0f)
+              << ", top_p=" << generation_config_defaults_.top_p.value_or(1.0f)
+              << ", top_k=" << generation_config_defaults_.top_k.value_or(-1);
+  }
 
   if (options_.enable_service_routing()) {
     xservice_client_ = XServiceClient::get_instance();
@@ -115,6 +162,12 @@ LLMMaster::LLMMaster(const Options& options)
       std::make_unique<JinjaChatTemplate>(engine_->tokenizer_args());
 
   tokenizer_ = engine_->tokenizer()->clone();
+  required_tool_choice_grammar_factory_ =
+      std::make_unique<function_call::RequiredToolChoiceGrammarFactory>(
+          engine_->tokenizer_args(),
+          *tokenizer_,
+          model_args_.vocab_size(),
+          model_args_.eos_token_id());
   threadpool_ =
       std::make_unique<ThreadPool>(options_.num_request_handling_threads());
 }
@@ -344,9 +397,29 @@ std::shared_ptr<Request> LLMMaster::generate_request(
   sampling_param.frequency_penalty = sp.frequency_penalty;
   sampling_param.presence_penalty = sp.presence_penalty;
   sampling_param.repetition_penalty = sp.repetition_penalty;
-  sampling_param.temperature = sp.temperature;
-  sampling_param.top_p = sp.top_p;
-  sampling_param.top_k = sp.top_k;
+  sampling_param.temperature =
+      sp.has_explicit_temperature
+          ? sp.temperature
+          : generation_config_defaults_.temperature.value_or(sp.temperature);
+  sampling_param.top_p =
+      sp.has_explicit_top_p
+          ? sp.top_p
+          : generation_config_defaults_.top_p.value_or(sp.top_p);
+  sampling_param.top_k =
+      sp.has_explicit_top_k
+          ? sp.top_k
+          : generation_config_defaults_.top_k.value_or(sp.top_k);
+  if (sp.tool_choice == "required") {
+    if (!sp.has_explicit_temperature) {
+      sampling_param.temperature = 0.0f;
+    }
+    if (!sp.has_explicit_top_p) {
+      sampling_param.top_p = 1.0f;
+    }
+    if (!sp.has_explicit_top_k) {
+      sampling_param.top_k = -1;
+    }
+  }
   sampling_param.logprobs = sp.logprobs;
   sampling_param.top_logprobs = sp.top_logprobs;
   sampling_param.is_embeddings = sp.is_embeddings;
@@ -469,6 +542,11 @@ std::shared_ptr<Request> LLMMaster::generate_request(
                          batch_callback,
                          sp.decode_address,
                          call);
+  if (sp.tool_choice == "required") {
+    CHECK(required_tool_choice_grammar_factory_ != nullptr);
+    req_state.required_tool_choice_grammar =
+        required_tool_choice_grammar_factory_->create(sp.tools);
+  }
 
   auto request = std::make_shared<Request>(sp.request_id,
                                            sp.x_request_id,

@@ -60,6 +60,8 @@ void Request::create_sequences_group() {
   sequence_params.request_id = request_id_;
   sequence_params.sampling_param = &(state_.sampling_param);
   sequence_params.stopping_checker = &(state_.stopping_checker);
+  sequence_params.required_tool_choice_grammar =
+      state_.required_tool_choice_grammar;
   sequences_group_ = std::make_unique<SequencesGroup>(state_.prompt,
                                                       state_.prompt_tokens,
                                                       state_.input_embedding,

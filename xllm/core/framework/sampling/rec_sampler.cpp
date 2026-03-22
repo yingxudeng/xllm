@@ -46,8 +46,9 @@ static inline bool use_air_log_softmax_env() {
 static inline bool can_use_fast_path(const SamplingParameters& params) {
   return params.use_beam_search && params.logprobs &&
          FLAGS_enable_rec_fast_sampler && params.max_top_logprobs > 0 &&
-         !params.top_p.defined() && !FLAGS_enable_qwen3_reranker &&
-         FLAGS_max_decode_rounds > 0;
+         !params.top_p.defined() &&
+         !params.required_tool_choice_bitmasks.defined() &&
+         !FLAGS_enable_qwen3_reranker && FLAGS_max_decode_rounds > 0;
 }
 
 static inline torch::Tensor log_softmax_last_dim(

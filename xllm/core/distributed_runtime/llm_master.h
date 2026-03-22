@@ -34,6 +34,16 @@ limitations under the License.
 
 namespace xllm {
 
+namespace function_call {
+class RequiredToolChoiceGrammarFactory;
+}
+
+struct GenerationConfigDefaults {
+  std::optional<float> temperature;
+  std::optional<float> top_p;
+  std::optional<int64_t> top_k;
+};
+
 class Call;
 
 class LLMMaster : public Master {
@@ -132,6 +142,9 @@ class LLMMaster : public Master {
   std::atomic_bool running_{false};
 
   std::string task_type_;
+  GenerationConfigDefaults generation_config_defaults_;
+  std::unique_ptr<function_call::RequiredToolChoiceGrammarFactory>
+      required_tool_choice_grammar_factory_;
 };
 
 class LLMAssistantMaster : public Master {

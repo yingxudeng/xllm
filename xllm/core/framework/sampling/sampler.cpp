@@ -19,11 +19,58 @@ limitations under the License.
 #include <glog/logging.h>
 #include <torch/torch.h>
 
+#include <limits>
+
 #include "common/global_flags.h"
 #include "logits_utils.h"
 #include "sampling_params.h"
 
 namespace xllm {
+namespace {
+
+torch::Tensor select_sample_rows(const torch::Tensor& tensor,
+                                 const SamplingParameters& params) {
+  if (!tensor.defined()) {
+    return {};
+  }
+  if (params.selected_token_idxes.numel() == params.sample_idxes.numel()) {
+    return tensor;
+  }
+  return tensor.index_select(/*dim=*/0, params.sample_idxes);
+}
+
+void apply_required_tool_choice_bitmask(torch::Tensor& sample_logits,
+                                        const SamplingParameters& params) {
+  if (!params.required_tool_choice_bitmasks.defined()) {
+    return;
+  }
+
+  CHECK_EQ(sample_logits.size(0), params.required_tool_choice_bitmasks.size(0));
+  CHECK_GT(params.required_tool_choice_bitmask_size, 0);
+
+  const int64_t vocab_size = sample_logits.size(-1);
+  auto index_options =
+      torch::TensorOptions().device(sample_logits.device()).dtype(torch::kLong);
+  auto bitmask_options = torch::TensorOptions()
+                             .device(sample_logits.device())
+                             .dtype(torch::kInt32);
+
+  auto vocab_indices = torch::arange(vocab_size, index_options);
+  auto word_indices = torch::bitwise_right_shift(vocab_indices, 5);
+  auto bit_offsets = torch::bitwise_and(vocab_indices, 31);
+  auto gathered_words = params.required_tool_choice_bitmasks.index_select(
+      /*dim=*/1, word_indices);
+  auto bit_values =
+      torch::bitwise_left_shift(torch::ones({vocab_size}, bitmask_options),
+                                bit_offsets.to(torch::kInt32));
+  auto accepted =
+      torch::ne(torch::bitwise_and(gathered_words, bit_values.unsqueeze(0)), 0);
+
+  sample_logits.masked_fill_(accepted.logical_not(),
+                             -std::numeric_limits<float>::infinity());
+}
+
+}  // namespace
 
 SampleOutput Sampler::forward(torch::Tensor& logits,
                               const SamplingParameters& params) const {
@@ -43,9 +90,6 @@ SampleOutput Sampler::forward(torch::Tensor& logits,
         logits, params.unique_token_ids, params.repetition_penalties);
   }
 
-  // apply temperatures, top-k and top-p
-  apply_top_k_top_p(logits, params.temperatures, params.top_k, params.top_p);
-
   torch::Tensor sample_logits = logits;
   if (params.selected_token_idxes.numel() != params.sample_idxes.numel()) {
     sample_logits = logits.index_select(/*dim=*/0, params.sample_idxes);
@@ -53,6 +97,13 @@ SampleOutput Sampler::forward(torch::Tensor& logits,
 
   // same batch size
   CHECK_EQ(sample_logits.size(0), params.do_sample.size(0));
+
+  auto temperatures = select_sample_rows(params.temperatures, params);
+  auto top_k = select_sample_rows(params.top_k, params);
+  auto top_p = select_sample_rows(params.top_p, params);
+
+  apply_required_tool_choice_bitmask(sample_logits, params);
+  apply_top_k_top_p(sample_logits, temperatures, top_k, top_p);
 
   auto probs = sample_logits;
   torch::Tensor samples;

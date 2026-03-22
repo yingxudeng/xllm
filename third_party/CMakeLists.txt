@@ -20,6 +20,15 @@ endif()
 add_subdirectory(etcd_cpp_apiv3)
 add_subdirectory(xxHash)
 add_subdirectory(spdlog)
+set(XGRAMMAR_BUILD_PYTHON_BINDINGS OFF CACHE BOOL "" FORCE)
+set(XGRAMMAR_BUILD_CXX_TESTS OFF CACHE BOOL "" FORCE)
+file(WRITE ${CMAKE_BINARY_DIR}/config.cmake
+  "set(XGRAMMAR_BUILD_PYTHON_BINDINGS OFF)\n"
+  "set(XGRAMMAR_BUILD_CXX_TESTS OFF)\n"
+  "set(XGRAMMAR_ENABLE_COVERAGE OFF)\n"
+  "set(XGRAMMAR_ENABLE_CPPTRACE OFF)\n"
+  "set(XGRAMMAR_ENABLE_INTERNAL_CHECK OFF)\n")
+add_subdirectory(xgrammar)
 
 if(USE_NPU)
   add_subdirectory(torch_npu_ops)

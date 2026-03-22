@@ -52,7 +52,8 @@ std::string convert_finish_reason_to_anthropic(
     return "end_turn";
   } else if (finish_reason == "length") {
     return "max_tokens";
-  } else if (finish_reason == "function_call") {
+  } else if (finish_reason == "function_call" ||
+             finish_reason == "tool_calls") {
     return "tool_use";
   }
   return "end_turn";
@@ -183,6 +184,7 @@ void generate_chat_response(proto::ChatResponse& response,
                             const std::string& request_id,
                             const std::string& model,
                             const RequestOutput& req_output,
+                            const std::string& tool_choice = "",
                             const std::string& tool_call_parser_format = "",
                             const std::string& reasoning_parser_format = "",
                             bool is_force_reasoning = false,
@@ -216,12 +218,14 @@ void generate_chat_response(proto::ChatResponse& response,
     }
 
     // 2) handle tool call output
-    if (!tools.empty() && !tool_call_parser_format.empty() &&
+    if (!tools.empty() &&
+        (!tool_call_parser_format.empty() || tool_choice == "required") &&
         !cur_text.empty()) {
       auto* arena = response.GetArena();
       auto result =
           api_service::process_tool_calls(cur_text,
                                           tools,
+                                          tool_choice,
                                           tool_call_parser_format,
                                           output.finish_reason.value_or(""),
                                           arena);
@@ -415,6 +419,37 @@ bool process_tool_call_stream(std::shared_ptr<AnthropicCall> call,
                               std::shared_ptr<StreamOutputParser> stream_parser,
                               size_t index,
                               const std::string& delta) {
+  if (stream_parser->is_required_tool_choice()) {
+    auto parse_result =
+        stream_parser->parse_required_tool_call_stream(index, delta);
+    for (const auto& call_item : parse_result.calls) {
+      stream_parser->set_has_tool_call(index, true);
+      std::string tool_call_id;
+      std::string function_name;
+
+      if (call_item.name.has_value()) {
+        tool_call_id = function_call::utils::generate_tool_call_id();
+        function_name = call_item.name.value();
+      }
+
+      ContentBlockInfo content_block_info;
+      content_block_info.function_calls.emplace_back(FunctionCallInfo{
+          .id = tool_call_id,
+          .name = function_name,
+          .arguments = call_item.arguments,
+      });
+      if (!send_content_block_delta(call,
+                                    last_content_block_type,
+                                    "tool_use",
+                                    "tool_use_delta",
+                                    content_block_info,
+                                    content_block_index)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   auto* parser = stream_parser->get_tool_call_parser(index);
   if (!parser) {
     return true;
@@ -657,10 +692,12 @@ void AnthropicServiceImpl::process_async_impl(
 
   // Create stream parser if needed
   std::shared_ptr<StreamOutputParser> stream_parser;
-  if (request_params.streaming && (!tool_call_parser_format_.empty() ||
-                                   !reasoning_parser_format_.empty())) {
+  if (request_params.streaming &&
+      (!tool_call_parser_format_.empty() || !reasoning_parser_format_.empty() ||
+       request_params.tool_choice == "required")) {
     stream_parser =
         std::make_shared<StreamOutputParser>(request_params.tools,
+                                             request_params.tool_choice,
                                              tool_call_parser_format_,
                                              reasoning_parser_format_,
                                              false /*is_force_reasoning_*/);
@@ -670,6 +707,7 @@ void AnthropicServiceImpl::process_async_impl(
   auto saved_streaming = request_params.streaming;
   auto message_id = request_params.request_id;
   auto saved_tools = request_params.tools;
+  auto saved_tool_choice = request_params.tool_choice;
 
   // Handle request
   master_->handle_request(
@@ -687,6 +725,7 @@ void AnthropicServiceImpl::process_async_impl(
        content_block_index = -1,
        last_content_block_type = std::string{},
        tools = std::move(saved_tools),
+       tool_choice = std::move(saved_tool_choice),
        tool_call_parser_format = tool_call_parser_format_,
        reasoning_parser_format = reasoning_parser_format_,
        stream_parser =
@@ -753,6 +792,7 @@ void AnthropicServiceImpl::process_async_impl(
                                message_id,
                                model,
                                req_output,
+                               tool_choice,
                                tool_call_parser_format,
                                reasoning_parser_format,
                                false /*is_force_reasoning_*/,

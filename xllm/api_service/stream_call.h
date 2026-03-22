@@ -64,7 +64,9 @@ class StreamCall : public Call {
     }
 
     json_options_.bytes_to_base64 = false;
-    json_options_.jsonify_empty_array = true;
+    // Match OpenAI/vLLM streaming payloads by omitting unset repeated fields
+    // such as empty tool_calls arrays from delta chunks.
+    json_options_.jsonify_empty_array = false;
   }
 
   ~StreamCall() override {
