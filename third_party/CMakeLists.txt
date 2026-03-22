@@ -20,6 +20,30 @@ endif()
 add_subdirectory(etcd_cpp_apiv3)
 add_subdirectory(xxHash)
 add_subdirectory(spdlog)
+set(XGRAMMAR_BUILD_PYTHON_BINDINGS OFF CACHE BOOL "" FORCE)
+set(XGRAMMAR_BUILD_CXX_TESTS OFF CACHE BOOL "" FORCE)
+file(WRITE ${CMAKE_BINARY_DIR}/config.cmake
+  "set(XGRAMMAR_BUILD_PYTHON_BINDINGS OFF)\n"
+  "set(XGRAMMAR_BUILD_CXX_TESTS OFF)\n"
+  "set(XGRAMMAR_ENABLE_COVERAGE OFF)\n"
+  "set(XGRAMMAR_ENABLE_CPPTRACE OFF)\n"
+  "set(XGRAMMAR_ENABLE_INTERNAL_CHECK OFF)\n")
+add_subdirectory(xgrammar)
+if(TARGET xgrammar AND EXISTS "/usr/local/include/dlpack/dlpack.h")
+  # xgrammar vendors an older DLPack copy, but xLLM also depends on newer TVM
+  # FFI headers that require the system DLPack definitions. Prevent leaking the
+  # vendored DLPack headers to dependents.
+  foreach(_prop INTERFACE_INCLUDE_DIRECTORIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES)
+    get_target_property(_dirs xgrammar ${_prop})
+    if(_dirs AND NOT _dirs MATCHES "-NOTFOUND$")
+      list(FILTER _dirs EXCLUDE REGEX "xgrammar/3rdparty/dlpack/include")
+      set_property(TARGET xgrammar PROPERTY ${_prop} "${_dirs}")
+    endif()
+  endforeach()
+
+  # Ensure system DLPack is available to xgrammar consumers.
+  target_include_directories(xgrammar SYSTEM BEFORE INTERFACE /usr/local/include)
+endif()
 
 if(USE_NPU)
   add_subdirectory(torch_npu_ops)

@@ -18,6 +18,7 @@ cc_library (
         glm47_detector.h
         function_call_parser.h
         function_call.h
+        required_tool_choice.h
         utils.h
   SRCS
         base_format_detector.cpp
@@ -29,6 +30,7 @@ cc_library (
         glm45_detector.cpp
         glm47_detector.cpp
         function_call_parser.cpp
+        required_tool_choice.cpp
         utils.cpp
   DEPS
     nlohmann_json::nlohmann_json
@@ -36,6 +38,8 @@ cc_library (
     proto::xllm_proto
     partial_json_parser
     common
+    :tokenizer
+    xgrammar
 )
 
 function(add_detector_test TEST_NAME)

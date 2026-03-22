@@ -71,6 +71,8 @@ class BatchInputBuilder {
     std::vector<const RequestSamplingParam*> sampling_params;
     std::vector<int32_t> selected_token_idxes;
     std::vector<int32_t> sample_idxes;
+    std::vector<std::vector<int32_t>> required_tool_choice_bitmasks;
+    int32_t required_tool_choice_bitmask_size = 0;
 
     // Unique token tracking
     std::vector<std::vector<int64_t>> unique_token_ids_vec;
@@ -158,6 +160,7 @@ class BatchInputBuilder {
   // thread pool for multithreaded processing, not owned
   ThreadPool* thread_pool_ = nullptr;
   uint64_t batch_id_;
+  int32_t required_tool_choice_bitmask_size_ = 0;
 };
 
 }  // namespace xllm

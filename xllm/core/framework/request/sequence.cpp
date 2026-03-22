@@ -33,6 +33,7 @@ limitations under the License.
 #include "core/framework/tokenizer/tokenizer.h"
 #include "core/util/slice.h"
 #include "core/util/tensor_helper.h"
+#include "function_call/required_tool_choice.h"
 #include "rec_type.h"
 
 namespace xllm {
@@ -40,6 +41,31 @@ namespace xllm {
 namespace {
 constexpr size_t kDecoderBosTokenCount = 1;
 constexpr size_t kDecoderMaxTokenCount = kRecTotalSteps + kDecoderBosTokenCount;
+
+void rebuild_required_tool_choice_matcher(
+    const SequenceParams& sequence_params,
+    Slice<int32_t> generated_tokens,
+    std::unique_ptr<function_call::RequiredToolChoiceMatcher>* matcher) {
+  if (matcher == nullptr) {
+    return;
+  }
+  if (sequence_params.required_tool_choice_grammar == nullptr) {
+    matcher->reset();
+    return;
+  }
+
+  auto rebuilt_matcher =
+      std::make_unique<function_call::RequiredToolChoiceMatcher>(
+          sequence_params.required_tool_choice_grammar);
+  for (int32_t token_id : generated_tokens) {
+    if (token_id < 0) {
+      continue;
+    }
+    CHECK(rebuilt_matcher->accept_token(token_id))
+        << "required tool-choice matcher rejected generated token " << token_id;
+  }
+  *matcher = std::move(rebuilt_matcher);
+}
 }  // namespace
 
 const std::string Sequence::ENCODER_SPARSE_EMBEDDING_NAME = "sparse_embedding";
@@ -153,7 +179,15 @@ Sequence::Sequence(size_t index,
   token_to_count_map_[prompt_token_ids.back()] = 0;
   input_embedding_ = input_embedding;
   cur_generated_token_idx_ = num_prompt_tokens_;
+
+  if (sequence_params_.required_tool_choice_grammar != nullptr) {
+    required_tool_choice_matcher_ =
+        std::make_unique<function_call::RequiredToolChoiceMatcher>(
+            sequence_params_.required_tool_choice_grammar);
+  }
 }
+
+Sequence::~Sequence() = default;
 
 Sequence::Sequence(const Sequence& other)
     : index_(other.index_),
@@ -188,6 +222,11 @@ Sequence::Sequence(const Sequence& other)
       is_pre_scheduled_step_prefill_(other.is_pre_scheduled_step_prefill_),
       termination_flag_(std::make_shared<std::atomic<int32_t>>(INT32_MAX)) {
   logprob_state_ = std::make_unique<LogprobState>(*other.logprob_state_);
+  if (other.required_tool_choice_matcher_ != nullptr) {
+    required_tool_choice_matcher_ =
+        std::make_unique<function_call::RequiredToolChoiceMatcher>(
+            *other.required_tool_choice_matcher_);
+  }
 }
 
 // The first token will be only used in disagg pd mode.
@@ -244,6 +283,11 @@ void Sequence::append_token(const Token& token) {
         cur_idx, token, sequence_params_.sampling_param->top_logprobs);
   }
 
+  if (required_tool_choice_matcher_ != nullptr) {
+    CHECK(required_tool_choice_matcher_->accept_token(token_id))
+        << "required tool-choice matcher rejected token " << token_id;
+  }
+
   // invalidate the finish status once a new token is appended
   finish_status_invalidated_ = true;
 }
@@ -278,6 +322,10 @@ void Sequence::update_last_step_token(const Token& token, size_t token_offset) {
         token,
         sequence_params_.sampling_param->top_logprobs);
   }
+  if (required_tool_choice_matcher_ != nullptr) {
+    CHECK(required_tool_choice_matcher_->accept_token(token_id))
+        << "required tool-choice matcher rejected token " << token_id;
+  }
   ++cur_generated_token_idx_;
   finish_status_invalidated_ = true;
 }
@@ -299,6 +347,8 @@ void Sequence::update_token(size_t index, const Token& token) {
         index, token, sequence_params_.sampling_param->top_logprobs);
   }
   // logprobs_[index] = token.logprob;
+  rebuild_required_tool_choice_matcher(
+      sequence_params_, get_generated_tokens(), &required_tool_choice_matcher_);
   finish_status_invalidated_ = true;
 }
 
@@ -541,6 +591,8 @@ void Sequence::reset() {
   timer_.reset();
   is_timeout_set_ = false;
   volatile_num_prompt_tokens_ = num_tokens_;
+  rebuild_required_tool_choice_matcher(
+      sequence_params_, get_generated_tokens(), &required_tool_choice_matcher_);
 }
 
 void Sequence::add_shared_kv_blocks(std::vector<Block>&& blocks) {
@@ -616,6 +668,21 @@ Slice<int32_t> Sequence::get_generated_tokens() const {
             num_tokens_ - num_prompt_tokens_};
   }
   return {tokens_.data(), 0};
+}
+
+int32_t Sequence::required_tool_choice_bitmask_size() const {
+  if (required_tool_choice_matcher_ == nullptr) {
+    return 0;
+  }
+  return required_tool_choice_matcher_->bitmask_size();
+}
+
+bool Sequence::fill_required_tool_choice_bitmask(
+    std::vector<int32_t>* bitmask) {
+  if (required_tool_choice_matcher_ == nullptr) {
+    return false;
+  }
+  return required_tool_choice_matcher_->fill_next_token_bitmask(bitmask);
 }
 
 bool Sequence::update_prefetch_result(uint32_t timeout, uint32_t& success_cnt) {

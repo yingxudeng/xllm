@@ -17,6 +17,7 @@ limitations under the License.
 #pragma once
 
 #include "function_call/function_call.h"
+#include "function_call/required_tool_choice.h"
 #include "parser/reasoning_parser.h"
 
 namespace xllm {
@@ -24,12 +25,15 @@ namespace xllm {
 struct SequenceParser {
   std::unique_ptr<function_call::FunctionCallParser> tool_call_parser;
   bool has_tool_call = false;
+  bool function_name_returned = false;
+  std::string previous_text;
   std::unique_ptr<ReasoningParser> reasoning_parser_;
 };
 
 class StreamOutputParser {
  public:
   StreamOutputParser(const std::vector<function_call::JsonTool>& tools,
+                     const std::string& tool_choice,
                      const std::string& tool_call_parser_format,
                      const std::string& reasoning_parser_format,
                      bool force_reasoning = false);
@@ -40,7 +44,12 @@ class StreamOutputParser {
 
   bool is_reasoning();
 
+  bool is_required_tool_choice() const { return tool_choice_ == "required"; }
+
   void check_resize_for_index(size_t index);
+
+  function_call::RequiredToolCallStreamingResult
+  parse_required_tool_call_stream(size_t index, const std::string& delta_text);
 
   function_call::FunctionCallParser* get_tool_call_parser(size_t index);
 
@@ -61,6 +70,7 @@ class StreamOutputParser {
   std::vector<function_call::JsonTool> tools_;
   // list of parsers for each sequence
   std::vector<SequenceParser> sequence_parsers_;
+  std::string tool_choice_;
   std::string tool_call_parser_format_;
   std::string reasoning_parser_format_;
   bool force_reasoning_;

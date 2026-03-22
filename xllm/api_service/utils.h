@@ -29,6 +29,7 @@ limitations under the License.
 #include "chat.pb.h"
 #include "core/common/types.h"
 #include "function_call/function_call.h"
+#include "function_call/required_tool_choice.h"
 
 namespace xllm {
 namespace api_service {
@@ -85,10 +86,36 @@ struct ToolCallResult {
 inline ToolCallResult process_tool_calls(
     std::string text,
     const std::vector<xllm::JsonTool>& tools,
+    const std::string& tool_choice,
     const std::string& parser_format,
     std::string finish_reason,
     google::protobuf::Arena* arena = nullptr) {
   ToolCallResult result;
+
+  if (tool_choice == "required") {
+    auto tool_calls =
+        function_call::parse_required_tool_choice_tool_calls(text, arena);
+    if (!tool_calls.has_value()) {
+      result.text = std::move(text);
+      result.finish_reason = std::move(finish_reason);
+      return result;
+    }
+
+    if (finish_reason == "stop") {
+      result.finish_reason = "tool_calls";
+    } else {
+      result.finish_reason = std::move(finish_reason);
+    }
+    result.text.clear();
+    result.tool_calls = std::move(tool_calls);
+    return result;
+  }
+
+  if (parser_format.empty()) {
+    result.text = std::move(text);
+    result.finish_reason = std::move(finish_reason);
+    return result;
+  }
 
   function_call::FunctionCallParser parser(tools, parser_format);
 

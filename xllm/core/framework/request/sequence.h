@@ -42,6 +42,11 @@ limitations under the License.
 
 namespace xllm {
 
+namespace function_call {
+class RequiredToolChoiceGrammar;
+class RequiredToolChoiceMatcher;
+}  // namespace function_call
+
 enum class SequenceOutputType : int8_t {
   TOKENS = 0,
   EMBEDDINGS = 1,
@@ -97,6 +102,9 @@ struct SequenceParams {
   // stopping checker
   // reference from request
   StoppingChecker* stopping_checker;  // not owned
+
+  std::shared_ptr<const function_call::RequiredToolChoiceGrammar>
+      required_tool_choice_grammar;
 };
 
 class Sequence final {
@@ -109,6 +117,7 @@ class Sequence final {
            const SequenceParams& seq_params);
 
   Sequence(const Sequence& other);
+  ~Sequence();
 
   // get mm data
   const MMData& get_mm_data() const { return mm_data_; }
@@ -293,6 +302,14 @@ class Sequence final {
   }
 
   bool check_need_unique_tokens() { return need_unique_tokens_; }
+
+  bool has_required_tool_choice_matcher() const {
+    return required_tool_choice_matcher_ != nullptr;
+  }
+
+  int32_t required_tool_choice_bitmask_size() const;
+
+  bool fill_required_tool_choice_bitmask(std::vector<int32_t>* bitmask);
 
   // Multi-round beam search result caching
   void set_beam_result(int32_t bw,
@@ -492,6 +509,9 @@ class Sequence final {
   // kvcache store copy async result
   std::shared_ptr<std::atomic<int32_t>> termination_flag_;
   std::vector<std::shared_ptr<std::atomic<uint32_t>>> prefetch_results_;
+
+  std::unique_ptr<function_call::RequiredToolChoiceMatcher>
+      required_tool_choice_matcher_;
 
   Timer timer_;
   bool is_timeout_set_ = false;

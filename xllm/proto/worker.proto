@@ -166,6 +166,10 @@ message UniqueTokenCounts {
   repeated int32 unique_token_counts = 1;
 }
 
+message RequiredToolChoiceBitmask {
+  repeated int32 words = 1;
+}
+
 message BlockTables {
   repeated int32 block_tables = 1;
 }
@@ -239,6 +243,8 @@ message ForwardInput {
   repeated int32 dp_is_decode = 42;
   repeated int32 kv_cache_tokens_nums = 43;
   repeated string request_ids = 44;
+  repeated RequiredToolChoiceBitmask required_tool_choice_bitmasks = 45;
+  int32 required_tool_choice_bitmask_size = 46;
 }
 
  message BatchedForwardInputs {

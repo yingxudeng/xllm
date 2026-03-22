@@ -18,6 +18,8 @@ limitations under the License.
 
 #include <google/protobuf/util/json_util.h>
 
+#include <algorithm>
+
 #include "core/common/global_flags.h"
 #include "core/common/instance_name.h"
 #include "core/util/uuid.h"
@@ -398,15 +400,20 @@ void init_from_chat_request(RequestParams& params, const ChatRequest& request) {
     }
   }
 
+  if (request.has_tool_choice()) {
+    params.tool_choice = request.tool_choice();
+  }
+
   // Parse tools from proto request
   if (request.tools_size() > 0) {
-    if (request.has_tool_choice() && request.tool_choice() == "none") {
+    if (params.tool_choice == "none") {
       // Don't pass tools to model when tool_choice is none
       params.tool_choice = "none";
     } else {
       params.tools = parse_tools_from_proto(request.tools());
-      params.tool_choice =
-          request.has_tool_choice() ? request.tool_choice() : "auto";
+      if (params.tool_choice.empty()) {
+        params.tool_choice = "auto";
+      }
     }
   }
 
@@ -531,6 +538,45 @@ RequestParams::RequestParams(const proto::AnthropicMessagesRequest& request,
   tools = std::move(handle_tools(request));
 }
 
+namespace {
+
+bool find_named_tool_choice(const std::string& tool_choice,
+                            std::string* tool_name) {
+  if (tool_choice.empty() || tool_choice[0] != '{') {
+    return false;
+  }
+
+  try {
+    nlohmann::json parsed = nlohmann::json::parse(tool_choice);
+    if (!parsed.is_object() || parsed.value("type", "") != "function") {
+      return false;
+    }
+    auto function_it = parsed.find("function");
+    if (function_it == parsed.end() || !function_it->is_object()) {
+      return false;
+    }
+    auto name_it = function_it->find("name");
+    if (name_it == function_it->end() || !name_it->is_string()) {
+      return false;
+    }
+    if (tool_name != nullptr) {
+      *tool_name = name_it->get<std::string>();
+    }
+    return true;
+  } catch (const std::exception&) {
+    return false;
+  }
+}
+
+bool has_tool_named(const std::vector<xllm::JsonTool>& tools,
+                    const std::string& tool_name) {
+  return std::any_of(tools.begin(), tools.end(), [&](const auto& tool) {
+    return tool.function.name == tool_name;
+  });
+}
+
+}  // namespace
+
 bool RequestParams::verify_params(OutputCallback callback) const {
   if (n == 0) {
     CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT,
@@ -610,6 +656,31 @@ bool RequestParams::verify_params(OutputCallback callback) const {
                         source_xservice_addr);
     return false;
   }
+
+  if (!tool_choice.empty()) {
+    if (tools.empty()) {
+      CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT,
+                          "tool_choice requires tools to be provided",
+                          service_request_id,
+                          source_xservice_addr);
+      return false;
+    }
+
+    if (tool_choice != "auto" && tool_choice != "required" &&
+        tool_choice != "none") {
+      std::string tool_name;
+      if (!find_named_tool_choice(tool_choice, &tool_name) ||
+          !has_tool_named(tools, tool_name)) {
+        CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT,
+                            "tool_choice must be one of auto, required, none, "
+                            "or a named function present in tools",
+                            service_request_id,
+                            source_xservice_addr);
+        return false;
+      }
+    }
+  }
+
   return true;
 }
 

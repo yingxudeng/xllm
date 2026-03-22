@@ -31,6 +31,7 @@ limitations under the License.
 #include "common/metrics.h"
 #include "framework/model/model_args.h"
 #include "framework/request/request.h"
+#include "function_call/required_tool_choice.h"
 #include "models/model_registry.h"
 #include "runtime/xservice_client.h"
 #include "scheduler/scheduler_factory.h"
@@ -115,6 +116,12 @@ LLMMaster::LLMMaster(const Options& options)
       std::make_unique<JinjaChatTemplate>(engine_->tokenizer_args());
 
   tokenizer_ = engine_->tokenizer()->clone();
+  required_tool_choice_grammar_factory_ =
+      std::make_unique<function_call::RequiredToolChoiceGrammarFactory>(
+          engine_->tokenizer_args(),
+          *tokenizer_,
+          model_args_.vocab_size(),
+          model_args_.eos_token_id());
   threadpool_ =
       std::make_unique<ThreadPool>(options_.num_request_handling_threads());
 }
@@ -469,6 +476,11 @@ std::shared_ptr<Request> LLMMaster::generate_request(
                          batch_callback,
                          sp.decode_address,
                          call);
+  if (sp.tool_choice == "required") {
+    CHECK(required_tool_choice_grammar_factory_ != nullptr);
+    req_state.required_tool_choice_grammar =
+        required_tool_choice_grammar_factory_->create(sp.tools);
+  }
 
   auto request = std::make_shared<Request>(sp.request_id,
                                            sp.x_request_id,

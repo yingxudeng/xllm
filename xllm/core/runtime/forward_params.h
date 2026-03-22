@@ -213,6 +213,8 @@ struct RawForwardInput {
   std::vector<std::vector<int64_t>> unique_token_ids_vec;
   std::vector<std::vector<int32_t>> unique_token_counts_vec;
   std::vector<int32_t> unique_token_lens_vec;
+  std::vector<std::vector<int32_t>> required_tool_choice_bitmasks;
+  int32_t required_tool_choice_bitmask_size = 0;
   BatchForwardType batch_forward_type;
   uint32_t max_seq_len;
   uint32_t q_max_seq_len;

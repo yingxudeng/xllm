@@ -208,6 +208,8 @@ size_t get_sampling_params_size(const SamplingParameters& params) {
   total += get_tensor_size(params.unique_token_ids_lens);
   total += get_tensor_size(params.sample_idxes);
   total += get_tensor_size(params.do_sample);
+  total += get_tensor_size(params.required_tool_choice_bitmasks);
+  total += type_size<int32_t>;
   total += type_size<bool> * 5    // all_random_sample + all_greedy_sample +
                                   // logprobs + is_embeddings + use_beam_search
            + type_size<int64_t>;  // max_top_logprobs
@@ -291,7 +293,9 @@ size_t calculate_raw_forward_input_size(const RawForwardInput& input) {
                          input.sample_idxes,
                          input.unique_token_ids_vec,
                          input.unique_token_counts_vec,
-                         input.unique_token_lens_vec);
+                         input.unique_token_lens_vec,
+                         input.required_tool_choice_bitmasks,
+                         input.required_tool_choice_bitmask_size);
     total += get_sampling_params_size(sampling_params);
   }
   // acc_logprob
@@ -1101,6 +1105,11 @@ inline void deserialize_raw_forward_input(const char*& buffer,
     read_tensor(buffer, sampling_params.unique_token_ids_lens, device_buffer);
     read_tensor(buffer, sampling_params.sample_idxes, device_buffer);
     read_tensor(buffer, sampling_params.do_sample, device_buffer);
+    read_tensor(
+        buffer, sampling_params.required_tool_choice_bitmasks, device_buffer);
+    read_data(buffer,
+              sampling_params.required_tool_choice_bitmask_size,
+              device_buffer);
     read_data(buffer, sampling_params.all_random_sample, device_buffer);
     read_data(buffer, sampling_params.all_greedy_sample, device_buffer);
     read_data(buffer, sampling_params.logprobs, device_buffer);
@@ -1173,7 +1182,9 @@ inline void serialize_raw_forward_input(const RawForwardInput& input,
                          input.sample_idxes,
                          input.unique_token_ids_vec,
                          input.unique_token_counts_vec,
-                         input.unique_token_lens_vec);
+                         input.unique_token_lens_vec,
+                         input.required_tool_choice_bitmasks,
+                         input.required_tool_choice_bitmask_size);
 
     write_tensor(buffer, sampling_params.selected_token_idxes);
     write_tensor(buffer, sampling_params.frequency_penalties);
@@ -1187,6 +1198,8 @@ inline void serialize_raw_forward_input(const RawForwardInput& input,
     write_tensor(buffer, sampling_params.unique_token_ids_lens);
     write_tensor(buffer, sampling_params.sample_idxes);
     write_tensor(buffer, sampling_params.do_sample);
+    write_tensor(buffer, sampling_params.required_tool_choice_bitmasks);
+    write_data(buffer, sampling_params.required_tool_choice_bitmask_size);
     write_data(buffer, sampling_params.all_random_sample);
     write_data(buffer, sampling_params.all_greedy_sample);
     write_data(buffer, sampling_params.logprobs);
@@ -1398,7 +1411,9 @@ void convert_raw_forward_input_to_forward_input(RawForwardInput& raw_input,
         std::move(raw_input.sample_idxes),
         std::move(raw_input.unique_token_ids_vec),
         std::move(raw_input.unique_token_counts_vec),
-        std::move(raw_input.unique_token_lens_vec));
+        std::move(raw_input.unique_token_lens_vec),
+        std::move(raw_input.required_tool_choice_bitmasks),
+        raw_input.required_tool_choice_bitmask_size);
   }
 
   forward_input.acc_logprob = torch::tensor(

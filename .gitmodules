@@ -37,3 +37,6 @@
 [submodule "third_party/xxHash"]
 	path = third_party/xxHash
 	url = https://gitcode.com/xLLM-AI/xxHash.git
+[submodule "third_party/xgrammar"]
+	path = third_party/xgrammar
+	url = https://gitcode.com/gh_mirrors/xg/xgrammar.git

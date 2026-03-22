@@ -161,6 +161,34 @@ bool process_tool_call_stream(std::shared_ptr<ChatCall> call,
                               const std::string& request_id,
                               int64_t created_time,
                               const std::string& model) {
+  if (stream_parser->is_required_tool_choice()) {
+    auto parse_result =
+        stream_parser->parse_required_tool_call_stream(index, delta);
+    for (const auto& call_item : parse_result.calls) {
+      stream_parser->set_has_tool_call(index, true);
+
+      std::string tool_call_id;
+      std::string function_name;
+      if (call_item.name.has_value()) {
+        tool_call_id = function_call::utils::generate_tool_call_id();
+        function_name = call_item.name.value();
+      }
+
+      if (!send_tool_call_chunk(call,
+                                index,
+                                tool_call_id,
+                                function_name,
+                                call_item.arguments,
+                                call_item.tool_index,
+                                request_id,
+                                created_time,
+                                model)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   auto* parser = stream_parser->get_tool_call_parser(index);
   if (!parser) {
     return true;
@@ -394,6 +422,7 @@ bool send_result_to_client_brpc(std::shared_ptr<ChatCall> call,
                                 int64_t created_time,
                                 const std::string& model,
                                 const RequestOutput& req_output,
+                                const std::string& tool_choice = "",
                                 const std::string& tool_call_parser_format = "",
                                 const std::string& reasoning_parser_format = "",
                                 bool is_force_reasoning = false,
@@ -429,12 +458,14 @@ bool send_result_to_client_brpc(std::shared_ptr<ChatCall> call,
     }
 
     // handle tool call output
-    if (!tools.empty() && !tool_call_parser_format.empty() &&
+    if (!tools.empty() &&
+        (!tool_call_parser_format.empty() || tool_choice == "required") &&
         !cur_text.empty()) {
       auto* arena = response.GetArena();
       auto result =
           api_service::process_tool_calls(cur_text,
                                           tools,
+                                          tool_choice,
                                           tool_call_parser_format,
                                           output.finish_reason.value_or(""),
                                           arena);
@@ -803,10 +834,12 @@ void ChatServiceImpl::process_async_impl(std::shared_ptr<ChatCall> call) {
       request_params.chat_template_kwargs, reasoning_parser_format_);
 
   std::shared_ptr<StreamOutputParser> stream_parser;
-  if (request_params.streaming && (!tool_call_parser_format_.empty() ||
-                                   !reasoning_parser_format_.empty())) {
+  if (request_params.streaming &&
+      (!tool_call_parser_format_.empty() || !reasoning_parser_format_.empty() ||
+       request_params.tool_choice == "required")) {
     stream_parser =
         std::make_shared<StreamOutputParser>(request_params.tools,
+                                             request_params.tool_choice,
                                              tool_call_parser_format_,
                                              reasoning_parser_format_,
                                              is_force_reasoning);
@@ -814,6 +847,7 @@ void ChatServiceImpl::process_async_impl(std::shared_ptr<ChatCall> call) {
   }
 
   auto saved_tools = request_params.tools;
+  auto saved_tool_choice = request_params.tool_choice;
   auto saved_streaming = request_params.streaming;
   auto saved_request_id = request_params.request_id;
 
@@ -831,6 +865,7 @@ void ChatServiceImpl::process_async_impl(std::shared_ptr<ChatCall> call) {
        request_id = std::move(saved_request_id),
        created_time = absl::ToUnixSeconds(absl::Now()),
        json_tools = std::move(saved_tools),
+       tool_choice = std::move(saved_tool_choice),
        tool_call_parser_format = tool_call_parser_format_,
        reasoning_parser_format = reasoning_parser_format_,
        is_force_reasoning = is_force_reasoning,
@@ -870,6 +905,7 @@ void ChatServiceImpl::process_async_impl(std::shared_ptr<ChatCall> call) {
                                           created_time,
                                           model,
                                           req_output,
+                                          tool_choice,
                                           tool_call_parser_format,
                                           reasoning_parser_format,
                                           is_force_reasoning,

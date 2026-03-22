@@ -125,6 +125,17 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
   // aprint<int32_t>(unique_token_lens_vec, "unique_token_lens_vec",
   // global_rank_);
 
+  std::vector<std::vector<int32_t>> required_tool_choice_bitmasks;
+  for (size_t i = 0;
+       i < pb_forward_input->required_tool_choice_bitmasks().size();
+       ++i) {
+    required_tool_choice_bitmasks.emplace_back(std::vector<int32_t>(
+        pb_forward_input->required_tool_choice_bitmasks()[i].words().begin(),
+        pb_forward_input->required_tool_choice_bitmasks()[i].words().end()));
+  }
+  const int32_t required_tool_choice_bitmask_size =
+      pb_forward_input->required_tool_choice_bitmask_size();
+
   std::vector<int32_t> embedding_ids =
       std::vector<int32_t>(pb_forward_input->embedding_ids().begin(),
                            pb_forward_input->embedding_ids().end());
@@ -261,7 +272,9 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
                                         sample_idxes,
                                         unique_token_ids_vec,
                                         unique_token_counts_vec,
-                                        unique_token_lens_vec);
+                                        unique_token_lens_vec,
+                                        required_tool_choice_bitmasks,
+                                        required_tool_choice_bitmask_size);
   }
 
   forward_inputs.transfer_kv_infos.reserve(
@@ -409,6 +422,16 @@ void forward_input_to_proto(const RawForwardInput& inputs,
   }
   ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_unique_token_lens_vec(),
                       inputs.unique_token_lens_vec);
+  pb_forward_input->mutable_required_tool_choice_bitmasks()->Reserve(
+      inputs.required_tool_choice_bitmasks.size());
+  for (const auto& bitmask : inputs.required_tool_choice_bitmasks) {
+    proto::RequiredToolChoiceBitmask pb_bitmask;
+    ADD_VECTOR_TO_PROTO(pb_bitmask.mutable_words(), bitmask);
+    *pb_forward_input->mutable_required_tool_choice_bitmasks()->Add() =
+        pb_bitmask;
+  }
+  pb_forward_input->set_required_tool_choice_bitmask_size(
+      inputs.required_tool_choice_bitmask_size);
   pb_forward_input->set_batch_forward_type(inputs.batch_forward_type.value());
   pb_forward_input->set_max_seq_len(inputs.max_seq_len);
   pb_forward_input->set_q_max_seq_len(inputs.q_max_seq_len);

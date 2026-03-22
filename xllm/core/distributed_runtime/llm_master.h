@@ -34,6 +34,10 @@ limitations under the License.
 
 namespace xllm {
 
+namespace function_call {
+class RequiredToolChoiceGrammarFactory;
+}
+
 class Call;
 
 class LLMMaster : public Master {
@@ -132,6 +136,8 @@ class LLMMaster : public Master {
   std::atomic_bool running_{false};
 
   std::string task_type_;
+  std::unique_ptr<function_call::RequiredToolChoiceGrammarFactory>
+      required_tool_choice_grammar_factory_;
 };
 
 class LLMAssistantMaster : public Master {
