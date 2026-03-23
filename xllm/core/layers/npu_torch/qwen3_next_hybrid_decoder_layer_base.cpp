@@ -28,20 +28,9 @@ Qwen3HybridDecoderLayerImplBase::Qwen3HybridDecoderLayerImplBase(
   const auto& quant_args = context.get_quant_args();
   const auto& parallel_args = context.get_parallel_args();
   const auto& options = context.get_tensor_options();
-  const auto& layer_types = model_args.layer_types();
-  bool use_full_attention = false;
-  if (layer_id < static_cast<int32_t>(layer_types.size())) {
-    const auto& layer_type = layer_types[layer_id];
-    use_full_attention =
-        (layer_type == "full_attention" || layer_type == "attention");
-  } else {
-    int32_t full_attention_interval = model_args.full_attention_interval();
-    if (full_attention_interval <= 0) {
-      full_attention_interval = 4;
-    }
-    use_full_attention = ((layer_id + 1) % full_attention_interval == 0);
-  }
+  const bool use_full_attention = is_full_attention_layer(model_args, layer_id);
 
+  // Initialize attention layers
   if (use_full_attention) {
     attention_ = register_module(
         "self_attn",
@@ -52,6 +41,7 @@ Qwen3HybridDecoderLayerImplBase::Qwen3HybridDecoderLayerImplBase(
         register_module("linear_attn", std::move(linear_attention_module));
   }
 
+  // Initialize norm layers
   input_norm_ = register_module(
       "input_layernorm",
       Qwen3NextRMSNorm(
@@ -62,6 +52,7 @@ Qwen3HybridDecoderLayerImplBase::Qwen3HybridDecoderLayerImplBase(
       Qwen3NextRMSNorm(
           model_args.hidden_size(), model_args.rms_norm_eps(), options));
 
+  // Initialize mlp
   auto mlp_only_layers = model_args.mlp_only_layers();
   if ((std::count(mlp_only_layers.begin(), mlp_only_layers.end(), layer_id) ==
        0) &&
@@ -119,9 +110,11 @@ torch::Tensor Qwen3HybridDecoderLayerImplBase::forward(
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
     const ModelInputParams& input_params) {
+  // Pre-attention norm
   torch::Tensor residual = x;
   x = input_norm_(x);
 
+  // Attention
   if (attention_) {
     x = attention_->forward(positions, x, attn_metadata, kv_cache);
   } else {
@@ -135,10 +128,12 @@ torch::Tensor Qwen3HybridDecoderLayerImplBase::forward(
   }
   x = x + residual;
 
+  // Post-attention norm
   residual = x;
   x = x.to(orig_dtype);
   x = post_norm_(x);
 
+  // MLP forward
   if (moe_mlp_) {
     x = moe_mlp_(x, input_params);
   } else {

@@ -259,6 +259,7 @@ Qwen3GatedDeltaNetBaseImpl::Qwen3GatedDeltaNetBaseImpl(
   v_size_ = num_v_heads_ * head_v_dim_;
   conv_kernel_size_ = args.linear_conv_kernel_dim();
 
+  // Shared causal conv projection over mixed QKV states.
   conv1d_ = register_module("conv1d",
                             ColumnParallelLinear(args.linear_conv_kernel_dim(),
                                                  k_size_ * 2 + v_size_,
@@ -277,6 +278,7 @@ Qwen3GatedDeltaNetBaseImpl::Qwen3GatedDeltaNetBaseImpl(
                               torch::empty({num_v_heads_ / tp_size_}, opts),
                               /*requires_grad=*/false);
 
+  // Output projection and gated RMSNorm shared by hybrid variants.
   o_proj_ = register_module("out_proj",
                             RowParallelLinear(v_size_,
                                               args.hidden_size(),
@@ -348,6 +350,7 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
   k = rearrange_merge(k);
   v = rearrange_merge(v);
 
+  // Run the causal conv update on the mixed QKV states.
   torch::Tensor mixed_qkv = torch::cat({q, k, v}, q.dim() - 1);
   mixed_qkv = mixed_qkv.transpose(1, 2);
   int64_t seq_len = mixed_qkv.size(2);
@@ -388,6 +391,7 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
     mixed_qkv = xllm::kernel::causal_conv1d_update(params);
   }
 
+  // Compute gated delta net decay and beta terms.
   if (attn_metadata.is_prefill) {
     beta = torch::sigmoid(b);
     torch::Tensor A_log_exp = A_log_.exp();
@@ -414,6 +418,7 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
     processed_q = processed_q.repeat_interleave(repeat_times, 2);
     processed_k = processed_k.repeat_interleave(repeat_times, 2);
   }
+  // Apply chunked or recurrent gated-delta attention and update caches.
   if (attn_metadata.is_prefill) {
     std::tie(core_attn_out, last_recurrent_state) =
         torch_chunk_gated_delta_rule(
@@ -438,6 +443,7 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
   norm_out = norm_out.view(z_shape_og);
   norm_out = norm_out.view({-1, norm_out.size(2), norm_out.size(3)});
 
+  // Project the normalized attention output back to hidden size.
   auto rearranged_norm = rearrange_merge(norm_out);
   rearranged_norm = reshape_qkvz_unpad(attn_metadata, rearranged_norm);
   auto attn_output = o_proj_->forward(rearranged_norm);

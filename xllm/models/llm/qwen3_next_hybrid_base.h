@@ -76,10 +76,13 @@ class Qwen3HybridModelImplBase : public Qwen3HybridModelModule {
     dp_size_ = parallel_args.dp_size();
   }
 
+  // tokens: [num_tokens]
+  // positions: [num_tokens] token pos in the sequence
   ModelOutput forward(torch::Tensor tokens,
                       torch::Tensor positions,
                       std::vector<KVCache>& kv_caches,
                       const ModelInputParams& input_params) override {
+    // Disable gradient computation to reduce memory usage during inference
     torch::NoGradGuard no_grad;
     if (dp_size_ > 1) {
       if (tokens.sizes() == 0) {
@@ -101,6 +104,7 @@ class Qwen3HybridModelImplBase : public Qwen3HybridModelModule {
     return ModelOutput(h);
   }
 
+  // load the weight from the checkpoint
   void load_state_dict(const StateDict& state_dict) override {
     embed_tokens_->load_state_dict(
         state_dict.get_dict_with_prefix("embed_tokens."));
@@ -176,6 +180,9 @@ class Qwen3HybridForCausalLMImplBase : public torch::nn::Module {
     lm_head_ = register_module("lm_head", layer::LmHead(context));
   }
 
+  // tokens: [num_tokens]
+  // positions: [num_tokens] token pos in the sequence
+  // returns: [num_tokens, hidden_size]
   ModelOutput forward(const torch::Tensor& tokens,
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
@@ -183,6 +190,9 @@ class Qwen3HybridForCausalLMImplBase : public torch::nn::Module {
     return model_->forward(tokens, positions, kv_caches, input_params);
   }
 
+  // hidden_states: [num_tokens, hidden_size]
+  // seleted_idxes: [num_tokens]
+  // returns: [num_tokens, vocab_size]
   torch::Tensor logits(const torch::Tensor& hidden_states,
                        const torch::Tensor& seleted_idxes) {
     auto h = hidden_states;
@@ -192,6 +202,8 @@ class Qwen3HybridForCausalLMImplBase : public torch::nn::Module {
     return lm_head_(h);
   }
 
+  // hidden_states: [num_tokens, hidden_size]
+  // seleted_idxes: [num_tokens]
   torch::Tensor pooler(const torch::Tensor& hidden_states,
                        const torch::Tensor& seleted_idxes) {
     auto h = hidden_states;

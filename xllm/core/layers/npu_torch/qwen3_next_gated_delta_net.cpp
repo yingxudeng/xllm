@@ -45,6 +45,7 @@ void Qwen3NextGatedDeltaNetImpl::init_next_projections(
     const QuantArgs& quant_args,
     const ParallelArgs& parallel_args,
     const torch::TensorOptions& options) {
+  // QKVZ projection used by Qwen3-Next linear attention.
   qkvz_proj_ = register_module("in_proj_qkvz",
                                ColumnParallelLinear(args.hidden_size(),
                                                     k_size_ * 2 + v_size_ * 2,
@@ -53,6 +54,7 @@ void Qwen3NextGatedDeltaNetImpl::init_next_projections(
                                                     quant_args,
                                                     parallel_args.tp_group_,
                                                     options));
+  // BA projection used to derive gating and beta terms.
   ba_proj_ = register_module("in_proj_ba",
                              ColumnParallelLinear(args.hidden_size(),
                                                   num_v_heads_ * 2,

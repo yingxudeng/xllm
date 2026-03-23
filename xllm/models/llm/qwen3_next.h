@@ -61,8 +61,10 @@ class Qwen3NextForCausalLMImpl : public Qwen3HybridForCausalLMImplBase {
 };
 TORCH_MODULE(Qwen3NextForCausalLM);
 
+// register the causal model
 REGISTER_CAUSAL_MODEL(qwen3_next, Qwen3NextForCausalLM);
 
+// register the model args
 REGISTER_MODEL_ARGS(qwen3_next, [&] {
   LOAD_ARG_OR(model_type, "model_type", "qwen3_next");
   LOAD_ARG_OR(dtype, "torch_dtype", "");
@@ -95,6 +97,7 @@ REGISTER_MODEL_ARGS(qwen3_next, [&] {
   LOAD_ARG_OR(vocab_size, "vocab_size", 151936);
   LOAD_ARG_OR(mlp_only_layers, "mlp_only_layers", std::vector<int>());
 
+  // Additional parameters for Qwen3-Next architecture
   LOAD_ARG_OR(attn_output_gate, "attn_output_gate", true);
   LOAD_ARG_OR(full_attention_interval, "full_attention_interval", 4);
   LOAD_ARG_OR(linear_conv_kernel_dim, "linear_conv_kernel_dim", 4);
@@ -107,6 +110,7 @@ REGISTER_MODEL_ARGS(qwen3_next, [&] {
       shared_expert_intermediate_size, "shared_expert_intermediate_size", 512);
   LOAD_ARG_OR(layer_types, "layer_types", std::vector<std::string>());
 
+  // MoE compatibility with fused_moe implementation.
   LOAD_ARG_OR(n_routed_experts, "n_routed_experts", args->num_experts());
   SET_ARG(n_shared_experts,
           args->shared_expert_intermediate_size() > 0 ? 1 : 0);
