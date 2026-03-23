@@ -20,12 +20,12 @@ limitations under the License.
 #include <string>
 #include <utility>
 
-#include "qwen3_gated_delta_net_base.h"
+#include "qwen3_next_gated_delta_net.h"
 
 namespace xllm {
 namespace layer {
 
-class Qwen3_5GatedDeltaNetImpl : public Qwen3GatedDeltaNetBaseImpl {
+class Qwen3_5GatedDeltaNetImpl : public Qwen3NextGatedDeltaNetImpl {
  public:
   Qwen3_5GatedDeltaNetImpl() = default;
   Qwen3_5GatedDeltaNetImpl(const ModelArgs& args,
@@ -33,13 +33,13 @@ class Qwen3_5GatedDeltaNetImpl : public Qwen3GatedDeltaNetBaseImpl {
                            const ParallelArgs& parallel_args,
                            const torch::TensorOptions& options);
 
-  void load_state_dict(const StateDict& state_dict);
-  void verify_loaded_weights(const std::string& prefix) const;
-
  protected:
   std::pair<torch::Tensor, torch::Tensor> project_padded_inputs(
       const torch::Tensor& hidden_states,
       const AttentionMetadata& attn_metadata) override;
+
+  void load_projection_state_dict(const StateDict& state_dict) override;
+  void verify_projection_weights(const std::string& prefix) const override;
 
  private:
   torch::Tensor merge_qkvz_from_split_activations(const torch::Tensor& qkv,

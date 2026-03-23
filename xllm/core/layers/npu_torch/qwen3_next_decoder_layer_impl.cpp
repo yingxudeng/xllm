@@ -14,3 +14,28 @@ limitations under the License.
 ==============================================================================*/
 
 #include "qwen3_next_decoder_layer_impl.h"
+
+namespace xllm {
+namespace layer {
+
+Qwen3NextDecoderLayerImpl::Qwen3NextDecoderLayerImpl(
+    const ModelContext& context,
+    int32_t layer_id)
+    : Qwen3NextDecoderLayerImpl(context,
+                                layer_id,
+                                std::make_shared<Qwen3NextGatedDeltaNetImpl>(
+                                    context.get_model_args(),
+                                    context.get_quant_args(),
+                                    context.get_parallel_args(),
+                                    context.get_tensor_options())) {}
+
+Qwen3NextDecoderLayerImpl::Qwen3NextDecoderLayerImpl(
+    const ModelContext& context,
+    int32_t layer_id,
+    std::shared_ptr<Qwen3GatedDeltaNetBaseImpl> linear_attention_module)
+    : Qwen3HybridDecoderLayerImplBase(context,
+                                      layer_id,
+                                      std::move(linear_attention_module)) {}
+
+}  // namespace layer
+}  // namespace xllm

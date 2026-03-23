@@ -21,23 +21,43 @@ limitations under the License.
 
 #include "core/layers/npu_torch/qwen3_next_decoder_layer_impl.h"
 #include "models/model_registry.h"
-#include "qwen3_hybrid_base.h"
+#include "qwen3_next_hybrid_base.h"
 
 namespace xllm {
 
-class Qwen3NextModelImpl
-    : public Qwen3HybridModelImplBase<layer::Qwen3NextDecoderLayer> {
+class Qwen3NextModelImpl : public Qwen3HybridModelImplBase {
  public:
   explicit Qwen3NextModelImpl(const ModelContext& context)
-      : Qwen3HybridModelImplBase<layer::Qwen3NextDecoderLayer>(context) {}
+      : Qwen3NextModelImpl(context, /*init_decoder_layers=*/true) {}
+
+ protected:
+  explicit Qwen3NextModelImpl(const ModelContext& context,
+                              bool init_decoder_layers)
+      : Qwen3HybridModelImplBase(context) {
+    if (init_decoder_layers) {
+      const int32_t n_layers = context.get_model_args().n_layers();
+      for (int32_t layer_id = 0; layer_id < n_layers; ++layer_id) {
+        add_decoder_layer(std::make_shared<layer::Qwen3NextDecoderLayerImpl>(
+            context, layer_id));
+      }
+    }
+  }
 };
 TORCH_MODULE(Qwen3NextModel);
 
-class Qwen3NextForCausalLMImpl
-    : public Qwen3HybridForCausalLMImplBase<Qwen3NextModel> {
+class Qwen3NextForCausalLMImpl : public Qwen3HybridForCausalLMImplBase {
  public:
   explicit Qwen3NextForCausalLMImpl(const ModelContext& context)
-      : Qwen3HybridForCausalLMImplBase<Qwen3NextModel>(context) {}
+      : Qwen3NextForCausalLMImpl(context, /*init_model=*/true) {}
+
+ protected:
+  explicit Qwen3NextForCausalLMImpl(const ModelContext& context,
+                                    bool init_model)
+      : Qwen3HybridForCausalLMImplBase(context) {
+    if (init_model) {
+      set_model_module(std::make_shared<Qwen3NextModelImpl>(context));
+    }
+  }
 };
 TORCH_MODULE(Qwen3NextForCausalLM);
 

@@ -22,7 +22,29 @@ Qwen3NextGatedDeltaNetImpl::Qwen3NextGatedDeltaNetImpl(
     const QuantArgs& quant_args,
     const ParallelArgs& parallel_args,
     const torch::TensorOptions& options)
+    : Qwen3NextGatedDeltaNetImpl(args,
+                                 quant_args,
+                                 parallel_args,
+                                 options,
+                                 /*init_projections=*/true) {}
+
+Qwen3NextGatedDeltaNetImpl::Qwen3NextGatedDeltaNetImpl(
+    const ModelArgs& args,
+    const QuantArgs& quant_args,
+    const ParallelArgs& parallel_args,
+    const torch::TensorOptions& options,
+    bool init_projections)
     : Qwen3GatedDeltaNetBaseImpl(args, quant_args, parallel_args, options) {
+  if (init_projections) {
+    init_next_projections(args, quant_args, parallel_args, options);
+  }
+}
+
+void Qwen3NextGatedDeltaNetImpl::init_next_projections(
+    const ModelArgs& args,
+    const QuantArgs& quant_args,
+    const ParallelArgs& parallel_args,
+    const torch::TensorOptions& options) {
   qkvz_proj_ = register_module("in_proj_qkvz",
                                ColumnParallelLinear(args.hidden_size(),
                                                     k_size_ * 2 + v_size_ * 2,
@@ -52,6 +74,12 @@ Qwen3NextGatedDeltaNetImpl::project_padded_inputs(
 }
 
 void Qwen3NextGatedDeltaNetImpl::load_state_dict(const StateDict& state_dict) {
+  load_projection_state_dict(state_dict);
+  load_common_state_dict(state_dict);
+}
+
+void Qwen3NextGatedDeltaNetImpl::load_projection_state_dict(
+    const StateDict& state_dict) {
   auto qkvz_state_dict = state_dict.get_dict_with_prefix("in_proj_qkvz.");
   if (qkvz_state_dict.size() > 0 && !qkvz_proj_->is_weight_loaded()) {
     qkvz_proj_->load_state_dict(qkvz_state_dict);
@@ -61,19 +89,22 @@ void Qwen3NextGatedDeltaNetImpl::load_state_dict(const StateDict& state_dict) {
   if (ba_state_dict.size() > 0 && !ba_proj_->is_weight_loaded()) {
     ba_proj_->load_state_dict(ba_state_dict);
   }
-
-  load_common_state_dict(state_dict);
 }
 
 void Qwen3NextGatedDeltaNetImpl::verify_loaded_weights(
     const std::string& prefix) const {
-  CHECK(qkvz_proj_->is_weight_loaded())
+  verify_projection_weights(prefix);
+  verify_common_loaded_weights(prefix);
+}
+
+void Qwen3NextGatedDeltaNetImpl::verify_projection_weights(
+    const std::string& prefix) const {
+  CHECK(qkvz_proj_ && qkvz_proj_->is_weight_loaded())
       << "Missing required weight after all shards loaded: " << prefix
       << "in_proj_qkvz.weight";
-  CHECK(ba_proj_->is_weight_loaded())
+  CHECK(ba_proj_ && ba_proj_->is_weight_loaded())
       << "Missing required weight after all shards loaded: " << prefix
       << "in_proj_ba.weight";
-  verify_common_loaded_weights(prefix);
 }
 
 }  // namespace layer

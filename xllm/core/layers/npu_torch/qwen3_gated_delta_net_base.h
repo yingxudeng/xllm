@@ -42,6 +42,9 @@ class Qwen3GatedDeltaNetBaseImpl : public torch::nn::Module {
                              const ParallelArgs& parallel_args,
                              const torch::TensorOptions& options);
 
+  virtual void load_state_dict(const StateDict& state_dict) = 0;
+  virtual void verify_loaded_weights(const std::string& prefix) const = 0;
+
   torch::Tensor forward(const torch::Tensor& hidden_states,
                         const AttentionMetadata& attn_metadata,
                         KVCache& kv_cache,
