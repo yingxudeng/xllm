@@ -16,12 +16,31 @@ limitations under the License.
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <unordered_set>
 #include <vector>
 
-#include "qwen3_next.h"
+#include "core/layers/npu_torch/qwen3_5_decoder_layer_impl.h"
+#include "models/model_registry.h"
+#include "qwen3_hybrid_base.h"
 
 namespace xllm {
+
+class Qwen3_5ModelImpl
+    : public Qwen3HybridModelImplBase<layer::Qwen3_5DecoderLayer> {
+ public:
+  explicit Qwen3_5ModelImpl(const ModelContext& context)
+      : Qwen3HybridModelImplBase<layer::Qwen3_5DecoderLayer>(context) {}
+};
+TORCH_MODULE(Qwen3_5Model);
+
+class Qwen3_5ForCausalLMImpl
+    : public Qwen3HybridForCausalLMImplBase<Qwen3_5Model> {
+ public:
+  explicit Qwen3_5ForCausalLMImpl(const ModelContext& context)
+      : Qwen3HybridForCausalLMImplBase<Qwen3_5Model>(context) {}
+};
+TORCH_MODULE(Qwen3_5ForCausalLM);
 
 #define LOAD_ARG_TEXT_OR_ROOT(arg_name, json_key, default_value) \
   LOAD_ARG_OR(arg_name, "text_config." json_key, default_value); \
@@ -121,7 +140,7 @@ namespace xllm {
   SET_ARG(routed_scaling_factor, 1.0f);                                        \
   SET_ARG(stop_token_ids, std::unordered_set<int32_t>({args->eos_token_id()}))
 
-REGISTER_CAUSAL_MODEL(qwen3_5, Qwen3NextForCausalLM);
+REGISTER_CAUSAL_MODEL(qwen3_5, Qwen3_5ForCausalLM);
 REGISTER_MODEL_ARGS(qwen3_5, [&] {
   LOAD_ARG_OR(model_type, "model_type", "qwen3_5");
   LOAD_ARG_OR(dtype, "text_config.dtype", "bfloat16");
@@ -134,7 +153,7 @@ REGISTER_MODEL_ARGS(qwen3_5, [&] {
                            /*shared_expert_intermediate_size=*/0);
 });
 
-REGISTER_CAUSAL_MODEL(qwen3_5_text, Qwen3NextForCausalLM);
+REGISTER_CAUSAL_MODEL(qwen3_5_text, Qwen3_5ForCausalLM);
 REGISTER_MODEL_ARGS(qwen3_5_text, [&] {
   LOAD_ARG_OR(model_type, "model_type", "qwen3_5_text");
   LOAD_ARG_OR(dtype, "text_config.dtype", "bfloat16");
@@ -147,7 +166,7 @@ REGISTER_MODEL_ARGS(qwen3_5_text, [&] {
                            /*shared_expert_intermediate_size=*/0);
 });
 
-REGISTER_CAUSAL_MODEL(qwen3_5_moe, Qwen3NextForCausalLM);
+REGISTER_CAUSAL_MODEL(qwen3_5_moe, Qwen3_5ForCausalLM);
 REGISTER_MODEL_ARGS(qwen3_5_moe, [&] {
   LOAD_ARG_OR(model_type, "model_type", "qwen3_5_moe");
   LOAD_ARG_OR(dtype, "text_config.dtype", "bfloat16");
@@ -160,7 +179,7 @@ REGISTER_MODEL_ARGS(qwen3_5_moe, [&] {
                            /*shared_expert_intermediate_size=*/512);
 });
 
-REGISTER_CAUSAL_MODEL(qwen3_5_moe_text, Qwen3NextForCausalLM);
+REGISTER_CAUSAL_MODEL(qwen3_5_moe_text, Qwen3_5ForCausalLM);
 REGISTER_MODEL_ARGS(qwen3_5_moe_text, [&] {
   LOAD_ARG_OR(model_type, "model_type", "qwen3_5_moe_text");
   LOAD_ARG_OR(dtype, "text_config.dtype", "bfloat16");

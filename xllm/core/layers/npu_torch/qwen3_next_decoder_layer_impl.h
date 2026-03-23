@@ -15,48 +15,19 @@ limitations under the License.
 
 #pragma once
 
-#include <torch/torch.h>
-
-#include <functional>
-#include <string>
-
-#include "framework/kv_cache/kv_cache.h"
-#include "framework/model/model_args.h"
-#include "framework/model/model_input_params.h"
-#include "framework/model_context.h"
-#include "framework/state_dict/state_dict.h"
-#include "layers/common/dense_mlp.h"
-#include "layers/common/qwen3_next_rms_norm.h"
-#include "layers/npu_torch/fused_moe.h"
-#include "layers/npu_torch/qwen3_next_attention.h"
+#include "layers/npu_torch/qwen3_hybrid_decoder_layer_base.h"
 #include "layers/npu_torch/qwen3_next_gated_delta_net.h"
 
 namespace xllm {
 namespace layer {
 
-class Qwen3NextDecoderLayerImpl : public torch::nn::Module {
+class Qwen3NextDecoderLayerImpl
+    : public Qwen3HybridDecoderLayerImplBase<Qwen3NextGatedDeltaNet> {
  public:
   explicit Qwen3NextDecoderLayerImpl(const ModelContext& context,
-                                     int32_t layer_id);
-
-  void load_state_dict(const StateDict& state_dict);
-  void verify_loaded_weights(const std::string& prefix) const;
-
-  torch::Tensor forward(torch::Tensor& x,
-                        torch::Tensor& positions,
-                        const AttentionMetadata& attn_metadata,
-                        KVCache& kv_cache,
-                        const ModelInputParams& input_params);
-
- private:
-  Qwen3NextAttention attention_{nullptr};
-  Qwen3NextGatedDeltaNet linear_attention_{nullptr};
-
-  DenseMLP mlp_{nullptr};
-  FusedMoE moe_mlp_{nullptr};
-
-  Qwen3NextRMSNorm input_norm_{nullptr};
-  Qwen3NextRMSNorm post_norm_{nullptr};
+                                     int32_t layer_id)
+      : Qwen3HybridDecoderLayerImplBase<Qwen3NextGatedDeltaNet>(context,
+                                                                layer_id) {}
 };
 TORCH_MODULE(Qwen3NextDecoderLayer);
 

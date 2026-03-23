@@ -25,13 +25,13 @@ limitations under the License.
 namespace xllm {
 namespace layer {
 
-class Qwen3NextGatedDeltaNetImpl : public Qwen3GatedDeltaNetBaseImpl {
+class Qwen3_5GatedDeltaNetImpl : public Qwen3GatedDeltaNetBaseImpl {
  public:
-  Qwen3NextGatedDeltaNetImpl() = default;
-  Qwen3NextGatedDeltaNetImpl(const ModelArgs& args,
-                             const QuantArgs& quant_args,
-                             const ParallelArgs& parallel_args,
-                             const torch::TensorOptions& options);
+  Qwen3_5GatedDeltaNetImpl() = default;
+  Qwen3_5GatedDeltaNetImpl(const ModelArgs& args,
+                           const QuantArgs& quant_args,
+                           const ParallelArgs& parallel_args,
+                           const torch::TensorOptions& options);
 
   void load_state_dict(const StateDict& state_dict);
   void verify_loaded_weights(const std::string& prefix) const;
@@ -42,10 +42,17 @@ class Qwen3NextGatedDeltaNetImpl : public Qwen3GatedDeltaNetBaseImpl {
       const AttentionMetadata& attn_metadata) override;
 
  private:
-  ColumnParallelLinear qkvz_proj_{nullptr};
-  ColumnParallelLinear ba_proj_{nullptr};
+  torch::Tensor merge_qkvz_from_split_activations(const torch::Tensor& qkv,
+                                                  const torch::Tensor& z) const;
+  torch::Tensor merge_ba_from_split_activations(const torch::Tensor& b,
+                                                const torch::Tensor& a) const;
+
+  ColumnParallelLinear in_proj_qkv_{nullptr};
+  ColumnParallelLinear in_proj_z_{nullptr};
+  ColumnParallelLinear in_proj_b_{nullptr};
+  ColumnParallelLinear in_proj_a_{nullptr};
 };
-TORCH_MODULE(Qwen3NextGatedDeltaNet);
+TORCH_MODULE(Qwen3_5GatedDeltaNet);
 
 }  // namespace layer
 }  // namespace xllm
