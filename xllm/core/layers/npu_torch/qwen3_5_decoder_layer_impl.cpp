@@ -13,4 +13,4 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "qwen3_next_decoder_layer_impl.h"
+#include "qwen3_5_decoder_layer_impl.h"
