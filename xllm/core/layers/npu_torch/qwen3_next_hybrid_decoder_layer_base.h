@@ -17,12 +17,10 @@ limitations under the License.
 
 #include <torch/torch.h>
 
-#include <algorithm>
 #include <memory>
 #include <string>
 
 #include "framework/kv_cache/kv_cache.h"
-#include "framework/model/model_args.h"
 #include "framework/model/model_input_params.h"
 #include "framework/model_context.h"
 #include "framework/state_dict/state_dict.h"
@@ -54,135 +52,17 @@ class Qwen3HybridDecoderLayerImplBase : public Qwen3HybridDecoderLayerModule {
   explicit Qwen3HybridDecoderLayerImplBase(
       const ModelContext& context,
       int32_t layer_id,
-      std::shared_ptr<Qwen3GatedDeltaNetBaseImpl> linear_attention_module) {
-    const auto& model_args = context.get_model_args();
-    const auto& quant_args = context.get_quant_args();
-    const auto& parallel_args = context.get_parallel_args();
-    const auto& options = context.get_tensor_options();
-    const auto& layer_types = model_args.layer_types();
-    bool use_full_attention = false;
-    if (layer_id < static_cast<int32_t>(layer_types.size())) {
-      const auto& layer_type = layer_types[layer_id];
-      use_full_attention =
-          (layer_type == "full_attention" || layer_type == "attention");
-    } else {
-      int32_t full_attention_interval = model_args.full_attention_interval();
-      if (full_attention_interval <= 0) {
-        full_attention_interval = 4;
-      }
-      use_full_attention = ((layer_id + 1) % full_attention_interval == 0);
-    }
+      std::shared_ptr<Qwen3GatedDeltaNetBaseImpl> linear_attention_module);
 
-    if (use_full_attention) {
-      attention_ = register_module(
-          "self_attn",
-          Qwen3NextAttention(
-              model_args, quant_args, parallel_args, options, layer_id));
-    } else {
-      linear_attention_ =
-          register_module("linear_attn", std::move(linear_attention_module));
-    }
+  void load_state_dict(const StateDict& state_dict) override;
 
-    input_norm_ = register_module(
-        "input_layernorm",
-        Qwen3NextRMSNorm(
-            model_args.hidden_size(), model_args.rms_norm_eps(), options));
-
-    post_norm_ = register_module(
-        "post_attention_layernorm",
-        Qwen3NextRMSNorm(
-            model_args.hidden_size(), model_args.rms_norm_eps(), options));
-
-    auto mlp_only_layers = model_args.mlp_only_layers();
-    if ((std::count(mlp_only_layers.begin(), mlp_only_layers.end(), layer_id) ==
-         0) &&
-        model_args.n_routed_experts() > 0 &&
-        (layer_id + 1) % model_args.decoder_sparse_step() == 0) {
-      moe_mlp_ = register_module("mlp",
-                                 FusedMoE(model_args,
-                                          FusedMoEArgs{.is_gated = true},
-                                          quant_args,
-                                          parallel_args,
-                                          options));
-    } else {
-      mlp_ = register_module("mlp",
-                             DenseMLP(model_args.hidden_size(),
-                                      model_args.intermediate_size(),
-                                      true,
-                                      false,
-                                      model_args.hidden_act(),
-                                      /*enable_result_reduction=*/true,
-                                      quant_args,
-                                      parallel_args.tp_group_,
-                                      options));
-    }
-  }
-
-  void load_state_dict(const StateDict& state_dict) override {
-    if (attention_) {
-      attention_->load_state_dict(
-          state_dict.get_dict_with_prefix("self_attn."));
-    } else {
-      linear_attention_->load_state_dict(
-          state_dict.get_dict_with_prefix("linear_attn."));
-    }
-    input_norm_->load_state_dict(
-        state_dict.get_dict_with_prefix("input_layernorm."));
-    post_norm_->load_state_dict(
-        state_dict.get_dict_with_prefix("post_attention_layernorm."));
-    if (moe_mlp_) {
-      moe_mlp_->load_state_dict(state_dict.get_dict_with_prefix("mlp."));
-    } else {
-      mlp_->load_state_dict(state_dict.get_dict_with_prefix("mlp."));
-    }
-  }
-
-  void verify_loaded_weights(const std::string& prefix) const override {
-    if (linear_attention_) {
-      linear_attention_->verify_loaded_weights(prefix + "linear_attn.");
-    }
-  }
+  void verify_loaded_weights(const std::string& prefix) const override;
 
   torch::Tensor forward(torch::Tensor& x,
                         torch::Tensor& positions,
                         const AttentionMetadata& attn_metadata,
                         KVCache& kv_cache,
-                        const ModelInputParams& input_params) override {
-    torch::Tensor residual = x;
-    x = input_norm_(x);
-
-    if (attention_) {
-      x = attention_->forward(positions, x, attn_metadata, kv_cache);
-    } else {
-      x = linear_attention_->forward(x, attn_metadata, kv_cache, input_params);
-    }
-
-    auto orig_dtype = x.dtype();
-    if (orig_dtype == torch::kBFloat16) {
-      x = x.to(torch::kFloat32);
-      residual = residual.to(torch::kFloat32);
-    }
-    x = x + residual;
-
-    residual = x;
-    x = x.to(orig_dtype);
-    x = post_norm_(x);
-
-    if (moe_mlp_) {
-      x = moe_mlp_(x, input_params);
-    } else {
-      x = mlp_(x);
-    }
-
-    orig_dtype = x.dtype();
-    if (orig_dtype == torch::kBFloat16) {
-      x = x.to(torch::kFloat32);
-      residual = residual.to(torch::kFloat32);
-    }
-    x = x + residual;
-    x = x.to(orig_dtype);
-    return x;
-  }
+                        const ModelInputParams& input_params) override;
 
  protected:
   Qwen3NextAttention attention_{nullptr};
