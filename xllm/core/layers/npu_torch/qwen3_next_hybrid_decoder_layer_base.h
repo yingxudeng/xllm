@@ -18,6 +18,7 @@ limitations under the License.
 #include <torch/torch.h>
 
 #include <algorithm>
+#include <memory>
 #include <string>
 
 #include "framework/kv_cache/kv_cache.h"
@@ -28,16 +29,32 @@ limitations under the License.
 #include "layers/common/dense_mlp.h"
 #include "layers/common/qwen3_next_rms_norm.h"
 #include "layers/npu_torch/fused_moe.h"
+#include "layers/npu_torch/qwen3_gated_delta_net_base.h"
 #include "layers/npu_torch/qwen3_next_attention.h"
 
 namespace xllm {
 namespace layer {
 
-template <typename LinearAttentionType>
-class Qwen3HybridDecoderLayerImplBase : public torch::nn::Module {
+class Qwen3HybridDecoderLayerModule : public torch::nn::Module {
  public:
-  explicit Qwen3HybridDecoderLayerImplBase(const ModelContext& context,
-                                           int32_t layer_id) {
+  virtual void load_state_dict(const StateDict& state_dict) = 0;
+  virtual void verify_loaded_weights(const std::string& prefix) const = 0;
+  virtual torch::Tensor forward(torch::Tensor& x,
+                                torch::Tensor& positions,
+                                const AttentionMetadata& attn_metadata,
+                                KVCache& kv_cache,
+                                const ModelInputParams& input_params) = 0;
+};
+
+using Qwen3HybridDecoderLayerModulePtr =
+    std::shared_ptr<Qwen3HybridDecoderLayerModule>;
+
+class Qwen3HybridDecoderLayerImplBase : public Qwen3HybridDecoderLayerModule {
+ public:
+  explicit Qwen3HybridDecoderLayerImplBase(
+      const ModelContext& context,
+      int32_t layer_id,
+      std::shared_ptr<Qwen3GatedDeltaNetBaseImpl> linear_attention_module) {
     const auto& model_args = context.get_model_args();
     const auto& quant_args = context.get_quant_args();
     const auto& parallel_args = context.get_parallel_args();
@@ -62,9 +79,8 @@ class Qwen3HybridDecoderLayerImplBase : public torch::nn::Module {
           Qwen3NextAttention(
               model_args, quant_args, parallel_args, options, layer_id));
     } else {
-      linear_attention_ = register_module(
-          "linear_attn",
-          LinearAttentionType(model_args, quant_args, parallel_args, options));
+      linear_attention_ =
+          register_module("linear_attn", std::move(linear_attention_module));
     }
 
     input_norm_ = register_module(
@@ -102,7 +118,7 @@ class Qwen3HybridDecoderLayerImplBase : public torch::nn::Module {
     }
   }
 
-  void load_state_dict(const StateDict& state_dict) {
+  void load_state_dict(const StateDict& state_dict) override {
     if (attention_) {
       attention_->load_state_dict(
           state_dict.get_dict_with_prefix("self_attn."));
@@ -121,7 +137,7 @@ class Qwen3HybridDecoderLayerImplBase : public torch::nn::Module {
     }
   }
 
-  void verify_loaded_weights(const std::string& prefix) const {
+  void verify_loaded_weights(const std::string& prefix) const override {
     if (linear_attention_) {
       linear_attention_->verify_loaded_weights(prefix + "linear_attn.");
     }
@@ -131,7 +147,7 @@ class Qwen3HybridDecoderLayerImplBase : public torch::nn::Module {
                         torch::Tensor& positions,
                         const AttentionMetadata& attn_metadata,
                         KVCache& kv_cache,
-                        const ModelInputParams& input_params) {
+                        const ModelInputParams& input_params) override {
     torch::Tensor residual = x;
     x = input_norm_(x);
 
@@ -170,7 +186,7 @@ class Qwen3HybridDecoderLayerImplBase : public torch::nn::Module {
 
  protected:
   Qwen3NextAttention attention_{nullptr};
-  LinearAttentionType linear_attention_{nullptr};
+  std::shared_ptr<Qwen3GatedDeltaNetBaseImpl> linear_attention_;
 
   DenseMLP mlp_{nullptr};
   FusedMoE moe_mlp_{nullptr};

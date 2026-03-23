@@ -33,13 +33,27 @@ class Qwen3NextGatedDeltaNetImpl : public Qwen3GatedDeltaNetBaseImpl {
                              const ParallelArgs& parallel_args,
                              const torch::TensorOptions& options);
 
-  void load_state_dict(const StateDict& state_dict);
-  void verify_loaded_weights(const std::string& prefix) const;
+  void load_state_dict(const StateDict& state_dict) override;
+  void verify_loaded_weights(const std::string& prefix) const override;
 
  protected:
+  Qwen3NextGatedDeltaNetImpl(const ModelArgs& args,
+                             const QuantArgs& quant_args,
+                             const ParallelArgs& parallel_args,
+                             const torch::TensorOptions& options,
+                             bool init_projections);
+
   std::pair<torch::Tensor, torch::Tensor> project_padded_inputs(
       const torch::Tensor& hidden_states,
       const AttentionMetadata& attn_metadata) override;
+
+  virtual void load_projection_state_dict(const StateDict& state_dict);
+  virtual void verify_projection_weights(const std::string& prefix) const;
+
+  void init_next_projections(const ModelArgs& args,
+                             const QuantArgs& quant_args,
+                             const ParallelArgs& parallel_args,
+                             const torch::TensorOptions& options);
 
  private:
   ColumnParallelLinear qkvz_proj_{nullptr};

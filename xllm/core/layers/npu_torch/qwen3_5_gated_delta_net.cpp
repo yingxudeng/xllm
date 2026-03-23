@@ -22,7 +22,11 @@ Qwen3_5GatedDeltaNetImpl::Qwen3_5GatedDeltaNetImpl(
     const QuantArgs& quant_args,
     const ParallelArgs& parallel_args,
     const torch::TensorOptions& options)
-    : Qwen3GatedDeltaNetBaseImpl(args, quant_args, parallel_args, options) {
+    : Qwen3NextGatedDeltaNetImpl(args,
+                                 quant_args,
+                                 parallel_args,
+                                 options,
+                                 /*init_projections=*/false) {
   in_proj_qkv_ = register_module("in_proj_qkv",
                                  ColumnParallelLinear(args.hidden_size(),
                                                       k_size_ * 2 + v_size_,
@@ -134,7 +138,8 @@ Qwen3_5GatedDeltaNetImpl::project_padded_inputs(
           merge_ba_from_split_activations(b_proj, a_proj)};
 }
 
-void Qwen3_5GatedDeltaNetImpl::load_state_dict(const StateDict& state_dict) {
+void Qwen3_5GatedDeltaNetImpl::load_projection_state_dict(
+    const StateDict& state_dict) {
   auto in_proj_qkv_state_dict = state_dict.get_dict_with_prefix("in_proj_qkv.");
   if (in_proj_qkv_state_dict.size() > 0 && !in_proj_qkv_->is_weight_loaded()) {
     in_proj_qkv_->load_state_dict(
@@ -158,25 +163,22 @@ void Qwen3_5GatedDeltaNetImpl::load_state_dict(const StateDict& state_dict) {
   if (in_proj_a_state_dict.size() > 0 && !in_proj_a_->is_weight_loaded()) {
     in_proj_a_->load_state_dict(in_proj_a_state_dict);
   }
-
-  load_common_state_dict(state_dict);
 }
 
-void Qwen3_5GatedDeltaNetImpl::verify_loaded_weights(
+void Qwen3_5GatedDeltaNetImpl::verify_projection_weights(
     const std::string& prefix) const {
-  CHECK(in_proj_qkv_->is_weight_loaded())
+  CHECK(in_proj_qkv_ && in_proj_qkv_->is_weight_loaded())
       << "Missing required weight after all shards loaded: " << prefix
       << "in_proj_qkv.weight";
-  CHECK(in_proj_z_->is_weight_loaded())
+  CHECK(in_proj_z_ && in_proj_z_->is_weight_loaded())
       << "Missing required weight after all shards loaded: " << prefix
       << "in_proj_z.weight";
-  CHECK(in_proj_b_->is_weight_loaded())
+  CHECK(in_proj_b_ && in_proj_b_->is_weight_loaded())
       << "Missing required weight after all shards loaded: " << prefix
       << "in_proj_b.weight";
-  CHECK(in_proj_a_->is_weight_loaded())
+  CHECK(in_proj_a_ && in_proj_a_->is_weight_loaded())
       << "Missing required weight after all shards loaded: " << prefix
       << "in_proj_a.weight";
-  verify_common_loaded_weights(prefix);
 }
 
 }  // namespace layer
