@@ -18,10 +18,12 @@ limitations under the License.
 
 #include <glog/logging.h>
 
+#include <filesystem>
 #include <iostream>
 #include <unordered_set>
 
 #include "core/common/global_flags.h"
+#include "core/util/json_reader.h"
 #include "models.h"
 
 namespace {
@@ -58,9 +60,53 @@ namespace {
 
 namespace xllm {
 
-bool resolve_model_registration_name(const std::string& model_type,
-                                     std::string* resolved_name,
-                                     std::string* error_message) {
+namespace {
+
+#if defined(USE_NPU)
+constexpr char kAutoBackend[] = "AUTO";
+constexpr char kAtbBackend[] = "ATB";
+constexpr char kTorchBackend[] = "TORCH";
+
+bool is_torch_only_model_type(const std::string& model_type) {
+  static const std::unordered_set<std::string> kTorchOnlyModelTypes = {
+      "qwen3_5",
+      "qwen3_5_text",
+      "qwen3_5_moe",
+      "qwen3_5_moe_text",
+      "qwen3_next"};
+  return kTorchOnlyModelTypes.count(model_type) != 0;
+}
+#endif
+
+}  // namespace
+
+std::string load_model_type_from_path(const std::filesystem::path& model_path) {
+  JsonReader reader;
+  const std::filesystem::path config_json_path = model_path / "config.json";
+
+  if (!std::filesystem::exists(config_json_path)) {
+    LOG(FATAL) << "Please check config.json or model_index.json file, one of "
+                  "them should exist in the model path: "
+               << model_path;
+  }
+
+  reader.parse(config_json_path);
+  auto model_type = reader.value<std::string>("model_type");
+  if (!model_type.has_value()) {
+    model_type = reader.value<std::string>("model_name");
+  }
+  if (!model_type.has_value()) {
+    LOG(FATAL) << "Please check config.json file in model path: " << model_path
+               << ", it should contain model_type or model_name key.";
+  }
+  return model_type.value();
+}
+
+bool resolve_model_registration(const std::string& model_type,
+                                const std::string& requested_npu_kernel_backend,
+                                std::string* effective_npu_kernel_backend,
+                                std::string* resolved_name,
+                                std::string* error_message) {
   if (resolved_name == nullptr) {
     if (error_message != nullptr) {
       *error_message = "resolved_name must not be null";
@@ -69,54 +115,64 @@ bool resolve_model_registration_name(const std::string& model_type,
   }
 
 #if defined(USE_NPU)
-  static const std::unordered_set<std::string> kTorchOnlyModelTypes = {
-      "qwen3_5",
-      "qwen3_5_text",
-      "qwen3_5_moe",
-      "qwen3_5_moe_text",
-      "qwen3_next"};
-  static const std::string kAtbBackend = "ATB";
-  static const std::string kTorchBackend = "TORCH";
-
-  if (FLAGS_npu_kernel_backend != kAtbBackend &&
-      FLAGS_npu_kernel_backend != kTorchBackend) {
+  const std::string backend = requested_npu_kernel_backend.empty()
+                                  ? kAutoBackend
+                                  : requested_npu_kernel_backend;
+  if (backend != kAutoBackend && backend != kAtbBackend &&
+      backend != kTorchBackend) {
     if (error_message != nullptr) {
-      *error_message =
-          "Unsupported --npu_kernel_backend=" + FLAGS_npu_kernel_backend +
-          ". Supported values: ATB, TORCH.";
+      *error_message = "Unsupported --npu_kernel_backend=" + backend +
+                       ". Supported values: AUTO, ATB, TORCH.";
     }
     return false;
   }
 
-  if (model_type == "qwen3") {
-    *resolved_name =
-        FLAGS_npu_kernel_backend == kAtbBackend ? "qwen3_atb" : model_type;
-    return true;
-  }
-
-  if (kTorchOnlyModelTypes.count(model_type) != 0) {
-    if (FLAGS_npu_kernel_backend != kTorchBackend) {
+  std::string effective_backend = backend;
+  if (backend == kAutoBackend) {
+    effective_backend =
+        is_torch_only_model_type(model_type) ? kTorchBackend : kAtbBackend;
+  } else if (model_type == "qwen3") {
+    // qwen3 supports both backends.
+  } else if (is_torch_only_model_type(model_type)) {
+    if (backend != kTorchBackend) {
       if (error_message != nullptr) {
         *error_message = "Model type " + model_type +
                          " only supports --npu_kernel_backend=TORCH.";
       }
       return false;
     }
-    *resolved_name = model_type;
-    return true;
-  }
-
-  if (FLAGS_npu_kernel_backend != kAtbBackend) {
+  } else if (backend != kAtbBackend) {
     if (error_message != nullptr) {
       *error_message = "Model type " + model_type +
                        " only supports --npu_kernel_backend=ATB.";
     }
     return false;
   }
-#endif
 
+  if (effective_npu_kernel_backend != nullptr) {
+    *effective_npu_kernel_backend = effective_backend;
+  }
+  *resolved_name = (model_type == "qwen3" && effective_backend == kAtbBackend)
+                       ? "qwen3_atb"
+                       : model_type;
+  return true;
+#else
+  if (effective_npu_kernel_backend != nullptr) {
+    *effective_npu_kernel_backend = requested_npu_kernel_backend;
+  }
   *resolved_name = model_type;
   return true;
+#endif
+}
+
+bool resolve_model_registration_name(const std::string& model_type,
+                                     std::string* resolved_name,
+                                     std::string* error_message) {
+  return resolve_model_registration(model_type,
+                                    FLAGS_npu_kernel_backend,
+                                    nullptr,
+                                    resolved_name,
+                                    error_message);
 }
 
 ModelRegistry* ModelRegistry::get_instance() {

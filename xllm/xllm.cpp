@@ -69,35 +69,8 @@ void shutdown_handler(int signal) {
   exit(1);
 }
 
-std::string get_model_type(const std::filesystem::path& model_path) {
-  JsonReader reader;
-  // for llm, vlm and rec models, the config.json file is in the model path
-  std::filesystem::path config_json_path = model_path / "config.json";
-
-  if (std::filesystem::exists(config_json_path)) {
-    reader.parse(config_json_path);
-    // Prefer model_type (e.g. LLM/VLM); fall back to model_name for configs
-    // that only have model_name (e.g. LongCat-Image: {"model_name":
-    // "LongCat-Image"}).
-    auto model_type = reader.value<std::string>("model_type");
-    if (!model_type.has_value()) {
-      model_type = reader.value<std::string>("model_name");
-    }
-    if (!model_type.has_value()) {
-      LOG(FATAL) << "Please check config.json file in model path: "
-                 << model_path
-                 << ", it should contain model_type or model_name key.";
-    }
-    return model_type.value();
-  } else {
-    LOG(FATAL) << "Please check config.json or model_index.json file, one of "
-                  "them should exist in the model path: "
-               << model_path;
-  }
-}
-
 std::string get_model_backend(const std::filesystem::path& model_path) {
-  JsonReader reader;
+  xllm::JsonReader reader;
   // for dit models, the model_index.json file is in the model path
   std::filesystem::path model_index_json_path = model_path / "model_index.json";
 
@@ -113,9 +86,9 @@ std::string get_model_backend(const std::filesystem::path& model_path) {
   }
 
   // for llm, vlm and rec models, get backend from model type
-  std::string model_type = get_model_type(model_path);
-  // model_type always exists since get_model_type() will log fatal error if
-  // model_type is empty
+  std::string model_type = load_model_type_from_path(model_path);
+  // model_type always exists since load_model_type_from_path() will log fatal
+  // error if model_type is empty
   return ModelRegistry::get_model_backend(model_type);
 }
 
@@ -220,7 +193,7 @@ int run() {
     FLAGS_max_tokens_per_chunk_for_prefill = FLAGS_max_tokens_per_batch;
   }
 
-  std::string model_type = get_model_type(model_path);
+  std::string model_type = load_model_type_from_path(model_path);
   // set enable_mla by model type
   if (FLAGS_backend != "dit") {
     if (deepseek_like_model_set.find(model_type) !=
@@ -270,6 +243,7 @@ int run() {
       .speculative_suffix_use_tree_spec(FLAGS_speculative_suffix_use_tree_spec)
       .num_request_handling_threads(FLAGS_num_request_handling_threads)
       .communication_backend(FLAGS_communication_backend)
+      .npu_kernel_backend(FLAGS_npu_kernel_backend)
       .enable_eplb(FLAGS_enable_eplb)
       .redundant_experts_num(FLAGS_redundant_experts_num)
       .eplb_update_interval(FLAGS_eplb_update_interval)

@@ -15,6 +15,7 @@ limitations under the License.
 ==============================================================================*/
 
 #pragma once
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
@@ -156,6 +157,14 @@ class ModelRegistry {
 bool resolve_model_registration_name(const std::string& model_type,
                                      std::string* resolved_name,
                                      std::string* error_message = nullptr);
+
+bool resolve_model_registration(const std::string& model_type,
+                                const std::string& requested_npu_kernel_backend,
+                                std::string* effective_npu_kernel_backend,
+                                std::string* resolved_name,
+                                std::string* error_message = nullptr);
+
+std::string load_model_type_from_path(const std::filesystem::path& model_path);
 
 std::unique_ptr<CausalLM> create_llm_model(const ModelContext& context);
 

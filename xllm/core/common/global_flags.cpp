@@ -619,8 +619,8 @@ DEFINE_uint32(rec_worker_max_concurrency,
 
 #if defined(USE_NPU)
 DEFINE_string(npu_kernel_backend,
-              "ATB",
-              "NPU kernel backend. Supported options: ATB, TORCH.");
+              "AUTO",
+              "NPU kernel backend. Supported options: AUTO, ATB, TORCH.");
 
 DEFINE_bool(enable_intralayer_addnorm,
             false,
