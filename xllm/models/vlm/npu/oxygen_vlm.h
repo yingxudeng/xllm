@@ -35,7 +35,7 @@ limitations under the License.
 #include "qwen2_5_vl.h"
 #include "torch_npu/csrc/aten/CustomFunctions.h"
 
-namespace xllm {
+namespace xllm::npu::model {
 class OxygenvlmForConditionalGenerationImpl : public torch::nn::Module {
  public:
   OxygenvlmForConditionalGenerationImpl(const ModelContext& context)
@@ -268,4 +268,4 @@ REGISTER_MODEL_ARGS(oxygenvlm, [&] {
     args->rope_scaling_rope_type() = "mrope";
 });
 
-}  // namespace xllm
+}  // namespace xllm::npu::model

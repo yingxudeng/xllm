@@ -19,7 +19,7 @@ limitations under the License.
 
 #include "core/common/rec_model_utils.h"
 #include "core/framework/model/model_output.h"
-#if defined(USE_NPU_TORCH)
+#if defined(USE_NPU)
 #include "core/common/global_flags.h"
 #include "core/layers/common/attention_mask.h"
 #endif
@@ -49,7 +49,7 @@ class QWen3ModelImpl : public LlmModelImplBase<layer::Qwen3DecoderLayer> {
     norm_ = register_module("norm", layer::RMSNorm(context));
     embed_tokens_ =
         register_module("embed_tokens", layer::WordEmbedding(context));
-#if defined(USE_NPU_TORCH)
+#if defined(USE_NPU)
     int32_t mask_value = FLAGS_enable_chunked_prefill ? -9984 : 1;
     attn_mask_ = layer::AttentionMask(
         options.device(), options.dtype().toScalarType(), mask_value);
@@ -188,7 +188,7 @@ class QWen3ModelImpl : public LlmModelImplBase<layer::Qwen3DecoderLayer> {
   layer::AttentionMetadata get_attention_metadata(
       const ModelInputParams& params,
       const torch::Tensor& h) {
-#if defined(USE_NPU_TORCH)
+#if defined(USE_NPU)
     max_seq_len_ = std::max(params.kv_max_seq_len, max_seq_len_);
     // NOTE: Enabling chunked prefill here is known to cause garbled output in
     // this model. TODO: investigate and fix the output corruption.
@@ -223,7 +223,7 @@ class QWen3ModelImpl : public LlmModelImplBase<layer::Qwen3DecoderLayer> {
 #endif
   }
 
-#if defined(USE_NPU_TORCH)
+#if defined(USE_NPU)
   layer::AttentionMask attn_mask_;
 #endif
 };

@@ -34,7 +34,7 @@ limitations under the License.
 #include "qwen2_5_vl.h"
 #include "xllm_atb_layers/core/include/atb_speed/log.h"
 
-namespace xllm {
+namespace xllm::npu::model {
 
 class Qwen2_VisionBlockImpl : public torch::nn::Module {
  public:
@@ -675,4 +675,4 @@ REGISTER_MODEL_ARGS(qwen2_vl, [&] {
   LOAD_ARG(rope_scaling_mrope_section, "rope_scaling.mrope_section");
   LOAD_ARG_OR(vocab_size, "vocab_size", 152064);
 });
-}  // namespace xllm
+}  // namespace xllm::npu::model

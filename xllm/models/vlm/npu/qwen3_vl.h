@@ -30,7 +30,7 @@ limitations under the License.
 #include "qwen2_5_vl.h"
 #include "xllm_atb_layers/core/include/atb_speed/log.h"
 
-namespace xllm {
+namespace xllm::npu::model {
 
 class Qwen3_VisionPatchEmbedImpl : public torch::nn::Module {
  public:
@@ -892,4 +892,4 @@ REGISTER_MODEL_ARGS(qwen3_vl, [&] {
 
   LOAD_ARG_OR(vocab_size, "text_config.vocab_size", 151936);
 });
-}  // namespace xllm
+}  // namespace xllm::npu::model

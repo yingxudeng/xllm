@@ -89,6 +89,8 @@ struct Options {
 
   PROPERTY(bool, enable_mla) = false;
 
+  PROPERTY(std::string, npu_kernel_backend) = "AUTO";
+
   // master node address when we launch a multi-node task.
   PROPERTY(std::optional<std::string>, master_node_addr);
 

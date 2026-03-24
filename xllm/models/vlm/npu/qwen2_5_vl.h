@@ -34,7 +34,7 @@ limitations under the License.
 #include "processors/qwen2_vl_image_processor.h"
 #include "xllm_atb_layers/core/include/atb_speed/log.h"
 
-namespace xllm {
+namespace xllm::npu::model {
 
 #define PrintTensor(tensor) print_tensor(tensor, #tensor, 10, true, false);
 
@@ -942,4 +942,4 @@ REGISTER_MODEL_ARGS(qwen2_5_vl, [&] {
   LOAD_ARG(rope_scaling_mrope_section, "rope_scaling.mrope_section");
   LOAD_ARG_OR(vocab_size, "vocab_size", 152064);
 });
-}  // namespace xllm
+}  // namespace xllm::npu::model
