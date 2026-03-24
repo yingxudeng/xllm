@@ -19,7 +19,9 @@ limitations under the License.
 #include <glog/logging.h>
 
 #include <iostream>
+#include <unordered_set>
 
+#include "core/common/global_flags.h"
 #include "models.h"
 
 namespace {
@@ -55,6 +57,67 @@ namespace {
 }  // anonymous namespace
 
 namespace xllm {
+
+bool resolve_model_registration_name(const std::string& model_type,
+                                     std::string* resolved_name,
+                                     std::string* error_message) {
+  if (resolved_name == nullptr) {
+    if (error_message != nullptr) {
+      *error_message = "resolved_name must not be null";
+    }
+    return false;
+  }
+
+#if defined(USE_NPU)
+  static const std::unordered_set<std::string> kTorchOnlyModelTypes = {
+      "qwen3_5",
+      "qwen3_5_text",
+      "qwen3_5_moe",
+      "qwen3_5_moe_text",
+      "qwen3_next"};
+  static const std::string kAtbBackend = "ATB";
+  static const std::string kTorchBackend = "TORCH";
+
+  if (FLAGS_npu_kernel_backend != kAtbBackend &&
+      FLAGS_npu_kernel_backend != kTorchBackend) {
+    if (error_message != nullptr) {
+      *error_message =
+          "Unsupported --npu_kernel_backend=" + FLAGS_npu_kernel_backend +
+          ". Supported values: ATB, TORCH.";
+    }
+    return false;
+  }
+
+  if (model_type == "qwen3") {
+    *resolved_name =
+        FLAGS_npu_kernel_backend == kAtbBackend ? "qwen3_atb" : model_type;
+    return true;
+  }
+
+  if (kTorchOnlyModelTypes.count(model_type) != 0) {
+    if (FLAGS_npu_kernel_backend != kTorchBackend) {
+      if (error_message != nullptr) {
+        *error_message = "Model type " + model_type +
+                         " only supports --npu_kernel_backend=TORCH.";
+      }
+      return false;
+    }
+    *resolved_name = model_type;
+    return true;
+  }
+
+  if (FLAGS_npu_kernel_backend != kAtbBackend) {
+    if (error_message != nullptr) {
+      *error_message = "Model type " + model_type +
+                       " only supports --npu_kernel_backend=ATB.";
+    }
+    return false;
+  }
+#endif
+
+  *resolved_name = model_type;
+  return true;
+}
 
 ModelRegistry* ModelRegistry::get_instance() {
   static ModelRegistry registry;
@@ -280,9 +343,16 @@ std::string ModelRegistry::get_model_backend(const std::string& name) {
 }
 
 std::unique_ptr<CausalLM> create_llm_model(const ModelContext& context) {
-  // get the factory function for the model type from model registry
-  auto factory = ModelRegistry::get_causallm_factory(
-      context.get_model_args().model_type());
+  std::string resolved_name;
+  std::string error_message;
+  if (!resolve_model_registration_name(context.get_model_args().model_type(),
+                                       &resolved_name,
+                                       &error_message)) {
+    LOG(ERROR) << error_message;
+    return nullptr;
+  }
+
+  auto factory = ModelRegistry::get_causallm_factory(resolved_name);
   if (factory) {
     return factory(context);
   }
@@ -294,8 +364,16 @@ std::unique_ptr<CausalLM> create_llm_model(const ModelContext& context) {
 }
 
 std::unique_ptr<CausalLM> create_rec_model(const ModelContext& context) {
-  auto factory = ModelRegistry::get_rec_model_factory(
-      context.get_model_args().model_type());
+  std::string resolved_name;
+  std::string error_message;
+  if (!resolve_model_registration_name(context.get_model_args().model_type(),
+                                       &resolved_name,
+                                       &error_message)) {
+    LOG(ERROR) << error_message;
+    return nullptr;
+  }
+
+  auto factory = ModelRegistry::get_rec_model_factory(resolved_name);
   if (factory) {
     return factory(context);
   }
@@ -307,9 +385,16 @@ std::unique_ptr<CausalLM> create_rec_model(const ModelContext& context) {
 }
 
 std::unique_ptr<CausalVLM> create_vlm_model(const ModelContext& context) {
-  // get the factory function for the model type from model registry
-  auto factory = ModelRegistry::get_causalvlm_factory(
-      context.get_model_args().model_type());
+  std::string resolved_name;
+  std::string error_message;
+  if (!resolve_model_registration_name(context.get_model_args().model_type(),
+                                       &resolved_name,
+                                       &error_message)) {
+    LOG(ERROR) << error_message;
+    return nullptr;
+  }
+
+  auto factory = ModelRegistry::get_causalvlm_factory(resolved_name);
   if (factory) {
     return factory(context);
   }
@@ -322,9 +407,16 @@ std::unique_ptr<CausalVLM> create_vlm_model(const ModelContext& context) {
 
 std::unique_ptr<EmbeddingVLM> create_vlm_embedding_model(
     const ModelContext& context) {
-  // get the factory function for the model type from model registry
-  auto factory = ModelRegistry::get_embeddingvlm_factory(
-      context.get_model_args().model_type());
+  std::string resolved_name;
+  std::string error_message;
+  if (!resolve_model_registration_name(context.get_model_args().model_type(),
+                                       &resolved_name,
+                                       &error_message)) {
+    LOG(ERROR) << error_message;
+    return nullptr;
+  }
+
+  auto factory = ModelRegistry::get_embeddingvlm_factory(resolved_name);
   if (factory) {
     return factory(context);
   }
@@ -337,9 +429,16 @@ std::unique_ptr<EmbeddingVLM> create_vlm_embedding_model(
 
 std::unique_ptr<MMEmbeddingVLM> create_vlm_mm_embedding_model(
     const ModelContext& context) {
-  // get the factory function for the model type from model registry
-  auto factory = ModelRegistry::get_mm_embedding_vlm_factory(
-      context.get_model_args().model_type());
+  std::string resolved_name;
+  std::string error_message;
+  if (!resolve_model_registration_name(context.get_model_args().model_type(),
+                                       &resolved_name,
+                                       &error_message)) {
+    LOG(ERROR) << error_message;
+    return nullptr;
+  }
+
+  auto factory = ModelRegistry::get_mm_embedding_vlm_factory(resolved_name);
   if (factory) {
     return factory(context);
   }

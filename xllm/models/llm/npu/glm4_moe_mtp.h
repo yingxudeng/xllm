@@ -21,10 +21,12 @@ limitations under the License.
 
 namespace xllm::hf {
 
-class Glm4MoeMtpModelImpl : public MtpModelImplBase<Glm4MoeDecoderLayer> {
+class Glm4MoeMtpModelImpl
+    : public xllm::npu::model::MtpModelImplBase<Glm4MoeDecoderLayer> {
  public:
   Glm4MoeMtpModelImpl(const ModelContext& context)
-      : MtpModelImplBase<Glm4MoeDecoderLayer>("glm4_moe_mtp", context) {
+      : xllm::npu::model::MtpModelImplBase<Glm4MoeDecoderLayer>("glm4_moe_mtp",
+                                                                context) {
     auto model_args = context.get_model_args();
     auto options = context.get_tensor_options();
 
@@ -43,10 +45,10 @@ class Glm4MoeMtpModelImpl : public MtpModelImplBase<Glm4MoeDecoderLayer> {
 TORCH_MODULE(Glm4MoeMtpModel);
 
 class Glm4MoeMtpForCausalLMImpl
-    : public MtpForCausalLMImplBase<Glm4MoeMtpModel> {
+    : public xllm::npu::model::MtpForCausalLMImplBase<Glm4MoeMtpModel> {
  public:
   Glm4MoeMtpForCausalLMImpl(const ModelContext& context)
-      : MtpForCausalLMImplBase<Glm4MoeMtpModel>(context) {}
+      : xllm::npu::model::MtpForCausalLMImplBase<Glm4MoeMtpModel>(context) {}
 };
 TORCH_MODULE(Glm4MoeMtpForCausalLM);
 

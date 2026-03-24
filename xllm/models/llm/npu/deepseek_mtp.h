@@ -25,10 +25,13 @@ limitations under the License.
 
 namespace xllm {
 
-class DeepseekMtpModelImpl : public MtpModelImplBase<DeepseekV2DecoderLayer> {
+class DeepseekMtpModelImpl
+    : public xllm::npu::model::MtpModelImplBase<DeepseekV2DecoderLayer> {
  public:
   DeepseekMtpModelImpl(const ModelContext& context)
-      : MtpModelImplBase<DeepseekV2DecoderLayer>("deepseek_v3_mtp", context) {
+      : xllm::npu::model::MtpModelImplBase<DeepseekV2DecoderLayer>(
+            "deepseek_v3_mtp",
+            context) {
     auto model_args = context.get_model_args();
     auto options = context.get_tensor_options();
 
@@ -57,10 +60,10 @@ class DeepseekMtpModelImpl : public MtpModelImplBase<DeepseekV2DecoderLayer> {
 TORCH_MODULE(DeepseekMtpModel);
 
 class DeepseekMtpForCausalLMImpl
-    : public MtpForCausalLMImplBase<DeepseekMtpModel> {
+    : public xllm::npu::model::MtpForCausalLMImplBase<DeepseekMtpModel> {
  public:
   DeepseekMtpForCausalLMImpl(const ModelContext& context)
-      : MtpForCausalLMImplBase<DeepseekMtpModel>(context) {}
+      : xllm::npu::model::MtpForCausalLMImplBase<DeepseekMtpModel>(context) {}
 };
 TORCH_MODULE(DeepseekMtpForCausalLM);
 

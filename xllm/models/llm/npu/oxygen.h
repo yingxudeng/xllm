@@ -21,9 +21,10 @@ limitations under the License.
 
 namespace xllm {
 
-class OxygenModelImpl : public QWen3ModelImpl {
+class OxygenModelImpl : public npu::model::QWen3ModelImpl {
  public:
-  OxygenModelImpl(const ModelContext& context) : QWen3ModelImpl(context) {}
+  OxygenModelImpl(const ModelContext& context)
+      : npu::model::QWen3ModelImpl(context) {}
 
   virtual ModelOutput forward(torch::Tensor tokens,
                               torch::Tensor positions,
@@ -139,10 +140,11 @@ class OxygenModelImpl : public QWen3ModelImpl {
 };
 TORCH_MODULE(OxygenModel);
 
-class OxygenForCausalLMImpl : public LlmForCausalLMImplBase<OxygenModel> {
+class OxygenForCausalLMImpl
+    : public xllm::npu::model::LlmForCausalLMImplBase<OxygenModel> {
  public:
   OxygenForCausalLMImpl(const ModelContext& context)
-      : LlmForCausalLMImplBase<OxygenModel>(context) {}
+      : xllm::npu::model::LlmForCausalLMImplBase<OxygenModel>(context) {}
 };
 TORCH_MODULE(OxygenForCausalLM);
 

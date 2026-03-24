@@ -21,10 +21,13 @@ limitations under the License.
 
 namespace xllm {
 
-class GlmMoeDsaMtpModelImpl : public MtpModelImplBase<DeepseekV32DecoderLayer> {
+class GlmMoeDsaMtpModelImpl
+    : public xllm::npu::model::MtpModelImplBase<DeepseekV32DecoderLayer> {
  public:
   GlmMoeDsaMtpModelImpl(const ModelContext& context)
-      : MtpModelImplBase<DeepseekV32DecoderLayer>("glm_moe_dsa_mtp", context) {
+      : xllm::npu::model::MtpModelImplBase<DeepseekV32DecoderLayer>(
+            "glm_moe_dsa_mtp",
+            context) {
     auto model_args = context.get_model_args();
     auto options = context.get_tensor_options();
 
@@ -43,10 +46,10 @@ class GlmMoeDsaMtpModelImpl : public MtpModelImplBase<DeepseekV32DecoderLayer> {
 TORCH_MODULE(GlmMoeDsaMtpModel);
 
 class GlmMoeDsaMtpForCausalLMImpl
-    : public MtpForCausalLMImplBase<GlmMoeDsaMtpModel> {
+    : public xllm::npu::model::MtpForCausalLMImplBase<GlmMoeDsaMtpModel> {
  public:
   GlmMoeDsaMtpForCausalLMImpl(const ModelContext& context)
-      : MtpForCausalLMImplBase<GlmMoeDsaMtpModel>(context) {}
+      : xllm::npu::model::MtpForCausalLMImplBase<GlmMoeDsaMtpModel>(context) {}
 };
 TORCH_MODULE(GlmMoeDsaMtpForCausalLM);
 

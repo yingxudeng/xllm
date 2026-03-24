@@ -25,19 +25,23 @@ limitations under the License.
 // https://github.com/huggingface/transformers/blob/v4.43.3/src/transformers/models/qwen2/modeling_qwen2.py
 namespace xllm {
 
-class QWen2DecoderLayerImpl
-    : public LlmDecoderLayerImplBase<layer::NpuQwen2DecoderLayer> {
+class QWen2DecoderLayerImpl : public xllm::npu::model::LlmDecoderLayerImplBase<
+                                  layer::NpuQwen2DecoderLayer> {
  public:
   QWen2DecoderLayerImpl(const ModelContext& context, const int32_t layer_id)
-      : LlmDecoderLayerImplBase<layer::NpuQwen2DecoderLayer>(context,
-                                                             layer_id) {}
+      : xllm::npu::model::LlmDecoderLayerImplBase<layer::NpuQwen2DecoderLayer>(
+            context,
+            layer_id) {}
 };
 TORCH_MODULE(QWen2DecoderLayer);
 
-class QWen2ModelImpl : public LlmModelImplBase<QWen2DecoderLayer> {
+class QWen2ModelImpl
+    : public xllm::npu::model::LlmModelImplBase<QWen2DecoderLayer> {
  public:
   QWen2ModelImpl(const ModelContext& context)
-      : LlmModelImplBase<QWen2DecoderLayer>("qwen2", context.get_model_args()) {
+      : xllm::npu::model::LlmModelImplBase<QWen2DecoderLayer>(
+            "qwen2",
+            context.get_model_args()) {
     // register submodules
     auto model_args = context.get_model_args();
     auto options = context.get_tensor_options();
@@ -71,10 +75,11 @@ class QWen2ModelImpl : public LlmModelImplBase<QWen2DecoderLayer> {
 };
 TORCH_MODULE(QWen2Model);
 
-class QWen2ForCausalLMImpl : public LlmForCausalLMImplBase<QWen2Model> {
+class QWen2ForCausalLMImpl
+    : public xllm::npu::model::LlmForCausalLMImplBase<QWen2Model> {
  public:
   QWen2ForCausalLMImpl(const ModelContext& context)
-      : LlmForCausalLMImplBase<QWen2Model>(context) {}
+      : xllm::npu::model::LlmForCausalLMImplBase<QWen2Model>(context) {}
 };
 TORCH_MODULE(QWen2ForCausalLM);
 

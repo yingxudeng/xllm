@@ -348,10 +348,10 @@ class Glm4MoeLiteModelImpl : public torch::nn::Module {
 TORCH_MODULE(Glm4MoeLiteModel);
 
 class Glm4MoeLiteForCausalLMImpl
-    : public LlmForCausalLMImplBase<Glm4MoeLiteModel> {
+    : public xllm::npu::model::LlmForCausalLMImplBase<Glm4MoeLiteModel> {
  public:
   Glm4MoeLiteForCausalLMImpl(const ModelContext& context)
-      : LlmForCausalLMImplBase<Glm4MoeLiteModel>(context) {}
+      : xllm::npu::model::LlmForCausalLMImplBase<Glm4MoeLiteModel>(context) {}
 };
 TORCH_MODULE(Glm4MoeLiteForCausalLM);
 

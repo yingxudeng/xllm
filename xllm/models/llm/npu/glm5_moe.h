@@ -246,10 +246,11 @@ class GlmMoeDsaModelImpl : public torch::nn::Module {
 };
 TORCH_MODULE(GlmMoeDsaModel);
 
-class GlmMoeDsaForCausalLMImpl : public LlmForCausalLMImplBase<GlmMoeDsaModel> {
+class GlmMoeDsaForCausalLMImpl
+    : public xllm::npu::model::LlmForCausalLMImplBase<GlmMoeDsaModel> {
  public:
   GlmMoeDsaForCausalLMImpl(const ModelContext& context)
-      : LlmForCausalLMImplBase<GlmMoeDsaModel>(context),
+      : xllm::npu::model::LlmForCausalLMImplBase<GlmMoeDsaModel>(context),
         first_k_dense_replace_(
             context.get_model_args().first_k_dense_replace()) {}
 

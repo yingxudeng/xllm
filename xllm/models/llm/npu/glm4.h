@@ -22,19 +22,23 @@ limitations under the License.
 
 namespace xllm {
 
-class Glm4DecoderLayerImpl
-    : public LlmDecoderLayerImplBase<layer::NpuGlm4DecoderLayer> {
+class Glm4DecoderLayerImpl : public xllm::npu::model::LlmDecoderLayerImplBase<
+                                 layer::NpuGlm4DecoderLayer> {
  public:
   Glm4DecoderLayerImpl(const ModelContext& context, const int32_t layer_id)
-      : LlmDecoderLayerImplBase<layer::NpuGlm4DecoderLayer>(context, layer_id) {
-  }
+      : xllm::npu::model::LlmDecoderLayerImplBase<layer::NpuGlm4DecoderLayer>(
+            context,
+            layer_id) {}
 };
 TORCH_MODULE(Glm4DecoderLayer);
 
-class Glm4ModelImpl : public LlmModelImplBase<Glm4DecoderLayer> {
+class Glm4ModelImpl
+    : public xllm::npu::model::LlmModelImplBase<Glm4DecoderLayer> {
  public:
   Glm4ModelImpl(const ModelContext& context)
-      : LlmModelImplBase<Glm4DecoderLayer>("glm4", context.get_model_args()) {
+      : xllm::npu::model::LlmModelImplBase<Glm4DecoderLayer>(
+            "glm4",
+            context.get_model_args()) {
     // register submodules
     auto model_args = context.get_model_args();
     auto options = context.get_tensor_options();
@@ -168,10 +172,11 @@ class Glm4ModelImpl : public LlmModelImplBase<Glm4DecoderLayer> {
 };
 TORCH_MODULE(Glm4Model);
 
-class Glm4ForCausalLMImpl : public LlmForCausalLMImplBase<Glm4Model> {
+class Glm4ForCausalLMImpl
+    : public xllm::npu::model::LlmForCausalLMImplBase<Glm4Model> {
  public:
   Glm4ForCausalLMImpl(const ModelContext& context)
-      : LlmForCausalLMImplBase<Glm4Model>(context) {}
+      : xllm::npu::model::LlmForCausalLMImplBase<Glm4Model>(context) {}
 };
 TORCH_MODULE(Glm4ForCausalLM);
 

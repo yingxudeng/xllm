@@ -329,10 +329,10 @@ class DeepseekV32ModelImpl : public torch::nn::Module {
 TORCH_MODULE(DeepseekV32Model);
 
 class DeepseekV32ForCausalLMImpl
-    : public LlmForCausalLMImplBase<DeepseekV32Model> {
+    : public xllm::npu::model::LlmForCausalLMImplBase<DeepseekV32Model> {
  public:
   DeepseekV32ForCausalLMImpl(const ModelContext& context)
-      : LlmForCausalLMImplBase<DeepseekV32Model>(context),
+      : xllm::npu::model::LlmForCausalLMImplBase<DeepseekV32Model>(context),
         first_k_dense_replace_(
             context.get_model_args().first_k_dense_replace()) {}
 

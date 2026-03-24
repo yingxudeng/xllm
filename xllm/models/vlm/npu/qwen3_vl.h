@@ -635,8 +635,8 @@ class Qwen3_VLForConditionalGenerationImpl : public torch::nn::Module {
       : model_args_(context.get_model_args()),
         options_(context.get_tensor_options()) {
     visual_ = register_module("visual", Qwen3_VisionTransformer(context));
-    language_model_ =
-        register_module("language_model", QWen3ForCausalLM(context));
+    language_model_ = register_module("language_model",
+                                      npu::model::QWen3ForCausalLM(context));
   }
 
   void prepare_encoder_input(const ModelInputParams& input_params,
@@ -825,7 +825,7 @@ class Qwen3_VLForConditionalGenerationImpl : public torch::nn::Module {
   torch::TensorOptions options_;
 
   Qwen3_VisionTransformer visual_{nullptr};
-  QWen3ForCausalLM language_model_{nullptr};
+  npu::model::QWen3ForCausalLM language_model_{nullptr};
 };
 TORCH_MODULE(Qwen3_VLForConditionalGeneration);
 

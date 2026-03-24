@@ -495,10 +495,11 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
 };
 TORCH_MODULE(Qwen3MoeModel);
 
-class Qwen3MoeForCausalLMImpl : public LlmForCausalLMImplBase<Qwen3MoeModel> {
+class Qwen3MoeForCausalLMImpl
+    : public xllm::npu::model::LlmForCausalLMImplBase<Qwen3MoeModel> {
  public:
   Qwen3MoeForCausalLMImpl(const ModelContext& context)
-      : LlmForCausalLMImplBase<Qwen3MoeModel>(context) {}
+      : xllm::npu::model::LlmForCausalLMImplBase<Qwen3MoeModel>(context) {}
 };
 TORCH_MODULE(Qwen3MoeForCausalLM);
 

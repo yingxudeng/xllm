@@ -358,10 +358,11 @@ class Glm4MoeModelImpl : public torch::nn::Module {
 };
 TORCH_MODULE(Glm4MoeModel);
 
-class Glm4MoeForCausalLMImpl : public LlmForCausalLMImplBase<Glm4MoeModel> {
+class Glm4MoeForCausalLMImpl
+    : public xllm::npu::model::LlmForCausalLMImplBase<Glm4MoeModel> {
  public:
   Glm4MoeForCausalLMImpl(const ModelContext& context)
-      : LlmForCausalLMImplBase<Glm4MoeModel>(context) {}
+      : xllm::npu::model::LlmForCausalLMImplBase<Glm4MoeModel>(context) {}
 };
 TORCH_MODULE(Glm4MoeForCausalLM);
 
