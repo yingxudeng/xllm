@@ -35,7 +35,7 @@ limitations under the License.
 #include "processors/pywarpper_image_processor.h"
 #include "xllm_atb_layers/core/include/atb_speed/log.h"
 
-namespace xllm {
+namespace xllm::npu::model {
 
 class MiniCPMInputProcessor : public InputProcessor {
  public:
@@ -1317,4 +1317,4 @@ REGISTER_MODEL_ARGS(minicpmv, [&] {
     return args->mm_hidden_size() / args->mm_num_attention_heads();
   });
 });
-}  // namespace xllm
+}  // namespace xllm::npu::model

@@ -32,7 +32,7 @@ limitations under the License.
 #include "qwen3_vl.h"
 #include "xllm_atb_layers/core/include/atb_speed/log.h"
 
-namespace xllm {
+namespace xllm::npu::model {
 
 using torch::indexing::None;
 using ISlice = torch::indexing::Slice;
@@ -273,4 +273,4 @@ REGISTER_MODEL_ARGS(qwen3_vl_moe, [&] {
   LOAD_ARG_OR(vision_end_token_id, "vision_end_token_id", 151653);
   LOAD_ARG_OR(vision_start_token_id, "vision_start_token_id", 151652);
 });
-}  // namespace xllm
+}  // namespace xllm::npu::model

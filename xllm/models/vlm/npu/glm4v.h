@@ -35,7 +35,7 @@ limitations under the License.
 #include "xllm/core/layers/npu/npu_glm4_vision_encoder_layer_impl.h"
 #include "xllm_atb_layers/core/include/atb_speed/log.h"
 
-namespace xllm {
+namespace xllm::npu::model {
 
 class GLM4VInputProcessor : public InputProcessor {
   enum class TokenType {
@@ -1120,4 +1120,4 @@ REGISTER_MODEL_ARGS(glm4v, [&] {
                                       args->eos_token_id_vec().end()));
   SET_ARG(rope_scaling_rope_type, "mrope");
 });
-}  // namespace xllm
+}  // namespace xllm::npu::model

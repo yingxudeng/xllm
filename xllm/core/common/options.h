@@ -110,6 +110,8 @@ class Options {
 
   PROPERTY(bool, enable_mla) = false;
 
+  PROPERTY(std::string, npu_kernel_backend) = "AUTO";
+
   PROPERTY(bool, enable_chunked_prefill) = true;
 
   PROPERTY(bool, enable_prefill_sp) = false;

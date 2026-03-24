@@ -36,7 +36,7 @@ limitations under the License.
 #include "processors/input_processor.h"
 #include "xllm_atb_layers/core/include/atb_speed/log.h"
 
-namespace xllm {
+namespace xllm::npu::model {
 
 class Glm4vMoeForConditionalGenerationImpl : public torch::nn::Module {
  public:
@@ -295,4 +295,4 @@ REGISTER_MODEL_ARGS(glm4v_moe, [&] {
                                       args->eos_token_id_vec().end()));
   SET_ARG(rope_scaling_rope_type, "mrope");
 });
-}  // namespace xllm
+}  // namespace xllm::npu::model
