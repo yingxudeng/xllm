@@ -35,6 +35,7 @@ limitations under the License.
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "common/device_monitor.h"
 #include "common/global_flags.h"
@@ -111,6 +112,49 @@ class ScopedAtenLoadThreads {
   int32_t prev_threads_ = 0;
   bool active_ = false;
 };
+
+std::optional<std::string> get_mtp_draft_model_type(
+    const std::string& model_type) {
+  static const std::unordered_map<std::string, std::string>
+      kModelTypeToMtpType = {
+          {"deepseek_v3", "deepseek_v3_mtp"},
+          {"deepseek_v32", "deepseek_v3_mtp"},
+          {"glm_moe_dsa", "glm_moe_dsa_mtp"},
+          {"qwen3_5", "qwen3_5_mtp"},
+          {"qwen3_5_moe", "qwen3_5_moe_mtp"},
+      };
+
+  auto it = kModelTypeToMtpType.find(model_type);
+  if (it == kModelTypeToMtpType.end()) {
+    return std::nullopt;
+  }
+  return it->second;
+}
+
+void maybe_override_draft_model_args_for_mtp(ModelArgs& args,
+                                             const runtime::Options& options) {
+  if (options.num_speculative_tokens() != 0 ||
+      args.num_nextn_predict_layers() == 0) {
+    return;
+  }
+
+  const std::string current_type = args.model_type();
+  auto mtp_type = get_mtp_draft_model_type(current_type);
+  if (!mtp_type.has_value()) {
+    return;
+  }
+
+  LOG(INFO) << "Overriding draft model_type from " << current_type << " to "
+            << *mtp_type << " for speculative decoding";
+  args.model_type(*mtp_type);
+
+  if (current_type == "qwen3_5" || current_type == "qwen3_5_moe") {
+    const int32_t mtp_layers = args.num_nextn_predict_layers();
+    args.n_layers(mtp_layers);
+    args.layer_types(std::vector<std::string>(mtp_layers, "full_attention"));
+    args.full_attention_interval(1);
+  }
+}
 
 }  // namespace
 
@@ -859,35 +903,18 @@ bool WorkerImpl::init_model(const std::string& model_weights_path,
                  << ", model: " << model_vocab_size;
   }
 
-#if defined(USE_NPU)
-  if (options_.enable_speculative_decode() && FLAGS_enable_atb_spec_kernel) {
-    args.num_speculative_tokens(options_.num_speculative_tokens());
-  }
-#else
   if (options_.enable_speculative_decode()) {
-    args.num_speculative_tokens(options_.num_speculative_tokens());
-    // When running speculative decoding, the draft worker reuses the same
-    // checkpoint as the target model. The draft worker needs to instantiate
-    // the MTP variant, so override the model_type here without mutating the
-    // original config.
-    if (options_.num_speculative_tokens() == 0 &&
-        args.num_nextn_predict_layers() != 0) {
-      static const std::unordered_map<std::string, std::string>
-          kModelTypeToMtpType = {
-              {"deepseek_v3", "deepseek_v3_mtp"},
-              {"deepseek_v32", "deepseek_v3_mtp"},
-              {"glm_moe_dsa", "glm_moe_dsa_mtp"},
-          };
-      const std::string& current_type = args.model_type();
-      auto it = kModelTypeToMtpType.find(current_type);
-      if (it != kModelTypeToMtpType.end()) {
-        LOG(INFO) << "Overriding draft model_type from " << current_type
-                  << " to " << it->second << " for speculative decoding";
-        args.model_type(it->second);
-      }
+#if defined(USE_NPU)
+    if (FLAGS_enable_atb_spec_kernel) {
+      args.num_speculative_tokens(options_.num_speculative_tokens());
+    } else {
+      maybe_override_draft_model_args_for_mtp(args, options_);
     }
-  }
+#else
+    args.num_speculative_tokens(options_.num_speculative_tokens());
+    maybe_override_draft_model_args_for_mtp(args, options_);
 #endif
+  }
 
   // create model context
   dtype_ = dtype;
