@@ -176,6 +176,16 @@ bool WorkerImpl::allocate_kv_cache(
   CHECK(!(enable_linear_attention && enable_lighting_indexer))
       << "KVCache does not support linear attention and lighting indexer "
       << "simultaneously.";
+  if (enable_linear_attention) {
+    CHECK_GE(kv_cache_shape.size(), 4)
+        << "Linear attention requires kv_cache_shape to include conv and ssm "
+        << "shapes. Actual size: " << kv_cache_shape.size();
+  }
+  if (enable_lighting_indexer) {
+    CHECK_GE(kv_cache_shape.size(), 3)
+        << "Lighting indexer requires kv_cache_shape to include index shape. "
+        << "Actual size: " << kv_cache_shape.size();
+  }
 
   // Check if KV cache quantization is enabled
   // "auto" (default): cache dtype aligns with model dtype (no quantization)
@@ -1012,7 +1022,7 @@ folly::SemiFuture<bool> WorkerImpl::allocate_kv_cache_async(
   folly::Promise<bool> promise;
   auto future = promise.getSemiFuture();
   threadpool_.schedule(
-      [this, &kv_cache_shape, promise = std::move(promise)]() mutable {
+      [this, kv_cache_shape, promise = std::move(promise)]() mutable {
         const bool success = this->allocate_kv_cache(kv_cache_shape);
         promise.setValue(success);
       });
@@ -1024,7 +1034,7 @@ folly::SemiFuture<bool> WorkerImpl::allocate_kv_cache_with_transfer_async(
   folly::Promise<bool> promise;
   auto future = promise.getSemiFuture();
   threadpool_.schedule(
-      [this, &kv_cache_shape, promise = std::move(promise)]() mutable {
+      [this, kv_cache_shape, promise = std::move(promise)]() mutable {
         const bool success =
             this->allocate_kv_cache_with_transfer(kv_cache_shape);
         promise.setValue(success);

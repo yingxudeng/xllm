@@ -135,6 +135,14 @@ bool VLMEngine::init_model() {
   const int64_t n_kv_heads = args_.n_kv_heads().value_or(n_heads);
 
   n_local_kv_heads_ = std::max<int64_t>(1, n_kv_heads / world_size);
+  if (args_.linear_num_value_heads() > 0) {
+    const int64_t linear_n_k_heads = args_.linear_num_key_heads();
+    const int64_t linear_n_v_heads = args_.linear_num_value_heads();
+    n_local_linear_k_heads_ =
+        std::max<int64_t>(1, linear_n_k_heads / world_size);
+    n_local_linear_v_heads_ =
+        std::max<int64_t>(1, linear_n_v_heads / world_size);
+  }
   head_dim_ = args_.head_dim();
   dtype_ = util::parse_dtype(args_.dtype(), options_.devices()[0]);
 
@@ -266,14 +274,34 @@ bool VLMEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
             << ", slot_size: " << kv_cache_cap.slot_size;
 
   const int32_t block_size = options_.block_size();
+  const bool enable_lighting_indexer = args_.index_n_heads() > 1;
+  const bool enable_gdn_attention =
+      has_linear_attention_layers(args_) || args_.linear_num_value_heads() > 0;
 
   // init kv cache for each worker
   std::vector<std::vector<int64_t>> kv_cache_shape;
-  kv_cache_shape.reserve(2);
+  kv_cache_shape.reserve(
+      enable_gdn_attention ? 4 : (enable_lighting_indexer ? 3 : 2));
   kv_cache_shape.emplace_back(std::vector<int64_t>{
       kv_cache_cap.n_blocks, block_size, n_local_kv_heads_, head_dim_});
   kv_cache_shape.emplace_back(std::vector<int64_t>{
       kv_cache_cap.n_blocks, block_size, n_local_kv_heads_, head_dim_});
+  if (enable_lighting_indexer) {
+    kv_cache_shape.emplace_back(std::vector<int64_t>{
+        kv_cache_cap.n_blocks, block_size, 1, args_.index_head_dim()});
+  }
+  if (enable_gdn_attention) {
+    kv_cache_shape.emplace_back(std::vector<int64_t>{
+        kv_cache_cap.n_blocks,
+        args_.linear_key_head_dim() * n_local_linear_k_heads_ * 2 +
+            args_.linear_key_head_dim() * n_local_linear_v_heads_,
+        args_.linear_conv_kernel_dim() - 1});
+    kv_cache_shape.emplace_back(
+        std::vector<int64_t>{kv_cache_cap.n_blocks,
+                             n_local_linear_v_heads_,
+                             args_.linear_key_head_dim(),
+                             args_.linear_value_head_dim()});
+  }
 #if defined(USE_MLU)
   // transpose kv_cache layout for mlu
   // default layout: [n_blocks, block_size, n_head, head_dim]
@@ -285,6 +313,19 @@ bool VLMEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
 
   LOG(INFO) << "Initializing k cache with shape: [" << kv_cache_shape[0] << "]";
   LOG(INFO) << "Initializing v cache with shape: [" << kv_cache_shape[1] << "]";
+  if (enable_lighting_indexer) {
+    LOG(INFO) << "Initializing indexer cache with shape: [" << kv_cache_shape[2]
+              << "]";
+  }
+  if (enable_gdn_attention) {
+    const size_t conv_shape_index = enable_lighting_indexer ? 3 : 2;
+    const size_t ssm_shape_index = enable_lighting_indexer ? 4 : 3;
+    LOG(INFO) << "GND Attention is enabled";
+    LOG(INFO) << "Initializing conv cache with shape: ["
+              << kv_cache_shape[conv_shape_index] << "]";
+    LOG(INFO) << "Initializing ssm cache with shape: ["
+              << kv_cache_shape[ssm_shape_index] << "]";
+  }
 
   // initialize block manager
   BlockManagerPool::Options options;

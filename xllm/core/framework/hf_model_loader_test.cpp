@@ -123,6 +123,106 @@ TEST(HFModelLoaderTest, Qwen35MtpModelArgsFromMoeConfig) {
   EXPECT_EQ(args.layer_types()[0], "full_attention");
   EXPECT_EQ(args.layer_types()[1], "full_attention");
 }
+
+TEST(HFModelLoaderTest, Qwen35DenseMultimodalModelArgsAndBackend) {
+  auto loader = ModelRegistry::get_model_args_loader("qwen3_5");
+  ASSERT_TRUE(loader != nullptr);
+
+  JsonReader reader;
+  ASSERT_TRUE(reader.parse_text(R"json(
+    {
+      "model_type": "qwen3_5",
+      "vision_start_token_id": 248053,
+      "vision_end_token_id": 248054,
+      "image_token_id": 248056,
+      "video_token_id": 248057,
+      "text_config": {
+        "model_type": "qwen3_5_text",
+        "hidden_size": 5120,
+        "num_attention_heads": 24,
+        "num_hidden_layers": 64,
+        "layer_types": ["linear_attention", "full_attention"]
+      },
+      "vision_config": {
+        "depth": 27,
+        "hidden_size": 1152,
+        "intermediate_size": 4304,
+        "num_heads": 16,
+        "in_channels": 3,
+        "out_hidden_size": 5120,
+        "patch_size": 16,
+        "num_position_embeddings": 2304,
+        "spatial_merge_size": 2,
+        "deepstack_visual_indexes": [],
+        "temporal_patch_size": 2
+      }
+    }
+  )json"));
+
+  ModelArgs args;
+  ASSERT_TRUE(loader(reader, &args));
+  EXPECT_EQ(args.model_type(), "qwen3_5");
+  EXPECT_EQ(ModelRegistry::get_model_backend("qwen3_5"), "vlm");
+  EXPECT_EQ(args.vision_start_token_id(), 248053);
+  EXPECT_EQ(args.vision_end_token_id(), 248054);
+  EXPECT_EQ(args.image_token_id(), 248056);
+  EXPECT_EQ(args.video_token_id(), 248057);
+  EXPECT_EQ(args.mm_num_hidden_layers(), 27);
+  EXPECT_EQ(args.mm_hidden_size(), 1152);
+  EXPECT_EQ(args.mm_projection_dim(), 5120);
+  EXPECT_EQ(args.mm_num_attention_heads(), 16);
+}
+
+TEST(HFModelLoaderTest, Qwen35MoeMultimodalModelArgsAndBackend) {
+  auto loader = ModelRegistry::get_model_args_loader("qwen3_5_moe");
+  ASSERT_TRUE(loader != nullptr);
+
+  JsonReader reader;
+  ASSERT_TRUE(reader.parse_text(R"json(
+    {
+      "model_type": "qwen3_5_moe",
+      "vision_start_token_id": 248053,
+      "vision_end_token_id": 248054,
+      "image_token_id": 248056,
+      "video_token_id": 248057,
+      "text_config": {
+        "model_type": "qwen3_5_moe_text",
+        "hidden_size": 2048,
+        "num_attention_heads": 16,
+        "num_hidden_layers": 40,
+        "num_experts": 256,
+        "num_experts_per_tok": 8,
+        "shared_expert_intermediate_size": 512,
+        "layer_types": ["linear_attention", "full_attention"]
+      },
+      "vision_config": {
+        "depth": 27,
+        "hidden_size": 1152,
+        "intermediate_size": 4304,
+        "num_heads": 16,
+        "in_channels": 3,
+        "out_hidden_size": 2048,
+        "patch_size": 16,
+        "num_position_embeddings": 2304,
+        "spatial_merge_size": 2,
+        "deepstack_visual_indexes": [],
+        "temporal_patch_size": 2
+      }
+    }
+  )json"));
+
+  ModelArgs args;
+  ASSERT_TRUE(loader(reader, &args));
+  EXPECT_EQ(args.model_type(), "qwen3_5_moe");
+  EXPECT_EQ(ModelRegistry::get_model_backend("qwen3_5_moe"), "vlm");
+  EXPECT_EQ(args.image_token_id(), 248056);
+  EXPECT_EQ(args.video_token_id(), 248057);
+  EXPECT_EQ(args.mm_hidden_size(), 1152);
+  EXPECT_EQ(args.mm_projection_dim(), 2048);
+  EXPECT_EQ(args.num_experts(), 256);
+  EXPECT_EQ(args.num_experts_per_tok(), 8);
+}
+
 #endif
 
 }  // namespace xllm

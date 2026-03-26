@@ -45,6 +45,7 @@ class Qwen3HybridModelModule : public torch::nn::Module {
                               const ModelInputParams& input_params) = 0;
   virtual void load_state_dict(const StateDict& state_dict) = 0;
   virtual void verify_loaded_weights(const std::string& prefix) const = 0;
+  virtual torch::Tensor get_input_embeddings(torch::Tensor input_ids) = 0;
   virtual layer::WordEmbedding get_word_embedding() = 0;
   virtual void set_word_embedding(layer::WordEmbedding& word_embedding) = 0;
 };
@@ -94,7 +95,13 @@ class Qwen3HybridModelImplBase : public Qwen3HybridModelModule {
     layer::AttentionMetadata attn_metadata =
         layer::AttentionMetadataBuilder::build(
             input_params, build_attention_mask(input_params));
-    torch::Tensor h = embed_tokens_(tokens);
+    auto inputs_embeds = input_params.input_embedding;
+    torch::Tensor h;
+    if (inputs_embeds.defined()) {
+      h = inputs_embeds;
+    } else {
+      h = get_input_embeddings(tokens);
+    }
     for (size_t i = 0; i < layers_.size(); i++) {
       auto& layer = layers_[i];
       h = layer->forward(
@@ -120,6 +127,10 @@ class Qwen3HybridModelImplBase : public Qwen3HybridModelModule {
       layers_[i]->verify_loaded_weights(prefix + "layers." + std::to_string(i) +
                                         ".");
     }
+  }
+
+  torch::Tensor get_input_embeddings(torch::Tensor input_ids) override {
+    return embed_tokens_(input_ids);
   }
 
   layer::WordEmbedding get_word_embedding() override { return embed_tokens_; }
@@ -212,6 +223,10 @@ class Qwen3HybridForCausalLMImplBase : public torch::nn::Module {
     }
     namespace F = torch::nn::functional;
     return F::normalize(h, F::NormalizeFuncOptions().p(2).dim(1));
+  }
+
+  torch::Tensor get_input_embeddings(torch::Tensor input_ids) {
+    return model_->get_input_embeddings(input_ids);
   }
 
   void load_model(std::unique_ptr<ModelLoader> loader) {

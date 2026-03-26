@@ -54,8 +54,9 @@ void MMBatchData::to(const torch::Device& device) {
 
   for (const auto& pair : data_) {
     if (std::holds_alternative<torch::Tensor>(pair.second)) {
-      dict[pair.first] =
-          safe_to(std::get<torch::Tensor>(pair.second), device, true);
+      const auto& tensor = std::get<torch::Tensor>(pair.second);
+      auto moved = safe_to(tensor, device, true);
+      dict[pair.first] = std::move(moved);
     } else if (std::holds_alternative<std::vector<torch::Tensor>>(
                    pair.second)) {
       const auto& lst = std::get<std::vector<torch::Tensor>>(pair.second);
@@ -63,8 +64,10 @@ void MMBatchData::to(const torch::Device& device) {
       std::vector<torch::Tensor> vec;
       vec.reserve(lst.size());
 
-      for (const auto& item : lst) {
-        vec.emplace_back(safe_to(item, device, true));
+      for (size_t idx = 0; idx < lst.size(); ++idx) {
+        const auto& item = lst[idx];
+        auto moved = safe_to(item, device, true);
+        vec.emplace_back(std::move(moved));
       }
       dict[pair.first] = std::move(vec);
     }
