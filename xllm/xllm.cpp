@@ -37,6 +37,7 @@ limitations under the License.
 #include "core/framework/xtensor/xtensor_allocator.h"
 #include "core/util/device_name_utils.h"
 #include "core/util/json_reader.h"
+#include "core/util/model_config_utils.h"
 #include "core/util/net.h"
 #include "core/util/utils.h"
 #include "function_call/function_call_parser.h"
@@ -218,6 +219,9 @@ int run() {
 
   // Create Master
   Options options;
+#if defined(USE_NPU)
+  options.npu_kernel_backend(FLAGS_npu_kernel_backend);
+#endif
   options.model_path(FLAGS_model)
       .model_id(FLAGS_model_id)
       .task_type(FLAGS_task)
@@ -248,7 +252,6 @@ int run() {
       .speculative_suffix_use_tree_spec(FLAGS_speculative_suffix_use_tree_spec)
       .num_request_handling_threads(FLAGS_num_request_handling_threads)
       .communication_backend(FLAGS_communication_backend)
-      .npu_kernel_backend(FLAGS_npu_kernel_backend)
       .enable_eplb(FLAGS_enable_eplb)
       .redundant_experts_num(FLAGS_redundant_experts_num)
       .eplb_update_interval(FLAGS_eplb_update_interval)
