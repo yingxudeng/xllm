@@ -18,12 +18,10 @@ limitations under the License.
 
 #include <glog/logging.h>
 
-#include <filesystem>
 #include <iostream>
 #include <unordered_set>
 
 #include "core/common/global_flags.h"
-#include "core/util/json_reader.h"
 #include "models.h"
 
 namespace {
@@ -79,33 +77,6 @@ bool is_torch_only_model_type(const std::string& model_type) {
 #endif
 
 }  // namespace
-
-std::string get_model_type(const std::filesystem::path& model_path) {
-  JsonReader reader;
-  // for llm, vlm and rec models, the config.json file is in the model path
-  std::filesystem::path config_json_path = model_path / "config.json";
-
-  if (std::filesystem::exists(config_json_path)) {
-    reader.parse(config_json_path);
-    // Prefer model_type (e.g. LLM/VLM); fall back to model_name for configs
-    // that only have model_name (e.g. LongCat-Image: {"model_name":
-    // "LongCat-Image"}).
-    auto model_type = reader.value<std::string>("model_type");
-    if (!model_type.has_value()) {
-      model_type = reader.value<std::string>("model_name");
-    }
-    if (!model_type.has_value()) {
-      LOG(FATAL) << "Please check config.json file in model path: "
-                 << model_path
-                 << ", it should contain model_type or model_name key.";
-    }
-    return model_type.value();
-  } else {
-    LOG(FATAL) << "Please check config.json or model_index.json file, one of "
-                  "them should exist in the model path: "
-               << model_path;
-  }
-}
 
 bool resolve_model_registration(const std::string& model_type,
                                 const std::string& requested_npu_kernel_backend,
@@ -170,11 +141,16 @@ bool resolve_model_registration(const std::string& model_type,
 bool resolve_model_registration_name(const std::string& model_type,
                                      std::string* resolved_name,
                                      std::string* error_message) {
+#if defined(USE_NPU)
   return resolve_model_registration(model_type,
                                     FLAGS_npu_kernel_backend,
                                     nullptr,
                                     resolved_name,
                                     error_message);
+#else
+  return resolve_model_registration(
+      model_type, "", nullptr, resolved_name, error_message);
+#endif
 }
 
 ModelRegistry* ModelRegistry::get_instance() {

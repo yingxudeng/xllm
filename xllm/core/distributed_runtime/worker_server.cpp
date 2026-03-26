@@ -77,7 +77,9 @@ void WorkerServer::create_server(
     std::unique_ptr<ForwardSharedMemoryManager> input_shm_manager,
     std::unique_ptr<ForwardSharedMemoryManager> output_shm_manager) {
   FLAGS_enable_prefill_sp = options.enable_prefill_sp();
+#if defined(USE_NPU)
   FLAGS_npu_kernel_backend = options.npu_kernel_backend();
+#endif
   Device device(d);
   device.set_device();
   LOG(INFO) << "Create worker server with device: " << device.index();
