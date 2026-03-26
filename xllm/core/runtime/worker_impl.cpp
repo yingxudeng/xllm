@@ -35,6 +35,7 @@ limitations under the License.
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "common/device_monitor.h"
 #include "common/global_flags.h"
@@ -862,6 +863,25 @@ bool WorkerImpl::init_model(const std::string& model_weights_path,
 #if defined(USE_NPU)
   if (options_.enable_speculative_decode() && FLAGS_enable_atb_spec_kernel) {
     args.num_speculative_tokens(options_.num_speculative_tokens());
+  } else if (options_.enable_speculative_decode() &&
+             options_.num_speculative_tokens() == 0 &&
+             args.num_nextn_predict_layers() != 0) {
+    const std::string& current_type = args.model_type();
+    const char* mtp_model_type = nullptr;
+    if (current_type == "qwen3_5") {
+      mtp_model_type = "qwen3_5_mtp";
+    } else if (current_type == "qwen3_5_moe") {
+      mtp_model_type = "qwen3_5_moe_mtp";
+    }
+    if (mtp_model_type != nullptr) {
+      LOG(INFO) << "Overriding draft model_type from " << current_type << " to "
+                << mtp_model_type << " for speculative decoding";
+      args.model_type(mtp_model_type);
+      const int32_t mtp_layers = args.num_nextn_predict_layers();
+      args.n_layers(mtp_layers);
+      args.layer_types(std::vector<std::string>(mtp_layers, "full_attention"));
+      args.full_attention_interval(1);
+    }
   }
 #else
   if (options_.enable_speculative_decode()) {
