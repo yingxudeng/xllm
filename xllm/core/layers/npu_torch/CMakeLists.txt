@@ -1,4 +1,5 @@
 include(cc_library)
+include(cc_test)
 
 cc_library(
   NAME
@@ -26,3 +27,15 @@ cc_library(
   DEPS
     :common_layers
 )
+
+cc_test(
+  NAME
+    qwen3_gated_delta_net_base_test
+  SRCS
+    qwen3_gated_delta_net_base_test.cpp
+  DEPS
+    :npu_torch_layers
+    GTest::gtest_main
+)
+
+target_link_libraries(qwen3_gated_delta_net_base_test PRIVATE atb)

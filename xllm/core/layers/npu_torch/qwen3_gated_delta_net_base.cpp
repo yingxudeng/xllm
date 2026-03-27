@@ -322,6 +322,31 @@ void Qwen3GatedDeltaNetBaseImpl::verify_common_loaded_weights(
                           << prefix << "A_log";
 }
 
+torch::Tensor Qwen3GatedDeltaNetBaseImpl::build_linear_state_indices(
+    const AttentionMetadata& attn_metadata,
+    const ModelInputParams& input_params,
+    const c10::Device& device) {
+  if (!input_params.embedding_ids.empty()) {
+    const int64_t num_sequences =
+        attn_metadata.block_table.defined()
+            ? attn_metadata.block_table.size(0)
+            : static_cast<int64_t>(input_params.embedding_ids.size());
+    TORCH_CHECK(static_cast<int64_t>(input_params.embedding_ids.size()) ==
+                    num_sequences,
+                "embedding_ids size mismatch, expected ",
+                num_sequences,
+                ", got ",
+                input_params.embedding_ids.size());
+    return torch::tensor(
+        input_params.embedding_ids,
+        torch::TensorOptions().dtype(torch::kInt64).device(device));
+  }
+
+  TORCH_CHECK(attn_metadata.block_table.defined(),
+              "block_table must be defined when embedding_ids is empty");
+  return attn_metadata.block_table.select(1, 0).to(device, torch::kInt64);
+}
+
 torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
     const torch::Tensor& hidden_states,
     const AttentionMetadata& attn_metadata,
@@ -359,6 +384,8 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
   torch::Tensor g, beta, core_attn_out, last_recurrent_state;
   auto device = mixed_qkv.device();
   auto conv_weight = conv1d_->weight();
+  const auto state_indices =
+      build_linear_state_indices(attn_metadata, input_params, device);
 
   if (attn_metadata.is_prefill) {
     torch::Tensor conv_state =
@@ -368,8 +395,7 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
             ? mixed_qkv.narrow(
                   -1, seq_len - conv_kernel_size_ + 1, conv_kernel_size_ - 1)
             : mixed_qkv;
-    conv_cache.index_put_({input_params.block_tables.select(1, 0)},
-                          conv_state.to(conv_cache.dtype()));
+    conv_cache.index_put_({state_indices}, conv_state.to(conv_cache.dtype()));
     torch::Tensor bias;
     auto conv_output =
         torch::conv1d(mixed_qkv,
@@ -382,7 +408,6 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
     mixed_qkv = torch::silu(conv_output.slice(2, 0, seq_len));
 
   } else {
-    const auto state_indices = attn_metadata.block_table.select(1, 0);
     xllm::kernel::CausalConv1dUpdateParams params;
     params.x = mixed_qkv;
     params.conv_state = conv_cache;
@@ -423,15 +448,14 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
     std::tie(core_attn_out, last_recurrent_state) =
         torch_chunk_gated_delta_rule(
             processed_q, processed_k, processed_v, g, beta);
-    ssm_cache.index_put_({input_params.block_tables.select(1, 0)},
+    ssm_cache.index_put_({state_indices},
                          last_recurrent_state.to(ssm_cache.dtype()));
   } else {
-    auto ssm_state = torch::index_select(
-        ssm_cache, 0, attn_metadata.block_table.select(1, 0));
+    auto ssm_state = torch::index_select(ssm_cache, 0, state_indices);
     std::tie(core_attn_out, last_recurrent_state) =
         torch_recurrent_gated_delta_rule(
             processed_q, processed_k, processed_v, g, beta, ssm_state);
-    ssm_cache.index_put_({attn_metadata.block_table.select(1, 0)},
+    ssm_cache.index_put_({state_indices},
                          last_recurrent_state.to(ssm_cache.dtype()));
   }
 

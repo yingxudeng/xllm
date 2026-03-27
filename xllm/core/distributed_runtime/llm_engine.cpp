@@ -69,6 +69,41 @@ constexpr int32_t NZ_ALIGNMENT = 16;
 // Extra weight pages reserved for mapping/alignment overhead.
 constexpr size_t kXTensorWeightPageSafetyMargin = 20;
 
+int64_t LLMEngine::get_linear_state_cache_slots(int32_t max_seqs_per_batch) {
+  CHECK_GT(max_seqs_per_batch, 0)
+      << "max_seqs_per_batch must be greater than 0";
+  // Keep the same margin as EmbeddingManager allocation to ensure every
+  // embedding_id can address a unique linear state slot.
+  return static_cast<int64_t>(max_seqs_per_batch) + 2;
+}
+
+std::vector<int64_t> LLMEngine::build_linear_conv_cache_shape(
+    int64_t linear_state_cache_slots,
+    int64_t linear_key_head_dim,
+    int64_t n_local_linear_k_heads,
+    int64_t n_local_linear_v_heads,
+    int64_t linear_conv_kernel_dim) {
+  CHECK_GT(linear_state_cache_slots, 0)
+      << "linear_state_cache_slots must be greater than 0";
+  return std::vector<int64_t>{linear_state_cache_slots,
+                              linear_key_head_dim * n_local_linear_k_heads * 2 +
+                                  linear_key_head_dim * n_local_linear_v_heads,
+                              linear_conv_kernel_dim - 1};
+}
+
+std::vector<int64_t> LLMEngine::build_linear_ssm_cache_shape(
+    int64_t linear_state_cache_slots,
+    int64_t n_local_linear_v_heads,
+    int64_t linear_key_head_dim,
+    int64_t linear_value_head_dim) {
+  CHECK_GT(linear_state_cache_slots, 0)
+      << "linear_state_cache_slots must be greater than 0";
+  return std::vector<int64_t>{linear_state_cache_slots,
+                              n_local_linear_v_heads,
+                              linear_key_head_dim,
+                              linear_value_head_dim};
+}
+
 LLMEngine::LLMEngine(const runtime::Options& options,
                      std::shared_ptr<DistManager> dist_manager)
     : options_(options), dist_manager_(dist_manager) {
@@ -579,16 +614,19 @@ bool LLMEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
         kv_cache_cap.n_blocks, block_size, 1, args_.index_head_dim()});
   }
   if (enable_gdn_attention) {
-    kv_cache_shape.emplace_back(std::vector<int64_t>{
-        kv_cache_cap.n_blocks,
-        args_.linear_key_head_dim() * n_local_linear_k_heads_ * 2 +
-            args_.linear_key_head_dim() * n_local_linear_v_heads_,
-        args_.linear_conv_kernel_dim() - 1});
+    const int64_t linear_state_cache_slots =
+        get_linear_state_cache_slots(FLAGS_max_seqs_per_batch);
     kv_cache_shape.emplace_back(
-        std::vector<int64_t>{kv_cache_cap.n_blocks,
-                             n_local_linear_v_heads_,
-                             args_.linear_key_head_dim(),
-                             args_.linear_value_head_dim()});
+        build_linear_conv_cache_shape(linear_state_cache_slots,
+                                      args_.linear_key_head_dim(),
+                                      n_local_linear_k_heads_,
+                                      n_local_linear_v_heads_,
+                                      args_.linear_conv_kernel_dim()));
+    kv_cache_shape.emplace_back(
+        build_linear_ssm_cache_shape(linear_state_cache_slots,
+                                     n_local_linear_v_heads_,
+                                     args_.linear_key_head_dim(),
+                                     args_.linear_value_head_dim()));
   }
 #if defined(USE_MLU)
   // transpose kv_cache layout for mlu

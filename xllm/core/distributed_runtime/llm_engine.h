@@ -45,6 +45,19 @@ class ModelLoader;
 
 class LLMEngine : public Engine {
  public:
+  static int64_t get_linear_state_cache_slots(int32_t max_seqs_per_batch);
+  static std::vector<int64_t> build_linear_conv_cache_shape(
+      int64_t linear_state_cache_slots,
+      int64_t linear_key_head_dim,
+      int64_t n_local_linear_k_heads,
+      int64_t n_local_linear_v_heads,
+      int64_t linear_conv_kernel_dim);
+  static std::vector<int64_t> build_linear_ssm_cache_shape(
+      int64_t linear_state_cache_slots,
+      int64_t n_local_linear_v_heads,
+      int64_t linear_key_head_dim,
+      int64_t linear_value_head_dim);
+
   // create an engine with the given devices
   LLMEngine(const runtime::Options& options,
             std::shared_ptr<DistManager> dist_manager = nullptr);
