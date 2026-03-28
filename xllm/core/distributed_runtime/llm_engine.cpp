@@ -33,6 +33,7 @@ limitations under the License.
 #include "common/metrics.h"
 #include "common/options.h"
 #include "framework/block/hierarchy_block_manager_pool.h"
+#include "framework/model/hybrid_cache_utils.h"
 #include "framework/model/model_args.h"
 #include "framework/model_loader.h"
 #include "framework/xtensor/page_allocator.h"
@@ -519,24 +520,16 @@ Engine::KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
 #endif
 
   const bool optimize_hybrid_linear_cache =
-      has_linear_attention_layers(args_) && !options_.enable_disagg_pd() &&
-      !options_.enable_kvcache_store() && options_.host_blocks_factor() <= 1.0;
-  int64_t num_full_attention_layers = kv_cache_cap.n_layers;
+      should_enable_hybrid_linear_cache(args_,
+                                        options_.enable_disagg_pd(),
+                                        options_.enable_kvcache_store(),
+                                        options_.host_blocks_factor());
+  int64_t num_full_attention_layers =
+      count_hybrid_full_attention_layers(args_, optimize_hybrid_linear_cache);
   int64_t num_linear_attention_layers = 0;
   if (linear_slot_size > 0) {
-    if (optimize_hybrid_linear_cache) {
-      num_full_attention_layers = 0;
-      for (int64_t layer_id = 0; layer_id < kv_cache_cap.n_layers; ++layer_id) {
-        if (is_full_attention_layer(args_, layer_id)) {
-          ++num_full_attention_layers;
-        }
-      }
-      num_linear_attention_layers =
-          kv_cache_cap.n_layers - num_full_attention_layers;
-    } else {
-      // Compatibility mode keeps both KV and linear caches for every layer.
-      num_linear_attention_layers = kv_cache_cap.n_layers;
-    }
+    num_linear_attention_layers = count_hybrid_linear_attention_layers(
+        args_, optimize_hybrid_linear_cache);
   }
 
   // compute kv cache n_blocks
@@ -567,8 +560,10 @@ bool LLMEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
   bool enable_lighting_indexer = args_.index_n_heads() > 1;
   bool enable_gdn_attention = has_linear_attention_layers(args_);
   const bool optimize_hybrid_linear_cache =
-      enable_gdn_attention && !options_.enable_disagg_pd() &&
-      !options_.enable_kvcache_store() && options_.host_blocks_factor() <= 1.0;
+      should_enable_hybrid_linear_cache(args_,
+                                        options_.enable_disagg_pd(),
+                                        options_.enable_kvcache_store(),
+                                        options_.host_blocks_factor());
 
   // init kv cache for each worker
   std::vector<std::vector<int64_t>> kv_cache_shape;

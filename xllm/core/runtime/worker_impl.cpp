@@ -46,6 +46,7 @@ limitations under the License.
 #endif
 #include "core/distributed_runtime/master.h"
 #include "framework/kv_cache/kv_cache.h"
+#include "framework/model/hybrid_cache_utils.h"
 #include "framework/model/model_args.h"
 #include "framework/model/model_input_params.h"
 #include "framework/model/npu_cp_ep_padding.h"
@@ -115,15 +116,6 @@ class ScopedAtenLoadThreads {
   int32_t prev_threads_ = 0;
   bool active_ = false;
 };
-
-bool should_optimize_hybrid_linear_cache(const runtime::Options& options,
-                                         const ModelArgs& model_args) {
-  if (!has_linear_attention_layers(model_args)) {
-    return false;
-  }
-  return !options.enable_disagg_pd() && !options.enable_kvcache_store() &&
-         options.host_blocks_factor() <= 1.0;
-}
 
 }  // namespace
 
@@ -195,7 +187,10 @@ bool WorkerImpl::allocate_kv_cache(
   // "int8": enables INT8 quantization
   const bool enable_kv_cache_quant = options_.kv_cache_dtype() == "int8";
   const bool optimize_hybrid_linear_cache =
-      should_optimize_hybrid_linear_cache(options_, context_.get_model_args());
+      should_enable_hybrid_linear_cache(context_.get_model_args(),
+                                        options_.enable_disagg_pd(),
+                                        options_.enable_kvcache_store(),
+                                        options_.host_blocks_factor());
 
   if (enable_kv_cache_quant) {
 #if !defined(USE_MLU)
@@ -244,14 +239,10 @@ bool WorkerImpl::allocate_kv_cache(
     for (int64_t i = 0; i < num_layers; ++i) {
       torch::Tensor key_cache, value_cache, index_cache, conv_cache, ssm_cache;
       torch::Tensor key_cache_scale, value_cache_scale;
-      const bool is_full_attn_layer =
-          !enable_linear_attention ||
-          is_full_attention_layer(context_.get_model_args(), i);
-      const bool allocate_full_kv =
-          !optimize_hybrid_linear_cache || is_full_attn_layer;
-      const bool allocate_linear_state =
-          enable_linear_attention &&
-          (!optimize_hybrid_linear_cache || !is_full_attn_layer);
+      const auto layer_allocation = get_hybrid_linear_layer_allocation(
+          context_.get_model_args(), i, optimize_hybrid_linear_cache);
+      const bool allocate_full_kv = layer_allocation.allocate_full_kv;
+      const bool allocate_linear_state = layer_allocation.allocate_linear_state;
 #if defined(USE_NPU)
       aclFormat npu_format_type =
           context_.get_model_args().model_type() == "deepseek_v3" &&

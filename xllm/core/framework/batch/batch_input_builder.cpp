@@ -24,6 +24,7 @@ limitations under the License.
 #include "common/global_flags.h"
 #include "common/metrics.h"
 #include "framework/batch/mposition.h"
+#include "framework/model/hybrid_cache_utils.h"
 #include "framework/model/model_args.h"
 #include "framework/model/model_input_params.h"
 #include "framework/request/sequence.h"
@@ -495,7 +496,14 @@ void BatchInputBuilder::setup_kv_cache_info(
   }
 
   state.block_tables_vec.emplace_back(std::move(block_ids));
-  state.linear_block_tables_vec.push_back(state.block_tables_vec.back());
+  const auto& full_block_table = state.block_tables_vec.back();
+  if (args_ != nullptr && has_linear_attention_layers(*args_)) {
+    state.linear_block_tables_vec.emplace_back(
+        build_hybrid_linear_state_block_table(
+            full_block_table, n_kv_cache_tokens, seq_len, block_size));
+  } else {
+    state.linear_block_tables_vec.push_back(full_block_table);
+  }
 }
 
 void BatchInputBuilder::padding_decode_batch_size(
