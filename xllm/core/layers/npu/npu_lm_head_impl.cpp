@@ -23,6 +23,15 @@ DECLARE_string(communication_backend);
 namespace xllm {
 namespace layer {
 
+template <typename T>
+inline void maybe_set_context_parallel_info(
+    T& param,
+    const atb_speed::common::ParallelInfo& parallel_info) {
+  if constexpr (requires { param.contextParallelInfo; }) {
+    param.contextParallelInfo = parallel_info;
+  }
+}
+
 void NpuLmHeadImpl::param_from_args(atb_speed::common::LmHeadParam& param,
                                     const ModelArgs& args,
                                     const ParallelArgs& parallel_args,
@@ -79,8 +88,8 @@ void NpuLmHeadImpl::param_from_args(atb_speed::common::LmHeadParam& param,
           param.linearParallelParam.tensorParallelInfo.commDomain);
       lm_head_tp_world_size =
           param.linearParallelParam.tensorParallelInfo.worldSize;
-      param.contextParallelInfo =
-          parallel_args.mapping().Get(atb_speed::base::ATTN_CP);
+      maybe_set_context_parallel_info(
+          param, parallel_args.mapping().Get(atb_speed::base::ATTN_CP));
     }
     if (!use_column_parallel) {
       param.hiddenSizePerAttentionHead =

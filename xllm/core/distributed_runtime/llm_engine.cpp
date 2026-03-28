@@ -518,12 +518,38 @@ Engine::KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
   }
 #endif
 
+  const bool optimize_hybrid_linear_cache =
+      has_linear_attention_layers(args_) && !options_.enable_disagg_pd() &&
+      !options_.enable_kvcache_store() && options_.host_blocks_factor() <= 1.0;
+  int64_t num_full_attention_layers = kv_cache_cap.n_layers;
+  int64_t num_linear_attention_layers = 0;
+  if (linear_slot_size > 0) {
+    if (optimize_hybrid_linear_cache) {
+      num_full_attention_layers = 0;
+      for (int64_t layer_id = 0; layer_id < kv_cache_cap.n_layers; ++layer_id) {
+        if (is_full_attention_layer(args_, layer_id)) {
+          ++num_full_attention_layers;
+        }
+      }
+      num_linear_attention_layers =
+          kv_cache_cap.n_layers - num_full_attention_layers;
+    } else {
+      // Compatibility mode keeps both KV and linear caches for every layer.
+      num_linear_attention_layers = kv_cache_cap.n_layers;
+    }
+  }
+
   // compute kv cache n_blocks
   const int32_t block_size = options_.block_size();
-  const int64_t block_size_in_bytes =
+  const int64_t full_cache_block_size_in_bytes =
       block_size * (slot_size + index_slot_size + scale_slot_size);
-  kv_cache_cap.n_blocks = kv_cache_cap.cache_size_in_bytes /
-                          (kv_cache_cap.n_layers * block_size_in_bytes);
+  const int64_t total_cache_block_size_in_bytes =
+      num_full_attention_layers * full_cache_block_size_in_bytes +
+      num_linear_attention_layers * linear_slot_size;
+  CHECK_GT(total_cache_block_size_in_bytes, 0)
+      << "invalid cache block size estimate";
+  kv_cache_cap.n_blocks =
+      kv_cache_cap.cache_size_in_bytes / total_cache_block_size_in_bytes;
   CHECK_GT(kv_cache_cap.n_blocks, 0) << "no n_blocks for kv cache";
   return kv_cache_cap;
 }
@@ -540,6 +566,9 @@ bool LLMEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
   const int32_t block_size = options_.block_size();
   bool enable_lighting_indexer = args_.index_n_heads() > 1;
   bool enable_gdn_attention = has_linear_attention_layers(args_);
+  const bool optimize_hybrid_linear_cache =
+      enable_gdn_attention && !options_.enable_disagg_pd() &&
+      !options_.enable_kvcache_store() && options_.host_blocks_factor() <= 1.0;
 
   // init kv cache for each worker
   std::vector<std::vector<int64_t>> kv_cache_shape;
@@ -583,7 +612,7 @@ bool LLMEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
     kv_cache_shape.emplace_back(std::vector<int64_t>{
         kv_cache_cap.n_blocks,
         args_.linear_key_head_dim() * n_local_linear_k_heads_ * 2 +
-            args_.linear_key_head_dim() * n_local_linear_v_heads_,
+            args_.linear_value_head_dim() * n_local_linear_v_heads_,
         args_.linear_conv_kernel_dim() - 1});
     kv_cache_shape.emplace_back(
         std::vector<int64_t>{kv_cache_cap.n_blocks,
@@ -633,6 +662,7 @@ bool LLMEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
       .enable_disagg_pd(options_.enable_disagg_pd())
       .enable_cache_upload(options_.enable_cache_upload())
       .enable_kvcache_store(options_.enable_kvcache_store())
+      .enable_hybrid_linear_cache(optimize_hybrid_linear_cache)
       .enable_xtensor(FLAGS_enable_xtensor)
       .num_layers(args_.n_layers())
       .slot_size(kv_cache_cap.slot_size)

@@ -34,6 +34,7 @@ class BlockManagerPool : public KVCacheManager {
     PROPERTY(bool, enable_disagg_pd) = false;
     PROPERTY(bool, enable_cache_upload) = false;
     PROPERTY(bool, enable_kvcache_store) = false;
+    PROPERTY(bool, enable_hybrid_linear_cache) = false;
     PROPERTY(bool, enable_xtensor) = false;
     PROPERTY(int64_t, num_layers) = 0;  // Required when enable_xtensor is true
     PROPERTY(int64_t, slot_size) = 0;   // Memory size per slot (for xtensor)

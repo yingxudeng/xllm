@@ -73,6 +73,7 @@ BatchInputBuilder::BatchInputBuilder(
   state_.flatten_positions_vec.reserve(1000);
   state_.mrope_positions_vec.reserve(sequences.size());
   state_.block_tables_vec.reserve(sequences.size());
+  state_.linear_block_tables_vec.reserve(sequences.size());
   state_.acc_logprob_vec.reserve(sequences.size());
   if (args_ != nullptr) {
     use_mrope_ = (args_->rope_scaling_rope_type() == "mrope");
@@ -179,6 +180,9 @@ void BatchInputBuilder::process_sequences_multithreaded() {
     state_.block_tables_vec.insert(state_.block_tables_vec.end(),
                                    state.block_tables_vec.begin(),
                                    state.block_tables_vec.end());
+    state_.linear_block_tables_vec.insert(state_.linear_block_tables_vec.end(),
+                                          state.linear_block_tables_vec.begin(),
+                                          state.linear_block_tables_vec.end());
     state_.acc_logprob_vec.insert(state_.acc_logprob_vec.end(),
                                   state.acc_logprob_vec.begin(),
                                   state.acc_logprob_vec.end());
@@ -491,6 +495,7 @@ void BatchInputBuilder::setup_kv_cache_info(
   }
 
   state.block_tables_vec.emplace_back(std::move(block_ids));
+  state.linear_block_tables_vec.push_back(state.block_tables_vec.back());
 }
 
 void BatchInputBuilder::padding_decode_batch_size(
@@ -525,6 +530,7 @@ void BatchInputBuilder::padding_decode_batch_size(
                                     num_decoding_tokens);
 #endif
         state_.block_tables_vec.emplace_back();
+        state_.linear_block_tables_vec.emplace_back();
         state_.paged_kv_indices.push_back(0);
         state_.paged_kv_indptr.push_back(state_.paged_kv_indptr.back() + 1);
         state_.paged_kv_last_page_len.push_back(1);
@@ -580,6 +586,9 @@ ForwardInput BatchInputBuilder::state_to_forward_input() {
   util::pad_2d_vector(state_.block_tables_vec, /*pad_value=*/0);
   input_params.block_tables =
       create_2d_tensor(state_.block_tables_vec, torch::kInt);
+  util::pad_2d_vector(state_.linear_block_tables_vec, /*pad_value=*/0);
+  input_params.linear_block_tables =
+      create_2d_tensor(state_.linear_block_tables_vec, torch::kInt);
 
   if (input_embeddings_vec_.size() != 0) {
     input_params.input_embedding = torch::cat(input_embeddings_vec_);
@@ -655,6 +664,9 @@ RawForwardInput BatchInputBuilder::state_to_raw_forward_input() {
   raw_forward_input.new_token_slot_ids = std::move(state_.new_token_slot_ids);
   util::pad_2d_vector(state_.block_tables_vec, /*pad_value=*/0);
   raw_forward_input.block_tables_vec = std::move(state_.block_tables_vec);
+  util::pad_2d_vector(state_.linear_block_tables_vec, /*pad_value=*/0);
+  raw_forward_input.linear_block_tables_vec =
+      std::move(state_.linear_block_tables_vec);
   raw_forward_input.num_sequences = num_sequences_;
   // raw_forward_input.dp_global_token_nums = ;
   raw_forward_input.transfer_kv_infos = std::move(state_.transfer_kv_infos);
