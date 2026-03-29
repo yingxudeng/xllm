@@ -50,13 +50,20 @@ class FakeTokenizer : public Tokenizer {
 
 class FakeEngine : public Engine {
  public:
-  FakeEngine(int32_t num_blocks, int32_t block_size) {
+  FakeEngine(int32_t num_blocks,
+             int32_t block_size,
+             bool enable_hybrid_linear_cache = false) {
     BlockManagerPool::Options opt;
     opt.num_blocks_ = num_blocks;
+    opt.host_num_blocks_ = num_blocks;
     opt.block_size_ = block_size;
     opt.enable_prefix_cache_ = false;  // we dont consider prefix cache here
     fake_tokenizer_ = std::make_unique<FakeTokenizer>();
     fake_block_manager_ = std::make_unique<BlockManagerPool>(opt, 1);
+    if (enable_hybrid_linear_cache) {
+      model_args_.n_layers(2).layer_types(
+          {"full_attention", "linear_attention"});
+    }
   }
   ForwardOutput step(std::vector<Batch>& batch) { NOT_IMPLEMENTED(); }
   void update_last_step_result(std::vector<Batch>& batch) { NOT_IMPLEMENTED(); }
@@ -64,7 +71,7 @@ class FakeEngine : public Engine {
   BlockManagerPool* block_manager_pool() const {
     return fake_block_manager_.get();
   }
-  const ModelArgs& model_args() const { NOT_IMPLEMENTED(); }
+  const ModelArgs& model_args() const { return model_args_; }
   const TokenizerArgs& tokenizer_args() const { NOT_IMPLEMENTED(); }
   std::vector<int64_t> get_active_activation_memory() const {
     NOT_IMPLEMENTED();
@@ -74,6 +81,7 @@ class FakeEngine : public Engine {
  private:
   std::unique_ptr<Tokenizer> fake_tokenizer_;
   std::unique_ptr<BlockManagerPool> fake_block_manager_;
+  ModelArgs model_args_;
 };
 
 ContinuousScheduler::Options create_scheduler_options(
@@ -259,6 +267,26 @@ TEST(ChunkedPrefillSchedulerTest, ResourceNotEnough) {
     EXPECT_TRUE(batch.size() == 1);
     EXPECT_TRUE(batch[0].size() == 1);  // can not schedule the second.
   }
+}
+
+TEST(ChunkedPrefillSchedulerTest, HybridLinearPrefillAlignsToBlockBoundary) {
+  ContinuousScheduler::Options opt = create_scheduler_options(64, 16, 0, 20, 1);
+  auto engine = std::make_unique<FakeEngine>(
+      /*num_blocks=*/64,
+      /*block_size=*/16,
+      /*enable_hybrid_linear_cache=*/true);
+  auto scheduler = std::make_unique<ChunkedPrefillScheduler>(engine.get(), opt);
+
+  auto requests =
+      generate_request({40}, {10}, std::nullopt, std::nullopt, 1024);
+  for (auto& req : requests) {
+    scheduler->add_request(req);
+  }
+
+  auto batch = scheduler->prepare_batch_test();
+  ASSERT_EQ(batch.size(), 1);
+  ASSERT_EQ(batch[0].size(), 1);
+  EXPECT_EQ(batch[0].get_allowed_max_tokens()[0], 32);
 }
 
 // TEST-3:

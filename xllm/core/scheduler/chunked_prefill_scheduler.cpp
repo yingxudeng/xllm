@@ -19,11 +19,73 @@ limitations under the License.
 #include <limits>
 
 #include "common/metrics.h"
+#include "distributed_runtime/engine.h"
 #include "framework/batch/batch_factory.h"
+#include "framework/model/hybrid_cache_utils.h"
 #include "util/timer.h"
 #include "util/utils.h"
 
 namespace xllm {
+
+namespace {
+
+bool should_align_hybrid_linear_cache(const Engine* engine) {
+  if (engine == nullptr) {
+    return false;
+  }
+  auto* block_manager_pool = engine->block_manager_pool();
+  if (block_manager_pool == nullptr) {
+    return false;
+  }
+  const auto& args = engine->model_args();
+  const auto& block_options = block_manager_pool->options();
+  double host_blocks_factor = 1.0;
+  if (block_options.num_blocks() > 0) {
+    host_blocks_factor = static_cast<double>(block_options.host_num_blocks()) /
+                         block_options.num_blocks();
+  }
+  return should_use_compact_linear_block_table(
+      args,
+      should_enable_hybrid_linear_cache(args,
+                                        block_options.enable_disagg_pd(),
+                                        block_options.enable_kvcache_store(),
+                                        host_blocks_factor));
+}
+
+size_t maybe_align_linear_prefill_tokens(const Engine* engine,
+                                         const Sequence* sequence,
+                                         size_t max_handle_num_tokens) {
+  if (engine == nullptr || sequence == nullptr ||
+      !should_align_hybrid_linear_cache(engine) ||
+      !sequence->is_prefill_stage()) {
+    return max_handle_num_tokens;
+  }
+
+  const size_t block_size = engine->block_manager_pool()->block_size();
+  if (block_size == 0 || max_handle_num_tokens == 0) {
+    return max_handle_num_tokens;
+  }
+
+  const size_t kv_cache_tokens_num = sequence->kv_cache_tokens_num();
+  const size_t last_cache_position =
+      (sequence->num_prompt_tokens() / block_size) * block_size;
+  if (kv_cache_tokens_num >= last_cache_position ||
+      max_handle_num_tokens <= kv_cache_tokens_num) {
+    return max_handle_num_tokens;
+  }
+
+  if (max_handle_num_tokens < last_cache_position) {
+    const size_t aligned_tokens = round_down(max_handle_num_tokens, block_size);
+    if (aligned_tokens > kv_cache_tokens_num) {
+      return aligned_tokens;
+    }
+    return max_handle_num_tokens;
+  }
+
+  return last_cache_position;
+}
+
+}  // namespace
 
 ChunkedPrefillScheduler::ChunkedPrefillScheduler(Engine* engine,
                                                  const Options& options)
@@ -740,7 +802,16 @@ bool ChunkedPrefillScheduler::allocate_blocks_for(
     max_handle_num_tokens += min_speculative_tokens_required_;
   }
 
-  // make sure the sequence proceeds forward
+  max_handle_num_tokens = maybe_align_linear_prefill_tokens(
+      engine_, sequence, max_handle_num_tokens);
+
+  if (max_handle_num_tokens <= kv_cache_tokens_num &&
+      !sequence->is_chunked_prefill_stage()) {
+    // Decode path may start from a fully cached prompt. Reserve one token
+    // budget to advance generation.
+    max_handle_num_tokens = kv_cache_tokens_num + 1;
+  }
+
   CHECK_GT(max_handle_num_tokens, kv_cache_tokens_num);
 
   // the actual allocated tokens is the difference between the total
