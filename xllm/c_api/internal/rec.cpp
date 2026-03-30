@@ -133,6 +133,10 @@ XLLM_CAPI_EXPORT bool xllm_rec_initialize(
 
     options.enable_graph(FLAGS_enable_graph);
 
+#if !defined(USE_NPU)
+    FLAGS_enable_block_copy_kernel = false;
+#endif
+
     handler->master = std::make_unique<xllm::RecMaster>(options);
     handler->master->run();
 
