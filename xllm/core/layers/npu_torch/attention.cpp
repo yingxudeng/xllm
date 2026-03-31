@@ -116,27 +116,22 @@ void AttentionImpl::decoder_forward(torch::Tensor& query,
   query = query.view({-1, 1, num_heads_, head_size_});
   output = output.view({-1, 1, num_heads_, head_size_});
 
-  torch::Tensor kv_seq_lens;
-  if (attn_metadata.kv_seq_lens_host.defined()) {
-    kv_seq_lens = attn_metadata.kv_seq_lens_host;
-  } else {
-    // Fallback if host tensor isn't prepared.
-    kv_seq_lens = attn_metadata.kv_seq_lens;
-  }
-
   if (attn_metadata.paged_attention_tiling_data.defined()) {
     // Use CustomPagedAttention for ACL graph mode to avoid .to(kCPU) operations
-
     xllm::kernel::npu::batch_decode_acl_graph(
         query,
         k_cache,
         v_cache.value_or(torch::Tensor()),
         scale_,
         attn_metadata.block_table,
-        kv_seq_lens,
+        attn_metadata.kv_seq_lens,
+        attn_metadata.kv_seq_lens_host,
         attn_metadata.paged_attention_tiling_data,
         output);
   } else {
+    torch::Tensor kv_seq_lens = attn_metadata.kv_seq_lens_host.defined()
+                                    ? attn_metadata.kv_seq_lens_host
+                                    : attn_metadata.kv_seq_lens;
     // Standard PagedAttention path
     xllm::kernel::npu::batch_decode(query,
                                     k_cache,

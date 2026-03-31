@@ -254,31 +254,38 @@ LinearStateSelection select_linear_state_blocks(
     const torch::Tensor& block_table,
     const torch::Device& device,
     int64_t block_size) {
-  const int64_t batch_size = block_table.size(0);
-  std::vector<int64_t> src_block_indices(batch_size, 0);
-  std::vector<int64_t> dst_block_indices(batch_size, 0);
-  std::vector<int64_t> has_initial_state(batch_size, 0);
-
-  for (int64_t seq_idx = 0; seq_idx < batch_size; ++seq_idx) {
-    const int64_t total_tokens = input_params.kv_seq_lens_vec[seq_idx];
-    const int64_t query_tokens = input_params.q_seq_lens_vec[seq_idx];
-    const int64_t prev_tokens = total_tokens - query_tokens;
-    if (total_tokens > 0) {
-      dst_block_indices[seq_idx] = (total_tokens - 1) / block_size;
-    }
-    if (prev_tokens > 0) {
-      src_block_indices[seq_idx] = (prev_tokens - 1) / block_size;
-      has_initial_state[seq_idx] = 1;
-    } else {
-      src_block_indices[seq_idx] = dst_block_indices[seq_idx];
-    }
-  }
-
   auto gather_index_options =
       torch::TensorOptions().dtype(torch::kLong).device(device);
   auto table = block_table.contiguous();
-  auto has_initial =
-      torch::tensor(has_initial_state, gather_index_options).to(torch::kBool);
+  auto total_tokens = input_params.kv_seq_lens.to(gather_index_options);
+  auto query_tokens = input_params.q_seq_lens.to(gather_index_options);
+  TORCH_CHECK(total_tokens.dim() == 1,
+              "Expected kv_seq_lens to be 1D, got dim=",
+              total_tokens.dim());
+  TORCH_CHECK(query_tokens.dim() == 1,
+              "Expected q_seq_lens to be 1D, got dim=",
+              query_tokens.dim());
+  TORCH_CHECK(total_tokens.size(0) == table.size(0),
+              "kv_seq_lens batch size (",
+              total_tokens.size(0),
+              ") does not match block table batch size (",
+              table.size(0),
+              ")");
+  TORCH_CHECK(query_tokens.size(0) == table.size(0),
+              "q_seq_lens batch size (",
+              query_tokens.size(0),
+              ") does not match block table batch size (",
+              table.size(0),
+              ")");
+
+  auto prev_tokens = total_tokens - query_tokens;
+  auto zeros = torch::zeros_like(total_tokens);
+  auto dst_indices =
+      torch::where(total_tokens > 0, (total_tokens - 1) / block_size, zeros);
+  auto has_initial = prev_tokens > 0;
+  auto src_indices =
+      torch::where(has_initial, (prev_tokens - 1) / block_size, dst_indices);
+
   if (table.dim() == 1) {
     return LinearStateSelection{.src_blocks = table.contiguous(),
                                 .dst_blocks = table.contiguous(),
@@ -298,10 +305,8 @@ LinearStateSelection select_linear_state_blocks(
                                 .has_initial_state = has_initial};
   }
 
-  auto src_indices = torch::tensor(src_block_indices, gather_index_options)
-                         .clamp(0, max_blocks - 1);
-  auto dst_indices = torch::tensor(dst_block_indices, gather_index_options)
-                         .clamp(0, max_blocks - 1);
+  src_indices = src_indices.clamp(0, max_blocks - 1);
+  dst_indices = dst_indices.clamp(0, max_blocks - 1);
   return LinearStateSelection{
       .src_blocks =
           table.gather(1, src_indices.unsqueeze(1)).contiguous().squeeze(1),
@@ -454,9 +459,7 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
         torch::index_select(conv_cache, 0, state_selection.src_blocks)
             .to(mixed_qkv.dtype());
     auto no_initial = state_selection.has_initial_state.logical_not();
-    if (no_initial.any().item().toBool()) {
-      conv_state.masked_fill_(no_initial.view({-1, 1, 1}), 0);
-    }
+    conv_state.masked_fill_(no_initial.view({-1, 1, 1}), 0);
     auto conv_input = torch::cat(
         std::vector<torch::Tensor>{conv_state, mixed_qkv}, /*dim=*/-1);
     torch::Tensor bias;
@@ -481,13 +484,13 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
   } else {
     auto decode_src_blocks = state_selection.src_blocks;
     auto decode_dst_blocks = state_selection.dst_blocks;
-    auto need_state_copy = decode_src_blocks.ne(decode_dst_blocks);
-    if (need_state_copy.any().item().toBool()) {
-      auto copied_conv_state = torch::index_select(
-          conv_cache, 0, decode_src_blocks.index({need_state_copy}));
-      conv_cache.index_copy_(
-          0, decode_dst_blocks.index({need_state_copy}), copied_conv_state);
-    }
+    auto copied_conv_state =
+        torch::index_select(conv_cache, 0, decode_src_blocks);
+    auto decode_conv_state =
+        torch::where(state_selection.has_initial_state.view({-1, 1, 1}),
+                     copied_conv_state,
+                     torch::zeros_like(copied_conv_state));
+    conv_cache.index_copy_(0, decode_dst_blocks, decode_conv_state);
     xllm::kernel::CausalConv1dUpdateParams params;
     params.x = mixed_qkv;
     params.conv_state = conv_cache;
@@ -529,9 +532,7 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
         torch::index_select(ssm_cache, 0, state_selection.src_blocks)
             .to(processed_q.dtype());
     auto no_initial = state_selection.has_initial_state.logical_not();
-    if (no_initial.any().item().toBool()) {
-      initial_state.masked_fill_(no_initial.view({-1, 1, 1, 1}), 0);
-    }
+    initial_state.masked_fill_(no_initial.view({-1, 1, 1, 1}), 0);
     std::tie(core_attn_out, last_recurrent_state) =
         torch_chunk_gated_delta_rule(processed_q,
                                      processed_k,
@@ -546,6 +547,10 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
   } else {
     auto ssm_state =
         torch::index_select(ssm_cache, 0, state_selection.src_blocks);
+    auto no_initial_state = state_selection.has_initial_state.logical_not();
+    ssm_state = torch::where(no_initial_state.view({-1, 1, 1, 1}),
+                             torch::zeros_like(ssm_state),
+                             ssm_state);
     std::tie(core_attn_out, last_recurrent_state) =
         torch_recurrent_gated_delta_rule(
             processed_q, processed_k, processed_v, g, beta, ssm_state);

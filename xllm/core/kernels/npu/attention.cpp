@@ -68,6 +68,7 @@ void batch_decode_acl_graph(const torch::Tensor& query,
                             float scale,
                             const torch::Tensor& block_table,
                             const torch::Tensor& seq_lens,
+                            const torch::Tensor& seq_lens_host,
                             const torch::Tensor& tiling_data,
                             torch::Tensor& output) {
   int64_t head_size = query.size(-1);
@@ -83,6 +84,7 @@ void batch_decode_acl_graph(const torch::Tensor& query,
                                   scale,
                                   block_table,
                                   seq_lens,
+                                  seq_lens_host,
                                   tiling_data,
                                   o);
 }

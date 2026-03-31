@@ -34,6 +34,7 @@ limitations under the License.
 #include "core/framework/request/sequence.h"
 #include "core/framework/request/stopping_checker.h"
 #include "core/framework/sampling/sampling_params.h"
+#include "core/layers/common/attention_metadata_builder.h"
 #include "core/layers/npu/npu_lm_head_impl.h"
 #include "core/layers/npu/npu_word_embedding_impl.h"
 #include "runtime/options.h"
@@ -70,6 +71,21 @@ class AclGraphExecutorTestEnvironment : public ::testing::Environment {
     ::testing::AddGlobalTestEnvironment(new AclGraphExecutorTestEnvironment);
 
 namespace xllm {
+
+namespace {
+class ScopedBoolFlag {
+ public:
+  ScopedBoolFlag(bool& flag, bool value) : flag_(flag), old_value_(flag) {
+    flag_ = value;
+  }
+
+  ~ScopedBoolFlag() { flag_ = old_value_; }
+
+ private:
+  bool& flag_;
+  bool old_value_;
+};
+}  // namespace
 
 // Initialize glog for testing - use a function to ensure proper initialization
 // order
@@ -540,6 +556,33 @@ TEST_F(AclGraphExecutorTest, DifferentBatchSizes) {
     EXPECT_EQ(output.hidden_states.size(1), model_args_.hidden_size())
         << "Batch size: " << batch_size;
   }
+}
+
+TEST_F(AclGraphExecutorTest, GraphModeSeqLensHostAliasesStableVectorStorage) {
+  ScopedBoolFlag enable_graph_flag(FLAGS_enable_graph, true);
+
+  ModelInputParams params;
+  params.batch_forward_type = BatchForwardType::DECODE;
+  params.num_sequences = 2;
+  params.kv_seq_lens_vec = {9, 17};
+  params.q_seq_lens_vec = {1, 1};
+  params.kv_seq_lens =
+      torch::tensor(params.kv_seq_lens_vec,
+                    torch::TensorOptions().dtype(torch::kInt).device(*device_));
+  params.q_seq_lens =
+      torch::tensor(params.q_seq_lens_vec,
+                    torch::TensorOptions().dtype(torch::kInt).device(*device_));
+  params.graph_buffer.tiling_data =
+      torch::zeros({1},
+                   torch::TensorOptions().dtype(torch::kInt32).device(*device_));
+
+  auto attn_metadata = layer::AttentionMetadataBuilder::build(params);
+  EXPECT_TRUE(attn_metadata.kv_seq_lens_host.defined());
+  EXPECT_EQ(attn_metadata.kv_seq_lens_host.data_ptr<int>(),
+            params.kv_seq_lens_vec.data());
+
+  params.kv_seq_lens_vec[1] = 23;
+  EXPECT_EQ(attn_metadata.kv_seq_lens_host[1].item<int>(), 23);
 }
 
 // Test ACL graph executor against original NPU executor implementation
