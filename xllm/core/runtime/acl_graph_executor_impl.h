@@ -110,6 +110,14 @@ class GraphPersistentParam {
     }
     return persistent_block_tables_;
   }
+  torch::Tensor persistent_linear_block_tables(
+      uint32_t actual_batch_size = 0) const {
+    if (actual_batch_size > 0) {
+      return persistent_linear_block_tables_.slice(
+          /*dim=*/0, /*start=*/0, /*end=*/actual_batch_size);
+    }
+    return persistent_linear_block_tables_;
+  }
   torch::Tensor persistent_mask(uint32_t actual_tokens = 0) const {
     if (actual_tokens > 0) {
       return persistent_mask_.slice(
@@ -194,11 +202,17 @@ class GraphPersistentParam {
   torch::Tensor persistent_positions_;
   torch::Tensor persistent_new_cache_slots_;
   torch::Tensor persistent_block_tables_;
+  torch::Tensor persistent_linear_block_tables_;
   // When q_seq_lens contains values greater than 1(chunked prefill mode or
   // speculative decode mode), the mask needs to be passed to the attention
   // operation
   torch::Tensor persistent_mask_;
   torch::Tensor hidden_states_;
+  // Dedicated tensors used only for paged-attention tiling planning. Keep
+  // them at stable addresses and with the exact query/output layout expected by
+  // CustomPagedAttention prelaunch setup.
+  torch::Tensor persistent_pa_plan_query_;
+  torch::Tensor persistent_pa_plan_output_;
 
   torch::Tensor q_seq_lens_;
   torch::Tensor kv_seq_lens_;
@@ -267,6 +281,10 @@ class AclGraph {
   }
 
  private:
+  // Refresh host seq-lens buffers in-place for graph replay without changing
+  // the captured pointer addresses.
+  void refresh_captured_host_seq_lens(const ModelInputParams& params);
+
   // Print graph held tensors for debugging
   void print_graph_tensors() const;
 
@@ -283,6 +301,9 @@ class AclGraph {
 
   // Cached capture stream, initialized on first capture
   std::optional<c10_npu::NPUStream> capture_stream_;
+  // Keep captured params alive for the whole graph lifecycle because some NPU
+  // kernels store host pointers (e.g. kv_seq_lens_vec/q_seq_lens_vec.data()).
+  std::optional<ModelInputParams> captured_graph_params_;
   c10::DeviceIndex device_index_;
 };
 

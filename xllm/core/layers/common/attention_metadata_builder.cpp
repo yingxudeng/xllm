@@ -86,13 +86,21 @@ AttentionMetadata AttentionMetadataBuilder::build(
   bool use_acl_graph = FLAGS_enable_graph && is_decode &&
                        params.graph_buffer.tiling_data.defined();
   if (use_acl_graph) {
-    // ACL graph mode: use CustomPagedAttention with tiling_data on device
     attn_metadata.paged_attention_tiling_data = params.graph_buffer.tiling_data;
   }
-  // Provide host seq_lens for NPU kernels (required by CustomPagedAttention).
   if (!params.kv_seq_lens_vec.empty()) {
-    attn_metadata.kv_seq_lens_host =
-        torch::tensor(params.kv_seq_lens_vec, torch::kInt);
+    if (use_acl_graph) {
+      // ACL graph decode updates kv_seq_lens_vec in-place on replay, so expose
+      // a host tensor view that aliases the stable vector storage instead of
+      // materializing a temporary copy.
+      attn_metadata.kv_seq_lens_host = torch::from_blob(
+          const_cast<int*>(params.kv_seq_lens_vec.data()),
+          {static_cast<int64_t>(params.kv_seq_lens_vec.size())},
+          torch::TensorOptions().dtype(torch::kInt).device(torch::kCPU));
+    } else {
+      attn_metadata.kv_seq_lens_host =
+          torch::tensor(params.kv_seq_lens_vec, torch::kInt);
+    }
   }
 #endif
   attn_metadata.is_chunked_prefill =

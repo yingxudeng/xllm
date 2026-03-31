@@ -54,6 +54,7 @@ void batch_decode_acl_graph(const torch::Tensor& query,
                             float scale,
                             const torch::Tensor& block_table,
                             const torch::Tensor& seq_lens,
+                            const torch::Tensor& seq_lens_host,
                             const torch::Tensor& tiling_data,
                             torch::Tensor& output);
 

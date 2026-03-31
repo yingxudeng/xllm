@@ -33,6 +33,7 @@ limitations under the License.
 #endif
 #include "core/common/global_flags.h"
 #include "core/common/metrics.h"
+#include "core/framework/kv_cache/hybrid_cache_utils.h"
 #include "core/util/utils.h"
 #include "platform/npu/device_capture_lock.h"
 
@@ -55,6 +56,19 @@ int64_t get_decode_graph_capacity(const runtime::Options& options) {
     return options.max_seqs_per_batch();
   }
   return options.max_seqs_per_batch() * options.num_decoding_tokens();
+}
+
+std::pair<torch::Tensor, torch::Tensor> find_attention_plan_kv_cache(
+    const std::vector<KVCache>& kv_caches) {
+  for (const auto& cache : kv_caches) {
+    auto k_cache = cache.get_k_cache();
+    auto v_cache = cache.get_v_cache();
+    if (k_cache.defined() && v_cache.defined() && k_cache.numel() > 0 &&
+        v_cache.numel() > 0) {
+      return {std::move(k_cache), std::move(v_cache)};
+    }
+  }
+  return {torch::Tensor(), torch::Tensor()};
 }
 }  // namespace
 
@@ -111,8 +125,19 @@ GraphPersistentParam::GraphPersistentParam(const ModelArgs& args,
   const auto block_size = options.block_size();
   const int64_t max_block_table_len =
       (max_seq_len + block_size - 1) / block_size + 1;
+  const bool use_compact_linear_block_table =
+      should_use_compact_linear_block_table(
+          args_,
+          should_enable_hybrid_linear_cache(args_,
+                                            FLAGS_enable_disagg_pd,
+                                            FLAGS_enable_kvcache_store,
+                                            FLAGS_host_blocks_factor));
   persistent_block_tables_ =
       torch::zeros({max_seqs_per_batch, max_block_table_len},
+                   torch::dtype(torch::kInt).device(device));
+  persistent_linear_block_tables_ =
+      torch::zeros({max_seqs_per_batch,
+                    use_compact_linear_block_table ? 2 : max_block_table_len},
                    torch::dtype(torch::kInt).device(device));
 
   // Output tensor for hidden states
@@ -198,24 +223,60 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
   // Copy data from input parameters to persistent graph tensors
   persistent_tokens_.slice(/*dim=*/0, /*start=*/0, /*end=*/actual_num_tokens)
       .copy_(tokens, /*non_blocking=*/true);
+  if (padded_num_tokens > actual_num_tokens) {
+    persistent_tokens_
+        .slice(
+            /*dim=*/0, /*start=*/actual_num_tokens, /*end=*/padded_num_tokens)
+        .fill_(0);
+  }
   // mRoPE positions have shape [3, num_tokens], slice on dim 1
   if (use_mrope_) {
     persistent_positions_
         .slice(/*dim=*/1, /*start=*/0, /*end=*/actual_num_tokens)
         .copy_(positions, /*non_blocking=*/true);
+    if (padded_num_tokens > actual_num_tokens) {
+      persistent_positions_
+          .slice(/*dim=*/1,
+                 /*start=*/actual_num_tokens,
+                 /*end=*/padded_num_tokens)
+          .fill_(0);
+    }
   } else {
     persistent_positions_
         .slice(/*dim=*/0, /*start=*/0, /*end=*/actual_num_tokens)
         .copy_(positions, /*non_blocking=*/true);
+    if (padded_num_tokens > actual_num_tokens) {
+      persistent_positions_
+          .slice(/*dim=*/0,
+                 /*start=*/actual_num_tokens,
+                 /*end=*/padded_num_tokens)
+          .fill_(0);
+    }
   }
   q_seq_lens_.slice(/*dim=*/0, /*start=*/0, /*end=*/actual_batch_size)
       .copy_(params.q_seq_lens, /*non_blocking=*/true);
   kv_seq_lens_.slice(/*dim=*/0, /*start=*/0, /*end=*/actual_batch_size)
       .copy_(params.kv_seq_lens, /*non_blocking=*/true);
+  if (padded_num_tokens > actual_batch_size) {
+    q_seq_lens_
+        .slice(
+            /*dim=*/0, /*start=*/actual_batch_size, /*end=*/padded_num_tokens)
+        .fill_(1);
+    kv_seq_lens_
+        .slice(
+            /*dim=*/0, /*start=*/actual_batch_size, /*end=*/padded_num_tokens)
+        .fill_(1);
+  }
 
   persistent_new_cache_slots_
       .slice(/*dim=*/0, /*start=*/0, /*end=*/actual_num_tokens)
       .copy_(params.new_cache_slots, /*non_blocking=*/true);
+  if (padded_num_tokens > actual_num_tokens) {
+    persistent_new_cache_slots_
+        .slice(
+            /*dim=*/0, /*start=*/actual_num_tokens, /*end=*/padded_num_tokens)
+        .fill_(0);
+  }
 
   // Copy block table data
   const int64_t actual_block_table_len = params.block_tables.size(1);
@@ -225,6 +286,53 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
           .slice(/*dim=*/1, /*start=*/0, /*end=*/actual_block_table_len);
   slice_persistent_block_tables.copy_(params.block_tables,
                                       /*non_blocking=*/true);
+  if (actual_block_table_len < persistent_block_tables_.size(1)) {
+    persistent_block_tables_
+        .slice(/*dim=*/0, /*start=*/0, /*end=*/actual_batch_size)
+        .slice(/*dim=*/1,
+               /*start=*/actual_block_table_len,
+               /*end=*/persistent_block_tables_.size(1))
+        .fill_(0);
+  }
+  if (padded_num_tokens > actual_batch_size) {
+    persistent_block_tables_
+        .slice(
+            /*dim=*/0, /*start=*/actual_batch_size, /*end=*/padded_num_tokens)
+        .fill_(0);
+  }
+  if (params.linear_block_tables.defined()) {
+    const int64_t actual_linear_block_table_len =
+        params.linear_block_tables.size(1);
+    CHECK_LE(actual_linear_block_table_len,
+             persistent_linear_block_tables_.size(1))
+        << "linear_block_tables width (" << actual_linear_block_table_len
+        << ") exceeds capture buffer width ("
+        << persistent_linear_block_tables_.size(1) << ")";
+    auto slice_persistent_linear_block_tables =
+        persistent_linear_block_tables_
+            .slice(/*dim=*/0, /*start=*/0, /*end=*/actual_batch_size)
+            .slice(/*dim=*/1,
+                   /*start=*/0,
+                   /*end=*/actual_linear_block_table_len);
+    slice_persistent_linear_block_tables.copy_(params.linear_block_tables,
+                                               /*non_blocking=*/true);
+    if (actual_linear_block_table_len <
+        persistent_linear_block_tables_.size(1)) {
+      persistent_linear_block_tables_
+          .slice(/*dim=*/0, /*start=*/0, /*end=*/actual_batch_size)
+          .slice(/*dim=*/1,
+                 /*start=*/actual_linear_block_table_len,
+                 /*end=*/persistent_linear_block_tables_.size(1))
+          .fill_(0);
+    }
+    if (padded_num_tokens > actual_batch_size) {
+      persistent_linear_block_tables_
+          .slice(/*dim=*/0,
+                 /*start=*/actual_batch_size,
+                 /*end=*/padded_num_tokens)
+          .fill_(0);
+    }
+  }
 
   // Update persistent embedding from input_embedding if available
   const auto& embedding = params.input_embedding;
@@ -247,6 +355,7 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
         .copy_(embedding, /*non_blocking=*/true);
   }
   // Update q_cu_seq_lens only if params.q_cu_seq_lens is defined
+  int64_t q_cu_seq_lens_size = 0;
   if (params.q_cu_seq_lens.defined()) {
     // Lazy initialization: if q_cu_seq_lens_ is not initialized, initialize it
     if (q_cu_seq_lens_.numel() == 0) {
@@ -254,8 +363,12 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
       q_cu_seq_lens_ = torch::zeros({max_seqs_per_batch + 1},
                                     torch::dtype(torch::kInt).device(device_));
     }
+    q_cu_seq_lens_size = params.q_cu_seq_lens.size(0);
+    CHECK_LE(q_cu_seq_lens_size, q_cu_seq_lens_.size(0))
+        << "q_cu_seq_lens_size (" << q_cu_seq_lens_size
+        << ") exceeds capture buffer size (" << q_cu_seq_lens_.size(0) << ")";
     // Copy data
-    q_cu_seq_lens_.slice(/*dim=*/0, /*start=*/0, /*end=*/actual_batch_size)
+    q_cu_seq_lens_.slice(/*dim=*/0, /*start=*/0, /*end=*/q_cu_seq_lens_size)
         .copy_(params.q_cu_seq_lens, /*non_blocking=*/true);
   }
 
@@ -273,10 +386,12 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
     // k/v cache is defined
     // NOTE: linear attention may pass "defined but empty" k/v cache tensors.
     // Only treat k/v cache as valid when they are defined and non-empty.
-    if (need_update_attention_plan_ && k_cache.defined() && v_cache.defined() &&
-        k_cache.numel() > 0 && v_cache.numel() > 0) {
+    const bool should_plan_attention =
+        need_update_attention_plan_ && k_cache.defined() && v_cache.defined() &&
+        k_cache.numel() > 0 && v_cache.numel() > 0;
+    if (should_plan_attention) {
       plan_paged_attention_tiling(
-          tokens, k_cache, v_cache, persistent_block_tables_, params, stream);
+          tokens, k_cache, v_cache, params.block_tables, params, stream);
     }
   }
 
@@ -305,6 +420,10 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
         persistent_new_cache_slots(padded_num_tokens);
     params_for_capture->block_tables =
         persistent_block_tables(padded_num_tokens);
+    if (params.linear_block_tables.defined()) {
+      params_for_capture->linear_block_tables =
+          persistent_linear_block_tables(padded_num_tokens);
+    }
 
     // Only set attn_mask if need_update_attn_mask_ is true
     if (need_update_attn_mask_) {
@@ -322,7 +441,7 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
       params_for_capture->q_cu_seq_lens =
           q_cu_seq_lens_.slice(/*dim=*/0,
                                /*start=*/0,
-                               /*end=*/actual_batch_size);
+                               /*end=*/q_cu_seq_lens_size);
     }
 
     return params_for_capture;
@@ -359,6 +478,13 @@ void GraphPersistentParam::initialize_paged_attention_plan_context(
   // Cache headNum and head_dim as member variables
   num_head_ = static_cast<int32_t>(args_.n_heads() / dp_local_tp_size);
   head_dim_ = static_cast<int32_t>(args_.head_dim());
+  auto tensor_dtype = util::parse_dtype(args_.dtype(), device);
+  persistent_pa_plan_query_ =
+      torch::zeros({FLAGS_max_tokens_per_batch, num_head_, head_dim_},
+                   torch::dtype(tensor_dtype).device(device));
+  persistent_pa_plan_output_ =
+      torch::zeros({FLAGS_max_tokens_per_batch, num_head_, head_dim_},
+                   torch::dtype(tensor_dtype).device(device));
 
   atb::customize::CustomPagedAttentionParam paOpParam;
   // default mask type is UNDEFINED, which means no mask is needed
@@ -595,27 +721,12 @@ void GraphPersistentParam::plan_paged_attention_tiling(
   // Construct query atb tensor from tokens: shape [num_tokens, headNum,
   // head_dim] Get number of tokens from tokens tensor
   const int64_t num_tokens = tokens.size(0);
-
-  // Create query atb tensor with only desc (no actual data needed)
-  atb::Tensor atb_query;
-  // TODO: support quant dtype
-  atb_query.desc.dtype = (args_.dtype() == "bfloat16") ? ACL_BF16 : ACL_FLOAT16;
-  atb_query.desc.format = ACL_FORMAT_ND;
-  atb_query.desc.shape.dimNum = 3;
-  atb_query.desc.shape.dims[0] = num_tokens;
-  atb_query.desc.shape.dims[1] = num_head_;
-  atb_query.desc.shape.dims[2] = head_dim_;
-  atb_query.deviceData = atb_k_cache.deviceData;
-  atb_query.hostData = nullptr;
-  // Calculate dataSize: num_tokens * headNum * head_dim * sizeof(dtype)
-  // ACL_FLOAT16 and ACL_BF16 both use 2 bytes per element
-  const uint64_t element_size =
-      (atb_query.desc.dtype == ACL_BF16 || atb_query.desc.dtype == ACL_FLOAT16)
-          ? 2
-          : 1;
-  atb_query.dataSize = static_cast<uint64_t>(num_tokens) *
-                       static_cast<uint64_t>(num_head_) *
-                       static_cast<uint64_t>(head_dim_) * element_size;
+  auto plan_query = persistent_pa_plan_query_.slice(
+      /*dim=*/0, /*start=*/0, /*end=*/num_tokens);
+  auto plan_output = persistent_pa_plan_output_.slice(
+      /*dim=*/0, /*start=*/0, /*end=*/num_tokens);
+  atb::Tensor atb_query = atb_speed::Utils::AtTensor2Tensor(plan_query);
+  atb::Tensor atb_output = atb_speed::Utils::AtTensor2Tensor(plan_output);
 
   atb::VariantPack custom_variantPack;
   // Conditionally include mask based on need_update_attn_mask_
@@ -637,7 +748,7 @@ void GraphPersistentParam::plan_paged_attention_tiling(
                                     atb_context_lens,
                                     atb_tiling_data};
   }
-  custom_variantPack.outTensors.push_back(atb_query);
+  custom_variantPack.outTensors.push_back(atb_output);
 
   uint64_t custom_workspace_size = 0;
   atb::Status status = custom_pa_op_for_plan_->Setup(
@@ -799,8 +910,7 @@ bool AclGraph::capture(CausalLM* model,
       c10_npu::getCurrentNPUStream(tensor_options.device().index()).stream();
 
   // Update persistent parameters with input data before capture
-  const torch::Tensor& k_cache = kv_cache[0].get_k_cache();
-  const torch::Tensor& v_cache = kv_cache[0].get_v_cache();
+  auto [k_cache, v_cache] = find_attention_plan_kv_cache(kv_cache);
   const uint32_t actual_num_tokens = tokens.size(0);
   CHECK_GE(num_tokens_, actual_num_tokens)
       << "num_tokens_ >= actual_num_tokens";
@@ -816,6 +926,12 @@ bool AclGraph::capture(CausalLM* model,
   CHECK(graph_params.has_value())
       << "update() should return ModelInputParams when "
          "return_capture_params=true";
+  // Keep a stable copy alive for graph replay. Avoid moving from the local
+  // optional value here to prevent subtle moved-from tensor container states
+  // from leaking into capture-time execution.
+  captured_graph_params_ = graph_params.value();
+  CHECK(captured_graph_params_.has_value())
+      << "captured_graph_params_ must be initialized before graph capture";
 
   // Synchronize stream to ensure all data is copied to graph persistent buffers
   aclrtSynchronizeStream(stream);
@@ -850,10 +966,10 @@ bool AclGraph::capture(CausalLM* model,
         {0, 0}, aclmdlRICaptureMode::ACL_MODEL_RI_CAPTURE_MODE_THREAD_LOCAL);
     // Execute forward pass - NPUGraph mempool manages temporary tensors
     auto forward_result =
-        model->forward({persistent_param_.persistent_tokens(num_tokens_)},
-                       {persistent_param_.persistent_positions(num_tokens_)},
+        model->forward(persistent_param_.persistent_tokens(num_tokens_),
+                       persistent_param_.persistent_positions(num_tokens_),
                        kv_cache,
-                       {graph_params.value()});
+                       *captured_graph_params_);
 
     // Store result in persistent buffer owned by NPUGraph mempool
     persistent_param_.set_hidden_states(forward_result.hidden_states);
@@ -868,12 +984,11 @@ bool AclGraph::capture(CausalLM* model,
           c10_npu::getDefaultNPUStream(tensor_options.device().index()));
     }
   }
-  // Synchronize and test replay to verify graph capture
+  // Synchronize after capture so the first decode step sees fully materialized
+  // outputs. Do not replay here: decode graphs mutate KV/linear caches, and a
+  // verification replay would advance request state twice before the first
+  // user-visible token is consumed.
   aclrtSynchronizeStream(stream);
-
-  graph_.replay();
-
-  // aclrtSynchronizeStream(stream);
   return true;
 }
 
@@ -898,9 +1013,16 @@ ModelOutput AclGraph::replay(const torch::Tensor& tokens,
       << "num_tokens mismatch: expected <= " << num_tokens_ << ", got "
       << actual_num_tokens;
 
+  CHECK(capture_stream_.has_value())
+      << "capture_stream_ must be initialized before replay";
+  const auto original_stream = c10_npu::getCurrentNPUStream(device_index_);
+  const bool need_restore_stream = original_stream != capture_stream_.value();
+  if (need_restore_stream) {
+    c10_npu::setCurrentNPUStream(capture_stream_.value());
+  }
+
   // Update persistent parameters with new input data
-  const torch::Tensor& k_cache = kv_cache[0].get_k_cache();
-  const torch::Tensor& v_cache = kv_cache[0].get_v_cache();
+  auto [k_cache, v_cache] = find_attention_plan_kv_cache(kv_cache);
   persistent_param_.update(tokens,
                            k_cache,
                            v_cache,
@@ -908,12 +1030,15 @@ ModelOutput AclGraph::replay(const torch::Tensor& tokens,
                            params,
                            num_tokens_,
                            /*return_capture_params=*/false);
+  refresh_captured_host_seq_lens(params);
 
   // Replay captured graph - NPUGraph mempool reuses temporary tensors
-  // Get current NPU stream from libtorch NPU API
-  aclrtStream stream = c10_npu::getCurrentNPUStream().stream();
-
   graph_.replay();
+  aclrtSynchronizeStream(capture_stream_.value().stream());
+
+  if (need_restore_stream) {
+    c10_npu::setCurrentNPUStream(original_stream);
+  }
 
   // this is necessary to ensure the graph replay is completed
   // aclError st = aclrtSynchronizeStream(stream);
@@ -924,6 +1049,29 @@ ModelOutput AclGraph::replay(const torch::Tensor& tokens,
   // Note: aux_hidden_states handling is done in AclGraphExecutorImpl::run()
   // since replay() doesn't have access to options
   return ModelOutput(get_hidden_states(actual_num_tokens));
+}
+
+void AclGraph::refresh_captured_host_seq_lens(const ModelInputParams& params) {
+  CHECK(captured_graph_params_.has_value())
+      << "captured_graph_params_ must exist before replay";
+  auto& captured = *captured_graph_params_;
+  CHECK_EQ(captured.kv_seq_lens_vec.size(), captured.q_seq_lens_vec.size())
+      << "captured kv/q seq lens size mismatch";
+  CHECK_EQ(params.kv_seq_lens_vec.size(), params.q_seq_lens_vec.size())
+      << "input kv/q seq lens size mismatch";
+  CHECK_LE(params.kv_seq_lens_vec.size(), captured.kv_seq_lens_vec.size())
+      << "input batch size exceeds captured graph capacity";
+
+  const size_t actual_batch_size = params.kv_seq_lens_vec.size();
+  const size_t padded_batch_size = captured.kv_seq_lens_vec.size();
+  for (size_t i = 0; i < actual_batch_size; ++i) {
+    captured.kv_seq_lens_vec[i] = params.kv_seq_lens_vec[i];
+    captured.q_seq_lens_vec[i] = params.q_seq_lens_vec[i];
+  }
+  for (size_t i = actual_batch_size; i < padded_batch_size; ++i) {
+    captured.kv_seq_lens_vec[i] = 1;
+    captured.q_seq_lens_vec[i] = 1;
+  }
 }
 
 AclGraphExecutorImpl::AclGraphExecutorImpl(CausalLM* model,
@@ -1068,6 +1216,9 @@ void AclGraph::print_graph_tensors() const {
   VLOG(kGraphExecutorLogVerboseLevel)
       << "graph persistent_block_tables_: "
       << persistent_param_.persistent_block_tables();
+  VLOG(kGraphExecutorLogVerboseLevel)
+      << "graph persistent_linear_block_tables_: "
+      << persistent_param_.persistent_linear_block_tables();
   VLOG(kGraphExecutorLogVerboseLevel)
       << "graph hidden_states_: " << persistent_param_.hidden_states();
 }
