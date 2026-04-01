@@ -45,6 +45,11 @@ uint32_t get_sample_source_position(const SampleSlot& sample_slot) {
   return static_cast<uint32_t>(sample_slot.token_position - 1);
 }
 
+bool ShouldUseMRope(const ModelArgs* args) {
+  return args != nullptr && (args->rope_scaling_rope_type() == "mrope" ||
+                             !args->rope_scaling_mrope_section().empty());
+}
+
 }  // namespace
 
 BatchInputBuilder::BatchInputBuilder(
@@ -74,9 +79,7 @@ BatchInputBuilder::BatchInputBuilder(
   state_.mrope_positions_vec.reserve(sequences.size());
   state_.block_tables_vec.reserve(sequences.size());
   state_.acc_logprob_vec.reserve(sequences.size());
-  if (args_ != nullptr) {
-    use_mrope_ = (args_->rope_scaling_rope_type() == "mrope");
-  }
+  use_mrope_ = ShouldUseMRope(args_);
   write_block_ids_.clear();
   state_.batch_forward_type = batch_forward_type;
 }

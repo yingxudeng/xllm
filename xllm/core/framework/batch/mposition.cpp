@@ -62,7 +62,8 @@ torch::Tensor MPositionHelper::get_positions() {
     std::tuple<torch::Tensor, int> res;
     if (absl::StartsWith(args_.model_type(), "glm4v")) {
       res = get_positions_glm(image_grid_thw, video_grid_thw);
-    } else if (absl::StartsWith(args_.model_type(), "qwen3_vl")) {
+    } else if (absl::StartsWith(args_.model_type(), "qwen3_vl") ||
+               absl::StartsWith(args_.model_type(), "qwen3_5_vl")) {
       res = get_positions_qwen3(image_grid_thw, video_grid_thw);
     } else {
       res = get_positions_p(image_grid_thw, video_grid_thw, second_per_grid_ts);

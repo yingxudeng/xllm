@@ -58,7 +58,8 @@ ModelOutput VlmExecutorImpl::run(const torch::Tensor& tokens,
   CHECK(input_gather.finish(mm_data));
   mm_data.to(device_);
 
-  auto embedding = encode(params);
+  MMDict embedding = encode(params);
+
   EncoderOutputScatterVisitor scatter(embedding);
   mm_data.foreach (scatter);
   CHECK(scatter.finish());
