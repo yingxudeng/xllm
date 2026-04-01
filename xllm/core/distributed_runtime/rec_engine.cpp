@@ -114,6 +114,16 @@ bool RecEngine::init_model() {
   head_dim_ = args_.head_dim();
   dtype_ = xllm::util::parse_dtype(args_.dtype(), options_.devices()[0]);
 
+  // For qwen3_next hybrid attention.
+  if (has_linear_attention_layers(args_)) {
+    const int64_t linear_n_k_heads = args_.linear_num_key_heads();
+    const int64_t linear_n_v_heads = args_.linear_num_value_heads();
+    n_local_linear_k_heads_ =
+        std::max<int64_t>(1, linear_n_k_heads / world_size);
+    n_local_linear_v_heads_ =
+        std::max<int64_t>(1, linear_n_v_heads / world_size);
+  }
+
   LOG(INFO) << "Block info, block_size: " << options_.block_size()
             << ", n_local_kv_heads: " << n_local_kv_heads_
             << ", head_dim: " << head_dim_ << ", n_layers: " << args_.n_layers()
@@ -149,10 +159,52 @@ Engine::KVCacheCapacity RecEngine::estimate_kv_cache_capacity() {
   kv_cache_cap.slot_size = slot_size;
   kv_cache_cap.n_layers = args_.n_layers();
 
+  // For qwen3_next linear-attention layers.
+  int64_t linear_slot_size = 0;
+  if (args_.linear_num_value_heads() > 0) {
+    int64_t head_k_dim = args_.linear_key_head_dim();
+    int64_t head_v_dim = args_.linear_value_head_dim();
+    int64_t linear_ssm_slot_size =
+        dtype_size * n_local_linear_v_heads_ * head_k_dim * head_v_dim;
+    int64_t linear_conv_slot_size = dtype_size *
+                                    (head_k_dim * n_local_linear_k_heads_ * 2 +
+                                     head_v_dim * n_local_linear_v_heads_) *
+                                    (args_.linear_conv_kernel_dim() - 1);
+    linear_slot_size = linear_ssm_slot_size + linear_conv_slot_size;
+  }
+  kv_cache_cap.linear_slot_size = linear_slot_size;
+
   const int32_t block_size = options_.block_size();
-  const int64_t block_size_in_bytes = block_size * slot_size;
-  kv_cache_cap.n_blocks = kv_cache_cap.cache_size_in_bytes /
-                          (args_.n_layers() * block_size_in_bytes);
+  const int64_t full_cache_block_size_in_bytes = block_size * slot_size;
+
+  int64_t num_full_attention_layers = kv_cache_cap.n_layers;
+  int64_t num_linear_attention_layers = 0;
+  if (args_.full_attention_interval() > 0) {
+    num_full_attention_layers =
+        kv_cache_cap.n_layers / args_.full_attention_interval();
+    num_linear_attention_layers =
+        kv_cache_cap.n_layers - num_full_attention_layers;
+  } else if (has_linear_attention_layers(args_)) {
+    // Count layer types from args.layer_types()
+    const auto& layer_types = args_.layer_types();
+    num_full_attention_layers = 0;
+    num_linear_attention_layers = 0;
+    for (const auto& layer_type : layer_types) {
+      if (layer_type == "full_attention" || layer_type == "attention") {
+        num_full_attention_layers++;
+      } else {
+        num_linear_attention_layers++;
+      }
+    }
+  }
+
+  const int64_t total_cache_block_size_in_bytes =
+      num_full_attention_layers * full_cache_block_size_in_bytes +
+      num_linear_attention_layers * linear_slot_size;
+  CHECK_GT(total_cache_block_size_in_bytes, 0)
+      << "invalid cache block size estimate";
+  kv_cache_cap.n_blocks =
+      kv_cache_cap.cache_size_in_bytes / total_cache_block_size_in_bytes;
   CHECK_GT(kv_cache_cap.n_blocks, 0) << "no n_blocks for kv cache";
 
   return kv_cache_cap;
@@ -162,9 +214,12 @@ bool RecEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
   LOG(INFO) << "kv cache capacity: "
             << "bytes: " << kv_cache_cap.cache_size_in_bytes
             << ", blocks: " << kv_cache_cap.n_blocks
-            << ", slot_size: " << kv_cache_cap.slot_size;
+            << ", slot_size: " << kv_cache_cap.slot_size
+            << ", n_layers: " << kv_cache_cap.n_layers
+            << ", kv_cache_dtype: " << options_.kv_cache_dtype();
 
   const int32_t block_size = options_.block_size();
+  bool enable_gdn_attention = has_linear_attention_layers(args_);
 
   // init kv cache for each worker
   std::vector<std::vector<int64_t>> kv_cache_shape;
@@ -181,6 +236,25 @@ bool RecEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
 
   LOG(INFO) << "Initializing k cache with shape: [" << kv_cache_shape[0] << "]";
   LOG(INFO) << "Initializing v cache with shape: [" << kv_cache_shape[1] << "]";
+
+  // Add conv and ssm cache for GDN attention
+  if (enable_gdn_attention) {
+    LOG(INFO) << "GND Attention is enabled";
+    kv_cache_shape.emplace_back(std::vector<int64_t>{
+        kv_cache_cap.n_blocks,
+        args_.linear_key_head_dim() * n_local_linear_k_heads_ * 2 +
+            args_.linear_key_head_dim() * n_local_linear_v_heads_,
+        args_.linear_conv_kernel_dim() - 1});
+    kv_cache_shape.emplace_back(
+        std::vector<int64_t>{kv_cache_cap.n_blocks,
+                             n_local_linear_v_heads_,
+                             args_.linear_key_head_dim(),
+                             args_.linear_value_head_dim()});
+    LOG(INFO) << "Initializing conv cache with shape: [" << kv_cache_shape[2]
+              << "]";
+    LOG(INFO) << "Initializing ssm cache with shape: [" << kv_cache_shape[3]
+              << "]";
+  }
 
   // initialize block manager
   BlockManagerPool::Options options;
