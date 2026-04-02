@@ -22,6 +22,7 @@ limitations under the License.
 
 #include "common/global_flags.h"
 #include "common/rec_model_utils.h"
+#include "util/tensor_helper.h"
 
 // #include "attn_mask.h"
 #include "torch_npu/csrc/core/npu/NPUCachingAllocator.h"
@@ -31,6 +32,77 @@ namespace xllm {
 namespace layer {
 
 const uint64_t WEIGHT_COUNT_PER_LAYER = 56;
+
+namespace {
+
+bool should_debug_force_graph_eager_decode_inputs() {
+  return !FLAGS_enable_graph || FLAGS_enable_graph_mode_decode_no_padding;
+}
+
+bool should_log_decode_node_inputs(const ModelInputParams& input_params,
+                                   int node_id) {
+  return should_debug_force_graph_eager_decode_inputs() &&
+         input_params.batch_forward_type.is_decode() && node_id == 0;
+}
+
+void debug_log_tensor(const torch::Tensor& tensor,
+                      const std::string& name,
+                      int num = 16,
+                      bool print_value = true) {
+  if (!tensor.defined()) {
+    LOG(INFO) << "[force_graph_eager debug] " << name << " is undefined";
+    return;
+  }
+  xllm::print_tensor(tensor, name, num, true, print_value);
+}
+
+void debug_log_decode_node_inputs(const ModelInputParams& input_params,
+                                  int node_id) {
+  if (!should_log_decode_node_inputs(input_params, node_id)) {
+    return;
+  }
+  LOG(INFO) << "[force_graph_eager debug] "
+            << "NpuQwen3DecoderLayerImpl::build_node_variant_pack"
+            << ", node_id: " << node_id
+            << ", num_sequences: " << input_params.num_sequences
+            << ", kv_max_seq_len: " << input_params.kv_max_seq_len
+            << ", q_max_seq_len: " << input_params.q_max_seq_len
+            << ", enable_graph: " << FLAGS_enable_graph << ", has_tiling_data: "
+            << input_params.graph_buffer.tiling_data.defined();
+  debug_log_tensor(input_params.kv_seq_lens,
+                   "NpuQwen3DecoderLayerImpl decode kv_seq_lens");
+  if (input_params.q_seq_lens.defined()) {
+    debug_log_tensor(input_params.q_seq_lens,
+                     "NpuQwen3DecoderLayerImpl decode q_seq_lens");
+  }
+  debug_log_tensor(input_params.block_tables,
+                   "NpuQwen3DecoderLayerImpl decode block_tables");
+  if (input_params.block_tables.defined() &&
+      input_params.block_tables.dim() == 2 &&
+      input_params.block_tables.size(1) > 0) {
+    debug_log_tensor(input_params.block_tables.select(1, 0),
+                     "NpuQwen3DecoderLayerImpl decode block_tables_col0");
+  }
+  debug_log_tensor(input_params.new_cache_slots,
+                   "NpuQwen3DecoderLayerImpl decode new_cache_slots");
+  if (input_params.graph_buffer.tiling_data.defined()) {
+    debug_log_tensor(input_params.graph_buffer.tiling_data,
+                     "NpuQwen3DecoderLayerImpl decode tiling_data",
+                     32);
+  }
+}
+
+void debug_log_decode_layer_tensor(const torch::Tensor& tensor,
+                                   const std::string& name,
+                                   const ModelInputParams& input_params,
+                                   int node_id) {
+  if (!should_log_decode_node_inputs(input_params, node_id)) {
+    return;
+  }
+  debug_log_tensor(tensor, name, 16, true);
+}
+
+}  // namespace
 
 void NpuQwen3DecoderLayerImpl::param_from_args(
     atb_speed::qwen::QwenLayerParam& param,
@@ -252,6 +324,11 @@ torch::Tensor NpuQwen3DecoderLayerImpl::forward(torch::Tensor& x,
     LOG_IF(FATAL, st != 0) << model_name_
                            << "excute prefill layer fail, error code: " << st;
   } else {
+    debug_log_decode_layer_tensor(
+        x,
+        "NpuQwen3DecoderLayerImpl decode layer_input_x",
+        input_params,
+        node_id);
     build_node_variant_pack(decode_node_,
                             x,
                             cos_pos,
@@ -264,6 +341,11 @@ torch::Tensor NpuQwen3DecoderLayerImpl::forward(torch::Tensor& x,
     st = execute_node(decode_node_, node_id + 1000, event, event_flag);
     LOG_IF(FATAL, st != 0) << model_name_
                            << "excute decode layer fail, error code: " << st;
+    debug_log_decode_layer_tensor(
+        x,
+        "NpuQwen3DecoderLayerImpl decode layer_output_x",
+        input_params,
+        node_id);
   }
 
   return at_placeholder_;
@@ -279,6 +361,7 @@ void NpuQwen3DecoderLayerImpl::build_node_variant_pack(
     ModelInputParams& input_params,
     bool is_prefill,
     int node_id) {
+  debug_log_decode_node_inputs(input_params, node_id);
   internal_tensors_ = atb_speed::Utils::AtTensor2Tensor(x);
   node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER) = internal_tensors_;
   node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 1) =

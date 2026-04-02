@@ -15,16 +15,105 @@ limitations under the License.
 
 #include "attention_metadata_builder.h"
 
+#include <glog/logging.h>
+
 #include <numeric>
+#include <sstream>
 
 #include "attention_metadata.h"
 #include "core/common/global_flags.h"
 #include "framework/model/model_args.h"
 #include "framework/model/model_input_params.h"
+#include "util/tensor_helper.h"
+
+DECLARE_bool(force_graph_eager);
 
 namespace xllm::layer {
 
 namespace {
+
+bool should_debug_force_graph_eager_decode_inputs() {
+  return !FLAGS_enable_graph ||
+         (FLAGS_force_graph_eager && FLAGS_enable_graph_mode_decode_no_padding);
+}
+
+void debug_log_tensor(const torch::Tensor& tensor,
+                      const std::string& name,
+                      int num = 16,
+                      bool print_value = true) {
+  if (!should_debug_force_graph_eager_decode_inputs()) {
+    return;
+  }
+  xllm::print_tensor(tensor, name, num, true, print_value);
+}
+
+void debug_log_attention_seq_binding(const ModelInputParams& params,
+                                     const AttentionMetadata& attn_metadata,
+                                     const std::string& stage) {
+  if (!should_debug_force_graph_eager_decode_inputs() ||
+      !params.batch_forward_type.is_decode()) {
+    return;
+  }
+
+  torch::Tensor slot_mapping_cpu;
+  if (attn_metadata.slot_mapping.defined()) {
+    slot_mapping_cpu = attn_metadata.slot_mapping.reshape({-1})
+                           .to(torch::kCPU, torch::kLong)
+                           .contiguous();
+  }
+  torch::Tensor kv_seq_lens_cpu;
+  if (attn_metadata.kv_seq_lens.defined()) {
+    kv_seq_lens_cpu = attn_metadata.kv_seq_lens.reshape({-1})
+                          .to(torch::kCPU, torch::kLong)
+                          .contiguous();
+  }
+  torch::Tensor q_seq_lens_cpu;
+  if (attn_metadata.q_seq_lens.defined()) {
+    q_seq_lens_cpu = attn_metadata.q_seq_lens.reshape({-1})
+                         .to(torch::kCPU, torch::kLong)
+                         .contiguous();
+  }
+  torch::Tensor block_table_col0_cpu;
+  if (attn_metadata.block_table.defined() &&
+      attn_metadata.block_table.dim() == 2 &&
+      attn_metadata.block_table.size(1) > 0) {
+    block_table_col0_cpu = attn_metadata.block_table.select(1, 0)
+                               .reshape({-1})
+                               .to(torch::kCPU, torch::kLong)
+                               .contiguous();
+  }
+
+  for (int64_t seq_idx = 0; seq_idx < params.num_sequences; ++seq_idx) {
+    std::ostringstream oss;
+    oss << "[force_graph_eager debug] " << stage
+        << " seq_binding, seq_idx: " << seq_idx << ", request_id: "
+        << (seq_idx < static_cast<int64_t>(params.request_ids.size())
+                ? params.request_ids[seq_idx]
+                : "")
+        << ", extra_token_id: "
+        << (seq_idx < static_cast<int64_t>(params.extra_token_ids.size())
+                ? params.extra_token_ids[seq_idx]
+                : -1)
+        << ", kv_seq_len: "
+        << (kv_seq_lens_cpu.defined() && seq_idx < kv_seq_lens_cpu.size(0)
+                ? kv_seq_lens_cpu[seq_idx].item<int64_t>()
+                : -1)
+        << ", q_seq_len: "
+        << (q_seq_lens_cpu.defined() && seq_idx < q_seq_lens_cpu.size(0)
+                ? q_seq_lens_cpu[seq_idx].item<int64_t>()
+                : -1)
+        << ", slot_mapping: "
+        << (slot_mapping_cpu.defined() && seq_idx < slot_mapping_cpu.size(0)
+                ? slot_mapping_cpu[seq_idx].item<int64_t>()
+                : -1)
+        << ", block_table_col0: "
+        << (block_table_col0_cpu.defined() &&
+                    seq_idx < block_table_col0_cpu.size(0)
+                ? block_table_col0_cpu[seq_idx].item<int64_t>()
+                : -1);
+    LOG(INFO) << oss.str();
+  }
+}
 
 AttentionMetadata build_attention_metadata(
     const ModelInputParams& params,
@@ -187,6 +276,34 @@ AttentionMetadata build_attention_metadata(
       }
 #endif
     }
+  }
+
+  if (should_debug_force_graph_eager_decode_inputs() &&
+      params.batch_forward_type.is_decode()) {
+    LOG(INFO) << "[force_graph_eager debug] AttentionMetadataBuilder::build"
+              << ", num_sequences: " << params.num_sequences
+              << ", is_prefill: " << attn_metadata.is_prefill
+              << ", is_chunked_prefill: " << attn_metadata.is_chunked_prefill
+              << ", enable_graph: " << FLAGS_enable_graph
+              << ", has_tiling_data: "
+              << attn_metadata.paged_attention_tiling_data.defined();
+    debug_log_tensor(attn_metadata.slot_mapping,
+                     "AttentionMetadataBuilder slot_mapping");
+    debug_log_tensor(attn_metadata.kv_seq_lens,
+                     "AttentionMetadataBuilder kv_seq_lens");
+    debug_log_tensor(attn_metadata.q_seq_lens,
+                     "AttentionMetadataBuilder q_seq_lens");
+    if (attn_metadata.block_table.defined()) {
+      debug_log_tensor(attn_metadata.block_table,
+                       "AttentionMetadataBuilder block_table");
+      if (attn_metadata.block_table.dim() == 2 &&
+          attn_metadata.block_table.size(1) > 0) {
+        debug_log_tensor(attn_metadata.block_table.select(1, 0),
+                         "AttentionMetadataBuilder block_table_col0");
+      }
+    }
+    debug_log_attention_seq_binding(
+        params, attn_metadata, "AttentionMetadataBuilder::build");
   }
 
   return attn_metadata;

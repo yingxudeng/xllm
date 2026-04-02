@@ -15,15 +15,46 @@ limitations under the License.
 
 #include "qwen3_next_hybrid_decoder_layer_base.h"
 
+#include <glog/logging.h>
+
 #include <algorithm>
+
+#include "common/global_flags.h"
+#include "util/tensor_helper.h"
+
+DECLARE_bool(force_graph_eager);
 
 namespace xllm {
 namespace layer {
+
+namespace {
+
+bool should_debug_qwen3_decode_layer(const ModelInputParams& input_params,
+                                     int32_t layer_id) {
+  static_cast<void>(layer_id);
+  return input_params.batch_forward_type.is_decode() &&
+         (!FLAGS_enable_graph || (FLAGS_force_graph_eager &&
+                                  FLAGS_enable_graph_mode_decode_no_padding));
+}
+
+void debug_log_tensor(const torch::Tensor& tensor,
+                      const std::string& name,
+                      int num = 16,
+                      bool print_value = true) {
+  if (!tensor.defined()) {
+    LOG(INFO) << "[force_graph_eager debug] " << name << " is undefined";
+    return;
+  }
+  xllm::print_tensor(tensor, name, num, true, print_value);
+}
+
+}  // namespace
 
 Qwen3HybridDecoderLayerImplBase::Qwen3HybridDecoderLayerImplBase(
     const ModelContext& context,
     int32_t layer_id,
     std::shared_ptr<Qwen3GatedDeltaNetBaseImpl> linear_attention_module) {
+  layer_id_ = layer_id;
   const auto& model_args = context.get_model_args();
   const auto& quant_args = context.get_quant_args();
   const auto& parallel_args = context.get_parallel_args();
@@ -39,6 +70,7 @@ Qwen3HybridDecoderLayerImplBase::Qwen3HybridDecoderLayerImplBase(
   } else {
     linear_attention_ =
         register_module("linear_attn", std::move(linear_attention_module));
+    linear_attention_->set_debug_layer_id(layer_id);
   }
 
   // Initialize norm layers
@@ -110,15 +142,31 @@ torch::Tensor Qwen3HybridDecoderLayerImplBase::forward(
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
     const ModelInputParams& input_params) {
+  const bool should_debug =
+      should_debug_qwen3_decode_layer(input_params, layer_id_);
+  if (should_debug) {
+    LOG(INFO) << "[force_graph_eager debug] "
+              << "Qwen3HybridDecoderLayerImplBase::forward"
+              << ", layer_id: " << layer_id_
+              << ", use_full_attention: " << static_cast<bool>(attention_);
+    debug_log_tensor(x, "Qwen3HybridDecoderLayer layer_input hidden_states");
+    debug_log_tensor(positions, "Qwen3HybridDecoderLayer positions");
+  }
   // Pre-attention norm
   torch::Tensor residual = x;
   x = input_norm_(x);
+  if (should_debug) {
+    debug_log_tensor(x, "Qwen3HybridDecoderLayer after_input_norm");
+  }
 
   // Attention
   if (attention_) {
     x = attention_->forward(positions, x, attn_metadata, kv_cache);
   } else {
     x = linear_attention_->forward(x, attn_metadata, kv_cache, input_params);
+  }
+  if (should_debug) {
+    debug_log_tensor(x, "Qwen3HybridDecoderLayer attn_or_gnd_output");
   }
 
   auto orig_dtype = x.dtype();
@@ -132,12 +180,18 @@ torch::Tensor Qwen3HybridDecoderLayerImplBase::forward(
   residual = x;
   x = x.to(orig_dtype);
   x = post_norm_(x);
+  if (should_debug) {
+    debug_log_tensor(x, "Qwen3HybridDecoderLayer after_post_norm");
+  }
 
   // MLP forward
   if (moe_mlp_) {
     x = moe_mlp_(x, input_params);
   } else {
     x = mlp_(x);
+  }
+  if (should_debug) {
+    debug_log_tensor(x, "Qwen3HybridDecoderLayer mlp_output");
   }
 
   orig_dtype = x.dtype();
@@ -147,6 +201,9 @@ torch::Tensor Qwen3HybridDecoderLayerImplBase::forward(
   }
   x = x + residual;
   x = x.to(orig_dtype);
+  if (should_debug) {
+    debug_log_tensor(x, "Qwen3HybridDecoderLayer layer_output");
+  }
   return x;
 }
 

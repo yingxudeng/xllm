@@ -18,8 +18,38 @@ limitations under the License.
 #include <glog/logging.h>
 
 #include <tuple>
+
+#include "common/global_flags.h"
+#include "util/tensor_helper.h"
+
+DECLARE_bool(force_graph_eager);
+
 namespace xllm {
 namespace layer {
+
+namespace {
+
+bool should_debug_qwen3_attention_decode(const AttentionMetadata& attn_metadata,
+                                         int32_t layer_id,
+                                         int32_t rank) {
+  static_cast<void>(layer_id);
+  return !attn_metadata.is_prefill && rank == 0 &&
+         (!FLAGS_enable_graph || (FLAGS_force_graph_eager &&
+                                  FLAGS_enable_graph_mode_decode_no_padding));
+}
+
+void debug_log_tensor(const torch::Tensor& tensor,
+                      const std::string& name,
+                      int num = 16,
+                      bool print_value = true) {
+  if (!tensor.defined()) {
+    LOG(INFO) << "[force_graph_eager debug] " << name << " is undefined";
+    return;
+  }
+  xllm::print_tensor(tensor, name, num, true, print_value);
+}
+
+}  // namespace
 
 Qwen3NextAttentionImpl::Qwen3NextAttentionImpl(
     const ModelArgs& args,
@@ -109,8 +139,20 @@ torch::Tensor Qwen3NextAttentionImpl::forward(
     const torch::Tensor& hidden_states,
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache) {
+  const bool should_debug =
+      should_debug_qwen3_attention_decode(attn_metadata, layer_id_, rank_);
+  if (should_debug) {
+    LOG(INFO) << "[force_graph_eager debug] "
+              << "Qwen3NextAttentionImpl::forward"
+              << ", layer_id: " << layer_id_;
+    debug_log_tensor(hidden_states, "Qwen3NextAttention hidden_states_input");
+    debug_log_tensor(positions, "Qwen3NextAttention positions");
+  }
   // 1. qkv projection
   auto qkv = qkv_proj_->forward(hidden_states);
+  if (should_debug) {
+    debug_log_tensor(qkv, "Qwen3NextAttention qkv_proj_output");
+  }
   torch::Tensor q, k, v;
   torch::Tensor gate;
 
@@ -154,6 +196,14 @@ torch::Tensor Qwen3NextAttentionImpl::forward(
     k = qkv.slice(/*dim=*/-1, q_size_, q_size_ + kv_size_);
     v = qkv.slice(/*dim=*/-1, q_size_ + kv_size_, q_size_ + 2 * kv_size_);
   }
+  if (should_debug) {
+    debug_log_tensor(q, "Qwen3NextAttention q_before_norm");
+    debug_log_tensor(k, "Qwen3NextAttention k_before_norm");
+    debug_log_tensor(v, "Qwen3NextAttention v_input");
+    if (attn_output_gate_) {
+      debug_log_tensor(gate, "Qwen3NextAttention gate_before_sigmoid");
+    }
+  }
 
   const int64_t T = q.size(0);
 
@@ -161,19 +211,39 @@ torch::Tensor Qwen3NextAttentionImpl::forward(
   auto q_normed = q_norm_->forward(q_reshaped);
   auto k_reshaped = k.reshape({T, num_kv_heads_, head_dim_});
   auto k_normed = k_norm_->forward(k_reshaped);
+  if (should_debug) {
+    debug_log_tensor(q_normed, "Qwen3NextAttention q_after_norm");
+    debug_log_tensor(k_normed, "Qwen3NextAttention k_after_norm");
+  }
 
   q = q_normed.view({T, q_size_});
   k = k_normed.view({T, kv_size_});
 
   rotary_emb_->forward(positions, q, k);
+  if (should_debug) {
+    debug_log_tensor(q, "Qwen3NextAttention q_after_rope");
+    debug_log_tensor(k, "Qwen3NextAttention k_after_rope");
+  }
   auto out = std::get<0>(attn_->forward(attn_metadata, q, k, v, kv_cache));
+  if (should_debug) {
+    debug_log_tensor(out, "Qwen3NextAttention attn_output_before_gate");
+  }
 
   if (attn_output_gate_) {
     gate = torch::sigmoid(gate);
+    if (should_debug) {
+      debug_log_tensor(gate, "Qwen3NextAttention gate_after_sigmoid");
+    }
     out = out * gate;
+    if (should_debug) {
+      debug_log_tensor(out, "Qwen3NextAttention attn_output_after_gate");
+    }
   }
 
   out = o_proj_->forward(out);
+  if (should_debug) {
+    debug_log_tensor(out, "Qwen3NextAttention output_after_o_proj");
+  }
   return out;
 }
 

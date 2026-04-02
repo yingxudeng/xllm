@@ -73,6 +73,7 @@ class Qwen3HybridDecoderLayerImplBase : public Qwen3HybridDecoderLayerModule {
 
   Qwen3NextRMSNorm input_norm_{nullptr};
   Qwen3NextRMSNorm post_norm_{nullptr};
+  int32_t layer_id_ = -1;
 };
 
 }  // namespace layer

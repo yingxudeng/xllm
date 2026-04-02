@@ -44,6 +44,7 @@ class Qwen3GatedDeltaNetBaseImpl : public torch::nn::Module {
 
   virtual void load_state_dict(const StateDict& state_dict) = 0;
   virtual void verify_loaded_weights(const std::string& prefix) const = 0;
+  void set_debug_layer_id(int32_t layer_id);
 
   torch::Tensor forward(const torch::Tensor& hidden_states,
                         const AttentionMetadata& attn_metadata,
@@ -79,6 +80,7 @@ class Qwen3GatedDeltaNetBaseImpl : public torch::nn::Module {
   int64_t tp_size_ = 1;
   int64_t rank_ = 0;
   int32_t conv_kernel_size_ = 0;
+  int32_t debug_layer_id_ = -1;
 
   ColumnParallelLinear conv1d_{nullptr};
   RowParallelLinear o_proj_{nullptr};

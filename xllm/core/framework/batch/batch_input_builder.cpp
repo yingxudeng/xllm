@@ -18,6 +18,7 @@ limitations under the License.
 #include <c10/core/DeviceType.h>
 #include <torch/torch.h>
 
+#include <sstream>
 #include <thread>
 #include <vector>
 
@@ -35,6 +36,8 @@ limitations under the License.
 #include "util/threadpool.h"
 #include "util/utils.h"
 
+DECLARE_bool(force_graph_eager);
+
 namespace xllm {
 namespace {
 
@@ -43,6 +46,144 @@ uint32_t get_sample_source_position(const SampleSlot& sample_slot) {
     return 0;
   }
   return static_cast<uint32_t>(sample_slot.token_position - 1);
+}
+
+bool should_debug_force_graph_eager_decode_inputs() {
+  return !FLAGS_enable_graph ||
+         (FLAGS_force_graph_eager && FLAGS_enable_graph_mode_decode_no_padding);
+}
+
+void debug_log_tensor(const torch::Tensor& tensor,
+                      const std::string& name,
+                      int num = 16,
+                      bool print_value = true) {
+  if (!should_debug_force_graph_eager_decode_inputs()) {
+    return;
+  }
+  xllm::print_tensor(tensor, name, num, true, print_value);
+}
+
+void debug_log_decode_seq_binding(const ModelInputParams& input_params,
+                                  const std::string& stage) {
+  if (!should_debug_force_graph_eager_decode_inputs() ||
+      !input_params.batch_forward_type.is_decode()) {
+    return;
+  }
+
+  torch::Tensor new_cache_slots_cpu;
+  if (input_params.new_cache_slots.defined()) {
+    new_cache_slots_cpu = input_params.new_cache_slots.reshape({-1})
+                              .to(torch::kCPU, torch::kLong)
+                              .contiguous();
+  }
+  torch::Tensor kv_cache_tokens_nums_cpu;
+  if (input_params.kv_cache_tokens_nums.defined()) {
+    kv_cache_tokens_nums_cpu = input_params.kv_cache_tokens_nums.reshape({-1})
+                                   .to(torch::kCPU, torch::kLong)
+                                   .contiguous();
+  }
+  torch::Tensor kv_seq_lens_cpu;
+  if (input_params.kv_seq_lens.defined()) {
+    kv_seq_lens_cpu = input_params.kv_seq_lens.reshape({-1})
+                          .to(torch::kCPU, torch::kLong)
+                          .contiguous();
+  }
+  torch::Tensor q_seq_lens_cpu;
+  if (input_params.q_seq_lens.defined()) {
+    q_seq_lens_cpu = input_params.q_seq_lens.reshape({-1})
+                         .to(torch::kCPU, torch::kLong)
+                         .contiguous();
+  }
+  torch::Tensor block_table_col0_cpu;
+  if (input_params.block_tables.defined() &&
+      input_params.block_tables.dim() == 2 &&
+      input_params.block_tables.size(1) > 0) {
+    block_table_col0_cpu = input_params.block_tables.select(1, 0)
+                               .reshape({-1})
+                               .to(torch::kCPU, torch::kLong)
+                               .contiguous();
+  }
+
+  for (int64_t seq_idx = 0; seq_idx < input_params.num_sequences; ++seq_idx) {
+    std::ostringstream oss;
+    oss << "[force_graph_eager debug] " << stage
+        << " seq_binding, seq_idx: " << seq_idx << ", request_id: "
+        << (seq_idx < static_cast<int64_t>(input_params.request_ids.size())
+                ? input_params.request_ids[seq_idx]
+                : "")
+        << ", extra_token_id: "
+        << (seq_idx < static_cast<int64_t>(input_params.extra_token_ids.size())
+                ? input_params.extra_token_ids[seq_idx]
+                : -1)
+        << ", kv_seq_len: "
+        << (kv_seq_lens_cpu.defined() && seq_idx < kv_seq_lens_cpu.size(0)
+                ? kv_seq_lens_cpu[seq_idx].item<int64_t>()
+                : -1)
+        << ", q_seq_len: "
+        << (q_seq_lens_cpu.defined() && seq_idx < q_seq_lens_cpu.size(0)
+                ? q_seq_lens_cpu[seq_idx].item<int64_t>()
+                : -1)
+        << ", kv_cache_tokens_num_host: "
+        << (seq_idx < static_cast<int64_t>(
+                          input_params.kv_cache_tokens_nums_host.size())
+                ? input_params.kv_cache_tokens_nums_host[seq_idx]
+                : -1)
+        << ", kv_cache_tokens_num: "
+        << (kv_cache_tokens_nums_cpu.defined() &&
+                    seq_idx < kv_cache_tokens_nums_cpu.size(0)
+                ? kv_cache_tokens_nums_cpu[seq_idx].item<int64_t>()
+                : -1)
+        << ", new_cache_slot: "
+        << (new_cache_slots_cpu.defined() &&
+                    seq_idx < new_cache_slots_cpu.size(0)
+                ? new_cache_slots_cpu[seq_idx].item<int64_t>()
+                : -1)
+        << ", block_table_col0: "
+        << (block_table_col0_cpu.defined() &&
+                    seq_idx < block_table_col0_cpu.size(0)
+                ? block_table_col0_cpu[seq_idx].item<int64_t>()
+                : -1);
+    LOG(INFO) << oss.str();
+  }
+}
+
+void debug_log_decode_forward_input(const ForwardInput& forward_input) {
+  const auto& input_params = forward_input.input_params;
+  if (!should_debug_force_graph_eager_decode_inputs() ||
+      !input_params.batch_forward_type.is_decode()) {
+    return;
+  }
+  LOG(INFO)
+      << "[force_graph_eager debug] BatchInputBuilder::state_to_forward_input"
+      << ", num_sequences: " << input_params.num_sequences
+      << ", kv_max_seq_len: " << input_params.kv_max_seq_len
+      << ", q_max_seq_len: " << input_params.q_max_seq_len
+      << ", kv_seq_lens_vec: " << input_params.kv_seq_lens_vec
+      << ", q_seq_lens_vec: " << input_params.q_seq_lens_vec
+      << ", request_ids: " << input_params.request_ids
+      << ", extra_token_ids: " << input_params.extra_token_ids;
+  debug_log_tensor(forward_input.token_ids,
+                   "BatchInputBuilder decode token_ids");
+  debug_log_tensor(forward_input.positions,
+                   "BatchInputBuilder decode positions");
+  debug_log_tensor(input_params.kv_seq_lens,
+                   "BatchInputBuilder decode kv_seq_lens");
+  debug_log_tensor(input_params.q_seq_lens,
+                   "BatchInputBuilder decode q_seq_lens");
+  debug_log_tensor(input_params.new_cache_slots,
+                   "BatchInputBuilder decode new_cache_slots");
+  debug_log_tensor(input_params.kv_cache_tokens_nums,
+                   "BatchInputBuilder decode kv_cache_tokens_nums");
+  debug_log_tensor(input_params.block_tables,
+                   "BatchInputBuilder decode block_tables");
+  if (input_params.block_tables.defined() &&
+      input_params.block_tables.dim() == 2 &&
+      input_params.block_tables.size(1) > 0) {
+    debug_log_tensor(input_params.block_tables.select(1, 0),
+                     "BatchInputBuilder decode block_tables_col0");
+  }
+  debug_log_decode_seq_binding(input_params,
+                               "BatchInputBuilder::state_to_forward_input");
 }
 
 }  // namespace
@@ -609,6 +750,8 @@ ForwardInput BatchInputBuilder::state_to_forward_input() {
                                        state_.unique_token_counts_vec,
                                        state_.unique_token_lens_vec);
   }
+
+  debug_log_decode_forward_input(forward_input);
 
   return forward_input;
 }

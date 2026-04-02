@@ -15,14 +15,237 @@ limitations under the License.
 #include <glog/logging.h>
 #include <torch/torch.h>
 
+#include <algorithm>
+#include <sstream>
 #include <tuple>
 
+#include "common/global_flags.h"
+#include "util/tensor_helper.h"
 #include "xllm/core/kernels/ops_api.h"
+
+DECLARE_bool(force_graph_eager);
 
 namespace xllm {
 namespace layer {
 
 namespace {
+bool should_debug_qwen3_gnd_decode(const ModelInputParams& input_params,
+                                   int32_t layer_id,
+                                   int64_t rank) {
+  static_cast<void>(layer_id);
+  return input_params.batch_forward_type.is_decode() && rank == 0 &&
+         (!FLAGS_enable_graph || (FLAGS_force_graph_eager &&
+                                  FLAGS_enable_graph_mode_decode_no_padding));
+}
+
+void debug_log_tensor(const torch::Tensor& tensor,
+                      const std::string& name,
+                      int num = 16,
+                      bool print_value = true) {
+  if (!tensor.defined()) {
+    LOG(INFO) << "[force_graph_eager debug] " << name << " is undefined";
+    return;
+  }
+  xllm::print_tensor(tensor, name, num, true, print_value);
+}
+
+void debug_log_index_range(const torch::Tensor& indices,
+                           const std::string& name,
+                           int64_t upper_bound) {
+  if (!indices.defined()) {
+    LOG(INFO) << "[force_graph_eager debug] " << name << " is undefined";
+    return;
+  }
+  LOG(INFO) << "[force_graph_eager debug] " << name
+            << ", upper_bound_exclusive: " << upper_bound;
+  debug_log_tensor(indices, name);
+  if (upper_bound <= 0) {
+    return;
+  }
+  auto in_range = ((indices >= 0) & (indices < upper_bound)).to(torch::kInt);
+  debug_log_tensor(in_range, name + "_in_range_mask");
+}
+
+void debug_log_cache_binding(const std::string& stage,
+                             const ModelInputParams& input_params,
+                             const torch::Tensor& state_indices,
+                             const torch::Tensor& selected_conv_cache,
+                             const torch::Tensor& selected_ssm_cache) {
+  if (!state_indices.defined() || !selected_conv_cache.defined() ||
+      !selected_ssm_cache.defined()) {
+    return;
+  }
+
+  auto state_indices_cpu =
+      state_indices.reshape({-1}).to(torch::kCPU, torch::kLong).contiguous();
+  torch::Tensor new_cache_slots_cpu;
+  if (input_params.new_cache_slots.defined()) {
+    new_cache_slots_cpu = input_params.new_cache_slots.reshape({-1})
+                              .to(torch::kCPU, torch::kLong)
+                              .contiguous();
+  }
+  torch::Tensor kv_cache_tokens_nums_cpu;
+  if (input_params.kv_cache_tokens_nums.defined()) {
+    kv_cache_tokens_nums_cpu = input_params.kv_cache_tokens_nums.reshape({-1})
+                                   .to(torch::kCPU, torch::kLong)
+                                   .contiguous();
+  }
+
+  auto conv_cache_flat_cpu =
+      selected_conv_cache.reshape({selected_conv_cache.size(0), -1})
+          .to(torch::kCPU)
+          .contiguous();
+  auto ssm_cache_flat_cpu =
+      selected_ssm_cache.reshape({selected_ssm_cache.size(0), -1})
+          .to(torch::kCPU)
+          .contiguous();
+
+  const int64_t num_rows = state_indices_cpu.size(0);
+  for (int64_t seq_idx = 0; seq_idx < num_rows; ++seq_idx) {
+    std::ostringstream oss;
+    oss << "[force_graph_eager debug] Qwen3GatedDeltaNet " << stage
+        << ", seq_idx: " << seq_idx << ", request_id: "
+        << (seq_idx < static_cast<int64_t>(input_params.request_ids.size())
+                ? input_params.request_ids[seq_idx]
+                : "")
+        << ", extra_token_id: "
+        << (seq_idx < static_cast<int64_t>(input_params.extra_token_ids.size())
+                ? input_params.extra_token_ids[seq_idx]
+                : -1)
+        << ", new_cache_slot: "
+        << (new_cache_slots_cpu.defined() &&
+                    seq_idx < new_cache_slots_cpu.size(0)
+                ? new_cache_slots_cpu[seq_idx].item<int64_t>()
+                : -1)
+        << ", state_index: " << state_indices_cpu[seq_idx].item<int64_t>()
+        << ", kv_cache_tokens_num_host: "
+        << (seq_idx < static_cast<int64_t>(
+                          input_params.kv_cache_tokens_nums_host.size())
+                ? input_params.kv_cache_tokens_nums_host[seq_idx]
+                : -1)
+        << ", kv_cache_tokens_num: "
+        << (kv_cache_tokens_nums_cpu.defined() &&
+                    seq_idx < kv_cache_tokens_nums_cpu.size(0)
+                ? kv_cache_tokens_nums_cpu[seq_idx].item<int64_t>()
+                : -1)
+        << ", conv_abs_sum: "
+        << conv_cache_flat_cpu[seq_idx].abs().sum().item<double>()
+        << ", ssm_abs_sum: "
+        << ssm_cache_flat_cpu[seq_idx].abs().sum().item<double>();
+    LOG(INFO) << oss.str();
+
+    const int64_t conv_numel = conv_cache_flat_cpu.size(1);
+    const int64_t ssm_numel = ssm_cache_flat_cpu.size(1);
+    debug_log_tensor(conv_cache_flat_cpu[seq_idx].slice(
+                         0, 0, std::min<int64_t>(conv_numel, 16)),
+                     "Qwen3GatedDeltaNet " + stage +
+                         " conv_cache_row_head seq_" + std::to_string(seq_idx));
+    debug_log_tensor(ssm_cache_flat_cpu[seq_idx].slice(
+                         0, 0, std::min<int64_t>(ssm_numel, 16)),
+                     "Qwen3GatedDeltaNet " + stage +
+                         " ssm_cache_row_head seq_" + std::to_string(seq_idx));
+  }
+}
+
+void debug_log_conv_update_inputs(const ModelInputParams& input_params,
+                                  const torch::Tensor& state_indices,
+                                  const torch::Tensor& mixed_qkv) {
+  if (!mixed_qkv.defined()) {
+    return;
+  }
+
+  auto state_indices_cpu =
+      state_indices.reshape({-1}).to(torch::kCPU, torch::kLong).contiguous();
+  auto mixed_qkv_flat_cpu =
+      mixed_qkv.reshape({mixed_qkv.size(0), -1}).to(torch::kCPU).contiguous();
+
+  const int64_t num_rows = mixed_qkv_flat_cpu.size(0);
+  for (int64_t seq_idx = 0; seq_idx < num_rows; ++seq_idx) {
+    std::ostringstream oss;
+    oss << "[force_graph_eager debug] Qwen3GatedDeltaNet conv_update_input"
+        << ", seq_idx: " << seq_idx << ", request_id: "
+        << (seq_idx < static_cast<int64_t>(input_params.request_ids.size())
+                ? input_params.request_ids[seq_idx]
+                : "")
+        << ", extra_token_id: "
+        << (seq_idx < static_cast<int64_t>(input_params.extra_token_ids.size())
+                ? input_params.extra_token_ids[seq_idx]
+                : -1)
+        << ", state_index: "
+        << (seq_idx < state_indices_cpu.size(0)
+                ? state_indices_cpu[seq_idx].item<int64_t>()
+                : -1)
+        << ", kv_cache_tokens_num_host: "
+        << (seq_idx < static_cast<int64_t>(
+                          input_params.kv_cache_tokens_nums_host.size())
+                ? input_params.kv_cache_tokens_nums_host[seq_idx]
+                : -1)
+        << ", mixed_qkv_abs_sum: "
+        << mixed_qkv_flat_cpu[seq_idx].abs().sum().item<double>();
+    LOG(INFO) << oss.str();
+
+    const int64_t mixed_qkv_numel = mixed_qkv_flat_cpu.size(1);
+    debug_log_tensor(
+        mixed_qkv_flat_cpu[seq_idx].slice(
+            0, 0, std::min<int64_t>(mixed_qkv_numel, 16)),
+        "Qwen3GatedDeltaNet conv_update_input mixed_qkv_row_head seq_" +
+            std::to_string(seq_idx));
+  }
+}
+
+std::string tensor_sizes_to_string(c10::IntArrayRef values) {
+  std::ostringstream oss;
+  oss << "[";
+  for (int64_t i = 0; i < static_cast<int64_t>(values.size()); ++i) {
+    if (i > 0) {
+      oss << ", ";
+    }
+    oss << values[i];
+  }
+  oss << "]";
+  return oss.str();
+}
+
+void debug_log_tensor_layout(const torch::Tensor& tensor,
+                             const std::string& name) {
+  if (!tensor.defined()) {
+    LOG(INFO) << "[force_graph_eager debug] " << name << " is undefined";
+    return;
+  }
+  LOG(INFO) << "[force_graph_eager debug] " << name
+            << ", sizes: " << tensor_sizes_to_string(tensor.sizes())
+            << ", strides: " << tensor_sizes_to_string(tensor.strides())
+            << ", storage_offset: " << tensor.storage_offset()
+            << ", is_contiguous: " << tensor.is_contiguous()
+            << ", dtype: " << tensor.dtype() << ", device: " << tensor.device();
+}
+
+void debug_log_conv_cache_delta(const torch::Tensor& before_conv_cache,
+                                const torch::Tensor& after_conv_cache) {
+  if (!before_conv_cache.defined() || !after_conv_cache.defined()) {
+    return;
+  }
+  auto before_flat = before_conv_cache.reshape({before_conv_cache.size(0), -1})
+                         .to(torch::kCPU)
+                         .contiguous();
+  auto after_flat = after_conv_cache.reshape({after_conv_cache.size(0), -1})
+                        .to(torch::kCPU)
+                        .contiguous();
+  auto delta_flat = (after_flat - before_flat).contiguous();
+  const int64_t num_rows = delta_flat.size(0);
+  for (int64_t seq_idx = 0; seq_idx < num_rows; ++seq_idx) {
+    LOG(INFO) << "[force_graph_eager debug] "
+              << "Qwen3GatedDeltaNet conv_cache_delta"
+              << ", seq_idx: " << seq_idx << ", delta_abs_sum: "
+              << delta_flat[seq_idx].abs().sum().item<double>();
+    const int64_t delta_numel = delta_flat.size(1);
+    debug_log_tensor(
+        delta_flat[seq_idx].slice(0, 0, std::min<int64_t>(delta_numel, 16)),
+        "Qwen3GatedDeltaNet conv_cache_delta_row_head seq_" +
+            std::to_string(seq_idx));
+  }
+}
+
 torch::Tensor l2norm(const torch::Tensor& x, int64_t dim, double eps = 1e-6) {
   auto norm = torch::sqrt(torch::sum(torch::square(x), dim, true) + eps);
   return x / norm;
@@ -293,6 +516,10 @@ Qwen3GatedDeltaNetBaseImpl::Qwen3GatedDeltaNetBaseImpl(
       "norm", RmsNormGated(head_v_dim_, args.rms_norm_eps(), options));
 }
 
+void Qwen3GatedDeltaNetBaseImpl::set_debug_layer_id(int32_t layer_id) {
+  debug_layer_id_ = layer_id;
+}
+
 void Qwen3GatedDeltaNetBaseImpl::load_common_state_dict(
     const StateDict& state_dict) {
   const int64_t rank = rank_;
@@ -327,12 +554,56 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
     const ModelInputParams& input_params) {
+  const bool should_debug =
+      should_debug_qwen3_gnd_decode(input_params, debug_layer_id_, rank_);
+  if (should_debug) {
+    LOG(INFO) << "[force_graph_eager debug] "
+              << "Qwen3GatedDeltaNetBaseImpl::forward"
+              << ", layer_id: " << debug_layer_id_ << ", rank: " << rank_
+              << ", is_prefill: " << attn_metadata.is_prefill
+              << ", request_ids: " << input_params.request_ids
+              << ", extra_token_ids: " << input_params.extra_token_ids
+              << ", kv_cache_tokens_nums_host: "
+              << input_params.kv_cache_tokens_nums_host;
+    debug_log_tensor(hidden_states,
+                     "Qwen3GatedDeltaNet hidden_states_before_projection");
+    debug_log_tensor(input_params.new_cache_slots,
+                     "Qwen3GatedDeltaNet input_new_cache_slots");
+    debug_log_tensor(input_params.kv_cache_tokens_nums,
+                     "Qwen3GatedDeltaNet input_kv_cache_tokens_nums");
+    if (input_params.block_tables.defined() &&
+        input_params.block_tables.dim() == 2 &&
+        input_params.block_tables.size(1) > 0) {
+      debug_log_tensor(input_params.block_tables.select(1, 0),
+                       "Qwen3GatedDeltaNet input_block_tables_col0");
+    }
+    debug_log_tensor(attn_metadata.slot_mapping,
+                     "Qwen3GatedDeltaNet attn_metadata_slot_mapping");
+    if (attn_metadata.block_table.defined() &&
+        attn_metadata.block_table.dim() == 2 &&
+        attn_metadata.block_table.size(1) > 0) {
+      debug_log_tensor(attn_metadata.block_table.select(1, 0),
+                       "Qwen3GatedDeltaNet attn_metadata_block_table_col0");
+    }
+  }
   auto [qkvz_padded, ba_padded] =
       project_padded_inputs(hidden_states, attn_metadata);
+  if (should_debug) {
+    debug_log_tensor(qkvz_padded, "Qwen3GatedDeltaNet qkvz_padded");
+    debug_log_tensor(ba_padded, "Qwen3GatedDeltaNet ba_padded");
+  }
 
   torch::Tensor q, k, v, z, b, a;
   std::tie(q, k, v, z) = process_qkvz_tensor(qkvz_padded);
   std::tie(b, a) = process_ba_tensor(ba_padded);
+  if (should_debug) {
+    debug_log_tensor(q, "Qwen3GatedDeltaNet q");
+    debug_log_tensor(k, "Qwen3GatedDeltaNet k");
+    debug_log_tensor(v, "Qwen3GatedDeltaNet v");
+    debug_log_tensor(z, "Qwen3GatedDeltaNet z");
+    debug_log_tensor(b, "Qwen3GatedDeltaNet b");
+    debug_log_tensor(a, "Qwen3GatedDeltaNet a");
+  }
 
   auto rearrange_merge = [](const torch::Tensor& t) {
     TORCH_CHECK(
@@ -359,6 +630,15 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
   torch::Tensor g, beta, core_attn_out, last_recurrent_state;
   auto device = mixed_qkv.device();
   auto conv_weight = conv1d_->weight();
+  if (should_debug) {
+    LOG(INFO) << "[force_graph_eager debug] Qwen3GatedDeltaNet cache_rows"
+              << ", conv_cache.size(0): " << conv_cache.size(0)
+              << ", ssm_cache.size(0): " << ssm_cache.size(0);
+    debug_log_index_range(input_params.new_cache_slots,
+                          "Qwen3GatedDeltaNet input_new_cache_slots_range",
+                          conv_cache.size(0));
+    debug_log_tensor(mixed_qkv, "Qwen3GatedDeltaNet mixed_qkv_before_conv");
+  }
 
   if (attn_metadata.is_prefill) {
     torch::Tensor conv_state =
@@ -383,12 +663,52 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
 
   } else {
     const auto state_indices = attn_metadata.block_table.select(1, 0);
+    torch::Tensor selected_conv_cache_before;
+    torch::Tensor selected_ssm_cache_before;
+    if (should_debug) {
+      selected_conv_cache_before =
+          torch::index_select(conv_cache, 0, state_indices);
+      selected_ssm_cache_before =
+          torch::index_select(ssm_cache, 0, state_indices);
+      debug_log_index_range(state_indices,
+                            "Qwen3GatedDeltaNet state_indices",
+                            conv_cache.size(0));
+      debug_log_tensor_layout(mixed_qkv, "Qwen3GatedDeltaNet mixed_qkv_layout");
+      debug_log_tensor_layout(conv_cache,
+                              "Qwen3GatedDeltaNet conv_cache_layout");
+      debug_log_tensor_layout(state_indices,
+                              "Qwen3GatedDeltaNet state_indices_layout");
+      debug_log_tensor(selected_conv_cache_before,
+                       "Qwen3GatedDeltaNet conv_cache_before_update");
+      debug_log_tensor(selected_ssm_cache_before,
+                       "Qwen3GatedDeltaNet ssm_cache_before_update");
+      debug_log_conv_update_inputs(input_params, state_indices, mixed_qkv);
+      debug_log_cache_binding("cache_binding_before_update",
+                              input_params,
+                              state_indices,
+                              selected_conv_cache_before,
+                              selected_ssm_cache_before);
+    }
     xllm::kernel::CausalConv1dUpdateParams params;
     params.x = mixed_qkv;
     params.conv_state = conv_cache;
     params.weight = conv_weight;
     params.conv_state_indices = state_indices;
     mixed_qkv = xllm::kernel::causal_conv1d_update(params);
+    if (should_debug) {
+      const auto updated_conv_cache =
+          torch::index_select(conv_cache, 0, state_indices);
+      debug_log_tensor(mixed_qkv, "Qwen3GatedDeltaNet mixed_qkv_after_conv");
+      debug_log_tensor(updated_conv_cache,
+                       "Qwen3GatedDeltaNet conv_cache_after_update");
+      debug_log_conv_cache_delta(selected_conv_cache_before,
+                                 updated_conv_cache);
+      debug_log_cache_binding("cache_binding_after_conv_update",
+                              input_params,
+                              state_indices,
+                              updated_conv_cache,
+                              selected_ssm_cache_before);
+    }
   }
 
   // Compute gated delta net decay and beta terms.
@@ -412,7 +732,16 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
     gdn_params.threshold = 20.0f;
     std::tie(g, beta) = xllm::kernel::fused_gdn_gating(gdn_params);
   }
+  if (should_debug) {
+    debug_log_tensor(g, "Qwen3GatedDeltaNet g");
+    debug_log_tensor(beta, "Qwen3GatedDeltaNet beta");
+  }
   auto [processed_q, processed_k, processed_v] = process_mixed_qkv(mixed_qkv);
+  if (should_debug) {
+    debug_log_tensor(processed_q, "Qwen3GatedDeltaNet processed_q");
+    debug_log_tensor(processed_k, "Qwen3GatedDeltaNet processed_k");
+    debug_log_tensor(processed_v, "Qwen3GatedDeltaNet processed_v");
+  }
   int64_t repeat_times = num_v_heads_ / num_k_heads_;
   if (repeat_times > 1) {
     processed_q = processed_q.repeat_interleave(repeat_times, 2);
@@ -428,11 +757,30 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
   } else {
     auto ssm_state = torch::index_select(
         ssm_cache, 0, attn_metadata.block_table.select(1, 0));
+    if (should_debug) {
+      debug_log_tensor(ssm_state, "Qwen3GatedDeltaNet ssm_state_selected");
+    }
     std::tie(core_attn_out, last_recurrent_state) =
         torch_recurrent_gated_delta_rule(
             processed_q, processed_k, processed_v, g, beta, ssm_state);
     ssm_cache.index_put_({attn_metadata.block_table.select(1, 0)},
                          last_recurrent_state.to(ssm_cache.dtype()));
+    if (should_debug) {
+      const auto updated_conv_cache = torch::index_select(
+          conv_cache, 0, attn_metadata.block_table.select(1, 0));
+      const auto updated_ssm_cache = torch::index_select(
+          ssm_cache, 0, attn_metadata.block_table.select(1, 0));
+      debug_log_tensor(core_attn_out, "Qwen3GatedDeltaNet core_attn_out");
+      debug_log_tensor(last_recurrent_state,
+                       "Qwen3GatedDeltaNet last_recurrent_state");
+      debug_log_tensor(updated_ssm_cache,
+                       "Qwen3GatedDeltaNet ssm_cache_after_update");
+      debug_log_cache_binding("cache_binding_after_ssm_update",
+                              input_params,
+                              attn_metadata.block_table.select(1, 0),
+                              updated_conv_cache,
+                              updated_ssm_cache);
+    }
   }
 
   auto z_reshaped = z.view({-1, z.size(-1)});
@@ -447,6 +795,11 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
   auto rearranged_norm = rearrange_merge(norm_out);
   rearranged_norm = reshape_qkvz_unpad(attn_metadata, rearranged_norm);
   auto attn_output = o_proj_->forward(rearranged_norm);
+  if (should_debug) {
+    debug_log_tensor(norm_out, "Qwen3GatedDeltaNet norm_out");
+    debug_log_tensor(rearranged_norm, "Qwen3GatedDeltaNet rearranged_norm");
+    debug_log_tensor(attn_output, "Qwen3GatedDeltaNet attn_output");
+  }
   return attn_output;
 }
 
