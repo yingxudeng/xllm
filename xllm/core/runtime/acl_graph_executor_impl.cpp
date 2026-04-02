@@ -33,6 +33,7 @@ limitations under the License.
 #endif
 #include "core/common/global_flags.h"
 #include "core/common/metrics.h"
+#include "core/util/tensor_helper.h"
 #include "core/util/utils.h"
 #include "platform/npu/device_capture_lock.h"
 
@@ -50,6 +51,49 @@ DEFINE_bool(force_graph_eager, true, "force_graph_eager");
 namespace xllm::npu {
 
 namespace {
+bool should_debug_force_graph_eager_decode_inputs() {
+  return !FLAGS_enable_graph ||
+         (FLAGS_force_graph_eager && FLAGS_enable_graph_mode_decode_no_padding);
+}
+
+void debug_log_tensor(const torch::Tensor& tensor,
+                      const std::string& name,
+                      int num = 16,
+                      bool print_value = true) {
+  if (!should_debug_force_graph_eager_decode_inputs()) {
+    return;
+  }
+  xllm::print_tensor(tensor, name, num, true, print_value);
+}
+
+void debug_log_model_input_params(const ModelInputParams& params,
+                                  const std::string& stage) {
+  if (!should_debug_force_graph_eager_decode_inputs()) {
+    return;
+  }
+  LOG(INFO) << "[force_graph_eager debug] " << stage
+            << ", batch_forward_type: " << params.batch_forward_type.to_string()
+            << ", num_sequences: " << params.num_sequences
+            << ", kv_max_seq_len: " << params.kv_max_seq_len
+            << ", q_max_seq_len: " << params.q_max_seq_len
+            << ", kv_seq_lens_vec: " << params.kv_seq_lens_vec
+            << ", q_seq_lens_vec: " << params.q_seq_lens_vec;
+  params.print();
+  if (params.graph_buffer.attn_mask.defined()) {
+    debug_log_tensor(
+        params.graph_buffer.attn_mask, stage + " graph_buffer.attn_mask", 16);
+  }
+  if (params.graph_buffer.tiling_data.defined()) {
+    debug_log_tensor(params.graph_buffer.tiling_data,
+                     stage + " graph_buffer.tiling_data",
+                     32);
+  }
+  if (params.input_embedding.defined()) {
+    debug_log_tensor(
+        params.input_embedding, stage + " input_embedding", 16, false);
+  }
+}
+
 std::pair<torch::Tensor, torch::Tensor> find_attention_plan_kv_cache(
     const std::vector<KVCache>& kv_caches) {
   for (const auto& cache : kv_caches) {
@@ -210,6 +254,18 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
   const uint32_t actual_num_tokens = tokens.size(0);
   const int64_t actual_batch_size = params.num_sequences;
 
+  if (should_debug_force_graph_eager_decode_inputs()) {
+    LOG(INFO) << "[force_graph_eager debug] GraphPersistentParam::update"
+              << ", actual_num_tokens: " << actual_num_tokens
+              << ", padded_num_tokens: " << padded_num_tokens
+              << ", actual_batch_size: " << actual_batch_size
+              << ", return_capture_params: " << return_capture_params;
+    debug_log_tensor(tokens, "GraphPersistentParam::update input tokens");
+    debug_log_tensor(positions, "GraphPersistentParam::update input positions");
+    debug_log_model_input_params(params,
+                                 "GraphPersistentParam::update input params");
+  }
+
   // Copy data from input parameters to persistent graph tensors
   persistent_tokens_.slice(/*dim=*/0, /*start=*/0, /*end=*/actual_num_tokens)
       .copy_(tokens, /*non_blocking=*/true);
@@ -334,7 +390,48 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
                                /*end=*/actual_batch_size);
     }
 
+    if (should_debug_force_graph_eager_decode_inputs()) {
+      debug_log_tensor(persistent_tokens(actual_num_tokens),
+                       "GraphPersistentParam::update persistent_tokens");
+      debug_log_tensor(persistent_positions(actual_num_tokens),
+                       "GraphPersistentParam::update persistent_positions");
+      debug_log_tensor(
+          persistent_new_cache_slots(actual_num_tokens),
+          "GraphPersistentParam::update persistent_new_cache_slots");
+      debug_log_tensor(q_seq_lens(padded_num_tokens),
+                       "GraphPersistentParam::update persistent_q_seq_lens");
+      debug_log_tensor(kv_seq_lens(padded_num_tokens),
+                       "GraphPersistentParam::update persistent_kv_seq_lens");
+      debug_log_tensor(persistent_block_tables(padded_num_tokens),
+                       "GraphPersistentParam::update persistent_block_tables",
+                       16);
+      if (params_for_capture->q_cu_seq_lens.defined()) {
+        debug_log_tensor(params_for_capture->q_cu_seq_lens,
+                         "GraphPersistentParam::update "
+                         "params_for_capture.q_cu_seq_lens");
+      }
+      debug_log_model_input_params(
+          params_for_capture.value(),
+          "GraphPersistentParam::update params_for_capture");
+    }
+
     return params_for_capture;
+  }
+
+  if (should_debug_force_graph_eager_decode_inputs()) {
+    debug_log_tensor(persistent_tokens(actual_num_tokens),
+                     "GraphPersistentParam::update persistent_tokens");
+    debug_log_tensor(persistent_positions(actual_num_tokens),
+                     "GraphPersistentParam::update persistent_positions");
+    debug_log_tensor(persistent_new_cache_slots(actual_num_tokens),
+                     "GraphPersistentParam::update persistent_new_cache_slots");
+    debug_log_tensor(q_seq_lens(actual_batch_size),
+                     "GraphPersistentParam::update persistent_q_seq_lens");
+    debug_log_tensor(kv_seq_lens(actual_batch_size),
+                     "GraphPersistentParam::update persistent_kv_seq_lens");
+    debug_log_tensor(persistent_block_tables(actual_batch_size),
+                     "GraphPersistentParam::update persistent_block_tables",
+                     16);
   }
   return std::nullopt;
 }
@@ -829,6 +926,21 @@ bool AclGraph::capture(CausalLM* model,
       << "update() should return ModelInputParams when "
          "return_capture_params=true";
 
+  if (should_debug_force_graph_eager_decode_inputs()) {
+    LOG(INFO) << "[force_graph_eager debug] AclGraph::capture prepared inputs"
+              << ", bucket_num_tokens: " << bucket_num_tokens
+              << ", actual_num_tokens: " << actual_num_tokens
+              << ", force_graph_eager: " << FLAGS_force_graph_eager;
+    debug_log_tensor(tokens, "AclGraph::capture original tokens");
+    debug_log_tensor(positions, "AclGraph::capture original positions");
+    debug_log_tensor(persistent_param_.persistent_tokens(num_tokens_),
+                     "AclGraph::capture forward tokens");
+    debug_log_tensor(persistent_param_.persistent_positions(num_tokens_),
+                     "AclGraph::capture forward positions");
+    debug_log_model_input_params(graph_params.value(),
+                                 "AclGraph::capture forward params");
+  }
+
   // Synchronize stream to ensure all data is copied to graph persistent buffers
   aclrtSynchronizeStream(stream);
 
@@ -855,6 +967,10 @@ bool AclGraph::capture(CausalLM* model,
     }
     LOG(INFO) << "capture begin, bucket_num_tokens: " << bucket_num_tokens
               << ", actual_num_tokens: " << actual_num_tokens;
+    if (should_debug_force_graph_eager_decode_inputs()) {
+      LOG(INFO) << "[force_graph_eager debug] AclGraph::capture "
+                << "skip_graph_capture_begin: " << FLAGS_force_graph_eager;
+    }
 
     // no mempool id, will create a new one; capture mode is thread local, allow
     // other threads to execute synchronous operations
@@ -997,6 +1113,20 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
   const uint32_t actual_batch_size = n_tokens / options_.num_decoding_tokens();
   const uint32_t bucket_num_tokens = get_bucket_num_tokens(n_tokens);
 
+  if (should_debug_force_graph_eager_decode_inputs()) {
+    LOG(INFO) << "[force_graph_eager debug] AclGraphExecutorImpl::run"
+              << ", n_tokens: " << n_tokens
+              << ", actual_batch_size: " << actual_batch_size
+              << ", bucket_num_tokens: " << bucket_num_tokens
+              << ", num_decoding_tokens: " << options_.num_decoding_tokens()
+              << ", enable_graph_mode_decode_no_padding: "
+              << FLAGS_enable_graph_mode_decode_no_padding;
+    debug_log_tensor(tokens_tensor, "AclGraphExecutorImpl::run tokens");
+    debug_log_tensor(positions_tensor, "AclGraphExecutorImpl::run positions");
+    debug_log_model_input_params(params_single,
+                                 "AclGraphExecutorImpl::run input params");
+  }
+
   // Check if conditions are suitable for graph execution (replay or capture)
   const auto max_seq_len = args_.max_position_embeddings();
   const bool seq_len_supported = params_single.kv_max_seq_len <= max_seq_len;
@@ -1070,6 +1200,17 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
   }
 
   if (FLAGS_force_graph_eager) {
+    if (should_debug_force_graph_eager_decode_inputs()) {
+      LOG(INFO) << "[force_graph_eager debug] "
+                << "AclGraphExecutorImpl::run returning eager result from "
+                   "force_graph_eager path, bucket_num_tokens: "
+                << bucket_num_tokens << ", n_tokens: " << n_tokens;
+      debug_log_tensor(graph->get_hidden_states(n_tokens),
+                       "AclGraphExecutorImpl::run force_graph_eager "
+                       "hidden_states",
+                       16,
+                       false);
+    }
     auto hidden_states = graph->get_hidden_states(n_tokens);
     if (options_.enable_graph_aux_hidden_states()) {
       auto aux_hidden_states = persistent_param_->aux_hidden_states(n_tokens);

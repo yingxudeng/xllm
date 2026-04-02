@@ -84,10 +84,9 @@ inline void print_tensor(
     bool part = true,
     bool print_value = true,
     const std::source_location& loc = std::source_location::current()) {
-  auto& log_stream =
-      google::LogMessage(
-          loc.file_name(), static_cast<int>(loc.line()), google::GLOG_INFO)
-          .stream();
+  google::LogMessage log_message(
+      loc.file_name(), static_cast<int>(loc.line()), google::GLOG_INFO);
+  auto& log_stream = log_message.stream();
   if (!tensor.defined()) {
     log_stream << tensor_name << ", Undefined tensor." << std::endl;
     return;
