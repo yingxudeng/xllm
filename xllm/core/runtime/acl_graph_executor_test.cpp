@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 #include <acl/acl.h>
+#include <gflags/gflags.h>
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 #include <torch/torch.h>
@@ -37,6 +38,8 @@ limitations under the License.
 #include "core/layers/npu/npu_lm_head_impl.h"
 #include "core/layers/npu/npu_word_embedding_impl.h"
 #include "runtime/options.h"
+
+DECLARE_bool(force_graph_eager);
 
 // Global test environment for ACL graph executor tests
 class AclGraphExecutorTestEnvironment : public ::testing::Environment {
@@ -70,6 +73,23 @@ class AclGraphExecutorTestEnvironment : public ::testing::Environment {
     ::testing::AddGlobalTestEnvironment(new AclGraphExecutorTestEnvironment);
 
 namespace xllm {
+
+namespace {
+
+class ScopedBoolFlagValue {
+ public:
+  ScopedBoolFlagValue(bool& flag, bool value) : flag_(flag), old_(flag) {
+    flag_ = value;
+  }
+
+  ~ScopedBoolFlagValue() { flag_ = old_; }
+
+ private:
+  bool& flag_;
+  bool old_;
+};
+
+}  // namespace
 
 // Initialize glog for testing - use a function to ensure proper initialization
 // order
@@ -205,6 +225,7 @@ class SimpleCausalLM : public CausalLM {
                       const torch::Tensor& positions,
                       std::vector<KVCache>& kv_caches,
                       const ModelInputParams& parameters) override {
+    ++forward_call_count_;
     auto hidden_states = forward_impl(tokens, positions, kv_caches, parameters);
     return ModelOutput(hidden_states);
   }
@@ -259,6 +280,10 @@ class SimpleCausalLM : public CausalLM {
     // Simple implementation for testing
   }
 
+  int64_t forward_call_count() const { return forward_call_count_; }
+
+  void reset_forward_call_count() { forward_call_count_ = 0; }
+
  private:
   ModelArgs args_;
   torch::Device device_;
@@ -273,6 +298,7 @@ class SimpleCausalLM : public CausalLM {
   torch::Tensor block_scale_;
   torch::Tensor block_size_;
   torch::Tensor scalar_one_;
+  int64_t forward_call_count_ = 0;
 };
 
 class AclGraphExecutorTest : public ::testing::Test {
@@ -479,6 +505,40 @@ TEST_F(AclGraphExecutorTest, GraphReplayConsistency) {
       << "First output:\n"
       << output1.hidden_states << "\nSecond output:\n"
       << output2.hidden_states;
+}
+
+TEST_F(AclGraphExecutorTest, ForceGraphEagerRunsForwardEveryTime) {
+  ScopedBoolFlagValue force_graph_eager_guard(FLAGS_force_graph_eager, true);
+
+  auto* simple_model = dynamic_cast<SimpleCausalLM*>(model_.get());
+  ASSERT_NE(simple_model, nullptr);
+  simple_model->reset_forward_call_count();
+
+  auto batch = CreateTestBatch();
+  ASSERT_FALSE(batch->empty());
+
+  auto forward_input = batch->prepare_forward_input(
+      options_.num_decoding_tokens(), 0, model_args_);
+  forward_input = forward_input.to(*device_, torch::kFloat32);
+
+  auto graph_executor = std::make_unique<::xllm::npu::AclGraphExecutorImpl>(
+      model_.get(), model_args_, *device_, options_);
+
+  auto output1 = graph_executor->run({forward_input.token_ids},
+                                     {forward_input.positions},
+                                     kv_caches_,
+                                     {forward_input.input_params});
+  EXPECT_EQ(simple_model->forward_call_count(), 1);
+
+  auto output2 = graph_executor->run({forward_input.token_ids},
+                                     {forward_input.positions},
+                                     kv_caches_,
+                                     {forward_input.input_params});
+  EXPECT_EQ(simple_model->forward_call_count(), 2);
+  EXPECT_TRUE(torch::allclose(output1.hidden_states,
+                              output2.hidden_states,
+                              /*rtol=*/1e-5,
+                              /*atol=*/1e-6));
 }
 
 // Test graph creation and execution with different batch sizes

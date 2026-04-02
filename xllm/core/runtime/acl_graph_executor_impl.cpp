@@ -45,6 +45,8 @@ limitations under the License.
 
 #include "pytorch/adapter/utils/utils.h"
 
+DEFINE_bool(force_graph_eager, true, "force_graph_eager");
+
 namespace xllm::npu {
 
 namespace {
@@ -856,8 +858,10 @@ bool AclGraph::capture(CausalLM* model,
 
     // no mempool id, will create a new one; capture mode is thread local, allow
     // other threads to execute synchronous operations
-    graph_.capture_begin(
-        {0, 0}, aclmdlRICaptureMode::ACL_MODEL_RI_CAPTURE_MODE_THREAD_LOCAL);
+    if (!FLAGS_force_graph_eager) {
+      graph_.capture_begin(
+          {0, 0}, aclmdlRICaptureMode::ACL_MODEL_RI_CAPTURE_MODE_THREAD_LOCAL);
+    }
     // Execute forward pass - NPUGraph mempool manages temporary tensors
     auto forward_result =
         model->forward({persistent_param_.persistent_tokens(num_tokens_)},
@@ -871,13 +875,20 @@ bool AclGraph::capture(CausalLM* model,
         forward_result.aux_hidden_states.defined()) {
       persistent_param_.set_aux_hidden_states(forward_result.aux_hidden_states);
     }
-    graph_.capture_end();
+    if (!FLAGS_force_graph_eager) {
+      graph_.capture_end();
+    }
     // Lock is automatically released here when lock goes out of scope
     if (need_restore_stream) {
       c10_npu::setCurrentNPUStream(
           c10_npu::getDefaultNPUStream(tensor_options.device().index()));
     }
   }
+
+  if (FLAGS_force_graph_eager) {
+    return false;
+  }
+
   // Synchronize and test replay to verify graph capture
   aclrtSynchronizeStream(stream);
 
@@ -1049,6 +1060,17 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
     // already executed)
     auto hidden_states =
         graphs_[bucket_num_tokens]->get_hidden_states(n_tokens);
+    if (options_.enable_graph_aux_hidden_states()) {
+      auto aux_hidden_states = persistent_param_->aux_hidden_states(n_tokens);
+      if (aux_hidden_states.defined() && aux_hidden_states.numel() > 0) {
+        return ModelOutput(hidden_states, torch::Tensor(), aux_hidden_states);
+      }
+    }
+    return ModelOutput(hidden_states);
+  }
+
+  if (FLAGS_force_graph_eager) {
+    auto hidden_states = graph->get_hidden_states(n_tokens);
     if (options_.enable_graph_aux_hidden_states()) {
       auto aux_hidden_states = persistent_param_->aux_hidden_states(n_tokens);
       if (aux_hidden_states.defined() && aux_hidden_states.numel() > 0) {
