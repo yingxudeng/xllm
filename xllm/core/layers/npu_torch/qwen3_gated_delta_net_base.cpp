@@ -246,6 +246,223 @@ void debug_log_conv_cache_delta(const torch::Tensor& before_conv_cache,
   }
 }
 
+void debug_log_selected_cache_diff(const std::string& stage,
+                                   const torch::Tensor& lhs,
+                                   const torch::Tensor& rhs) {
+  if (!lhs.defined() || !rhs.defined()) {
+    return;
+  }
+  auto lhs_flat = lhs.reshape({lhs.size(0), -1}).to(torch::kCPU).contiguous();
+  auto rhs_flat = rhs.reshape({rhs.size(0), -1}).to(torch::kCPU).contiguous();
+  auto delta_flat = (lhs_flat - rhs_flat).contiguous();
+  const int64_t num_rows = delta_flat.size(0);
+  for (int64_t seq_idx = 0; seq_idx < num_rows; ++seq_idx) {
+    LOG(INFO) << "[force_graph_eager debug] Qwen3GatedDeltaNet " << stage
+              << ", seq_idx: " << seq_idx << ", diff_abs_sum: "
+              << delta_flat[seq_idx].abs().sum().item<double>();
+    const int64_t delta_numel = delta_flat.size(1);
+    debug_log_tensor(
+        delta_flat[seq_idx].slice(0, 0, std::min<int64_t>(delta_numel, 16)),
+        "Qwen3GatedDeltaNet " + stage + " row_head seq_" +
+            std::to_string(seq_idx));
+  }
+}
+
+torch::Tensor build_kernel_state_indices_guess_from_storage(
+    const torch::Tensor& block_table,
+    const torch::Tensor& state_indices) {
+  if (!block_table.defined() || !state_indices.defined()) {
+    return torch::Tensor();
+  }
+  const int64_t storage_offset = state_indices.storage_offset();
+  const int64_t numel = state_indices.numel();
+  auto flat_block_table = block_table.reshape({-1});
+  if (storage_offset < 0 || storage_offset + numel > flat_block_table.numel()) {
+    return torch::Tensor();
+  }
+  return flat_block_table.slice(0, storage_offset, storage_offset + numel)
+      .contiguous();
+}
+
+void debug_log_kernel_state_indices_guess(const torch::Tensor& block_table,
+                                          const torch::Tensor& state_indices) {
+  auto kernel_state_indices_guess =
+      build_kernel_state_indices_guess_from_storage(block_table, state_indices);
+  if (!kernel_state_indices_guess.defined()) {
+    LOG(INFO) << "[force_graph_eager debug] "
+              << "Qwen3GatedDeltaNet kernel_state_indices_guess_from_storage "
+                 "is undefined";
+    return;
+  }
+  debug_log_tensor_layout(
+      kernel_state_indices_guess,
+      "Qwen3GatedDeltaNet kernel_state_indices_guess_from_storage_layout");
+  debug_log_tensor(
+      kernel_state_indices_guess,
+      "Qwen3GatedDeltaNet kernel_state_indices_guess_from_storage");
+
+  auto state_indices_cpu =
+      state_indices.reshape({-1}).to(torch::kCPU, torch::kLong).contiguous();
+  auto kernel_state_indices_guess_cpu = kernel_state_indices_guess.reshape({-1})
+                                            .to(torch::kCPU, torch::kLong)
+                                            .contiguous();
+  if (state_indices_cpu.numel() != kernel_state_indices_guess_cpu.numel()) {
+    return;
+  }
+  auto delta =
+      (state_indices_cpu - kernel_state_indices_guess_cpu).contiguous();
+  LOG(INFO) << "[force_graph_eager debug] "
+            << "Qwen3GatedDeltaNet kernel_state_indices_guess_diff_abs_sum: "
+            << delta.abs().sum().item<int64_t>();
+  debug_log_tensor(delta,
+                   "Qwen3GatedDeltaNet "
+                   "kernel_state_indices_guess_diff_from_logical");
+}
+
+void debug_log_cache_rows_by_indices(const std::string& stage,
+                                     const torch::Tensor& conv_cache,
+                                     const torch::Tensor& ssm_cache,
+                                     const torch::Tensor& logical_indices,
+                                     const torch::Tensor& raw_indices_guess) {
+  if (!conv_cache.defined() || !ssm_cache.defined()) {
+    return;
+  }
+
+  std::vector<int64_t> inspect_rows = {0};
+  auto append_rows = [&](const torch::Tensor& indices) {
+    if (!indices.defined()) {
+      return;
+    }
+    auto indices_cpu =
+        indices.reshape({-1}).to(torch::kCPU, torch::kLong).contiguous();
+    for (int64_t i = 0; i < indices_cpu.numel(); ++i) {
+      const int64_t row = indices_cpu[i].item<int64_t>();
+      if (row < 0 || row >= conv_cache.size(0)) {
+        continue;
+      }
+      if (std::find(inspect_rows.begin(), inspect_rows.end(), row) ==
+          inspect_rows.end()) {
+        inspect_rows.push_back(row);
+      }
+    }
+  };
+  append_rows(logical_indices);
+  append_rows(raw_indices_guess);
+
+  auto inspect_indices = torch::tensor(
+      inspect_rows,
+      torch::TensorOptions().dtype(torch::kLong).device(conv_cache.device()));
+  auto selected_conv_cache = torch::index_select(conv_cache, 0, inspect_indices)
+                                 .reshape({inspect_indices.size(0), -1})
+                                 .to(torch::kCPU)
+                                 .contiguous();
+  auto selected_ssm_cache = torch::index_select(ssm_cache, 0, inspect_indices)
+                                .reshape({inspect_indices.size(0), -1})
+                                .to(torch::kCPU)
+                                .contiguous();
+
+  LOG(INFO) << "[force_graph_eager debug] Qwen3GatedDeltaNet " << stage
+            << ", inspect_rows_count: " << inspect_rows.size();
+  for (int64_t i = 0; i < static_cast<int64_t>(inspect_rows.size()); ++i) {
+    const int64_t row = inspect_rows[i];
+    LOG(INFO) << "[force_graph_eager debug] Qwen3GatedDeltaNet " << stage
+              << ", inspect_row: " << row << ", conv_abs_sum: "
+              << selected_conv_cache[i].abs().sum().item<double>()
+              << ", ssm_abs_sum: "
+              << selected_ssm_cache[i].abs().sum().item<double>();
+    const int64_t conv_numel = selected_conv_cache.size(1);
+    const int64_t ssm_numel = selected_ssm_cache.size(1);
+    debug_log_tensor(
+        selected_conv_cache[i].slice(0, 0, std::min<int64_t>(conv_numel, 16)),
+        "Qwen3GatedDeltaNet " + stage + " conv_cache_row_head row_" +
+            std::to_string(row));
+    debug_log_tensor(
+        selected_ssm_cache[i].slice(0, 0, std::min<int64_t>(ssm_numel, 16)),
+        "Qwen3GatedDeltaNet " + stage + " ssm_cache_row_head row_" +
+            std::to_string(row));
+  }
+}
+
+void debug_log_state_index_row_pairs(const std::string& stage,
+                                     const torch::Tensor& conv_cache,
+                                     const torch::Tensor& ssm_cache,
+                                     const torch::Tensor& logical_indices,
+                                     const torch::Tensor& raw_indices_guess) {
+  if (!conv_cache.defined() || !ssm_cache.defined() ||
+      !logical_indices.defined()) {
+    return;
+  }
+
+  auto logical_indices_cpu =
+      logical_indices.reshape({-1}).to(torch::kCPU, torch::kLong).contiguous();
+  torch::Tensor raw_indices_guess_cpu;
+  if (raw_indices_guess.defined()) {
+    raw_indices_guess_cpu = raw_indices_guess.reshape({-1})
+                                .to(torch::kCPU, torch::kLong)
+                                .contiguous();
+  }
+  auto conv_cache_flat =
+      conv_cache.reshape({conv_cache.size(0), -1}).to(torch::kCPU).contiguous();
+  auto ssm_cache_flat =
+      ssm_cache.reshape({ssm_cache.size(0), -1}).to(torch::kCPU).contiguous();
+
+  for (int64_t seq_idx = 0; seq_idx < logical_indices_cpu.size(0); ++seq_idx) {
+    const int64_t logical_row = logical_indices_cpu[seq_idx].item<int64_t>();
+    const int64_t raw_row = raw_indices_guess_cpu.defined() &&
+                                    seq_idx < raw_indices_guess_cpu.size(0)
+                                ? raw_indices_guess_cpu[seq_idx].item<int64_t>()
+                                : logical_row;
+    const bool logical_row_in_range =
+        logical_row >= 0 && logical_row < conv_cache_flat.size(0);
+    const bool raw_row_in_range =
+        raw_row >= 0 && raw_row < conv_cache_flat.size(0);
+    LOG(INFO) << "[force_graph_eager debug] Qwen3GatedDeltaNet " << stage
+              << ", seq_idx: " << seq_idx << ", logical_row: " << logical_row
+              << ", raw_guess_row: " << raw_row
+              << ", same_row: " << (logical_row == raw_row)
+              << ", logical_conv_abs_sum: "
+              << (logical_row_in_range
+                      ? conv_cache_flat[logical_row].abs().sum().item<double>()
+                      : -1.0)
+              << ", raw_conv_abs_sum: "
+              << (raw_row_in_range
+                      ? conv_cache_flat[raw_row].abs().sum().item<double>()
+                      : -1.0)
+              << ", logical_ssm_abs_sum: "
+              << (logical_row_in_range
+                      ? ssm_cache_flat[logical_row].abs().sum().item<double>()
+                      : -1.0)
+              << ", raw_ssm_abs_sum: "
+              << (raw_row_in_range
+                      ? ssm_cache_flat[raw_row].abs().sum().item<double>()
+                      : -1.0);
+
+    if (!logical_row_in_range || !raw_row_in_range || logical_row == raw_row) {
+      continue;
+    }
+    const int64_t conv_numel = conv_cache_flat.size(1);
+    const int64_t ssm_numel = ssm_cache_flat.size(1);
+    debug_log_tensor(
+        conv_cache_flat[logical_row].slice(
+            0, 0, std::min<int64_t>(conv_numel, 16)),
+        "Qwen3GatedDeltaNet " + stage + " logical_conv_cache_row_head row_" +
+            std::to_string(logical_row) + "_seq_" + std::to_string(seq_idx));
+    debug_log_tensor(
+        conv_cache_flat[raw_row].slice(0, 0, std::min<int64_t>(conv_numel, 16)),
+        "Qwen3GatedDeltaNet " + stage + " raw_conv_cache_row_head row_" +
+            std::to_string(raw_row) + "_seq_" + std::to_string(seq_idx));
+    debug_log_tensor(
+        ssm_cache_flat[logical_row].slice(
+            0, 0, std::min<int64_t>(ssm_numel, 16)),
+        "Qwen3GatedDeltaNet " + stage + " logical_ssm_cache_row_head row_" +
+            std::to_string(logical_row) + "_seq_" + std::to_string(seq_idx));
+    debug_log_tensor(
+        ssm_cache_flat[raw_row].slice(0, 0, std::min<int64_t>(ssm_numel, 16)),
+        "Qwen3GatedDeltaNet " + stage + " raw_ssm_cache_row_head row_" +
+            std::to_string(raw_row) + "_seq_" + std::to_string(seq_idx));
+  }
+}
+
 torch::Tensor l2norm(const torch::Tensor& x, int64_t dim, double eps = 1e-6) {
   auto norm = torch::sqrt(torch::sum(torch::square(x), dim, true) + eps);
   return x / norm;
@@ -663,9 +880,15 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
 
   } else {
     const auto state_indices = attn_metadata.block_table.select(1, 0);
+    const auto state_indices_contiguous = state_indices.contiguous();
+    const auto kernel_state_indices_guess =
+        build_kernel_state_indices_guess_from_storage(attn_metadata.block_table,
+                                                      state_indices);
     torch::Tensor selected_conv_cache_before;
     torch::Tensor selected_ssm_cache_before;
     if (should_debug) {
+      debug_log_tensor_layout(attn_metadata.block_table,
+                              "Qwen3GatedDeltaNet block_table_layout");
       selected_conv_cache_before =
           torch::index_select(conv_cache, 0, state_indices);
       selected_ssm_cache_before =
@@ -678,6 +901,23 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
                               "Qwen3GatedDeltaNet conv_cache_layout");
       debug_log_tensor_layout(state_indices,
                               "Qwen3GatedDeltaNet state_indices_layout");
+      debug_log_tensor_layout(
+          state_indices_contiguous,
+          "Qwen3GatedDeltaNet state_indices_contiguous_layout");
+      debug_log_tensor(state_indices_contiguous,
+                       "Qwen3GatedDeltaNet state_indices_contiguous");
+      debug_log_kernel_state_indices_guess(attn_metadata.block_table,
+                                           state_indices);
+      const auto selected_conv_cache_before_contiguous =
+          torch::index_select(conv_cache, 0, state_indices_contiguous);
+      const auto selected_ssm_cache_before_contiguous =
+          torch::index_select(ssm_cache, 0, state_indices_contiguous);
+      debug_log_selected_cache_diff("selected_conv_cache_before_vs_contiguous",
+                                    selected_conv_cache_before,
+                                    selected_conv_cache_before_contiguous);
+      debug_log_selected_cache_diff("selected_ssm_cache_before_vs_contiguous",
+                                    selected_ssm_cache_before,
+                                    selected_ssm_cache_before_contiguous);
       debug_log_tensor(selected_conv_cache_before,
                        "Qwen3GatedDeltaNet conv_cache_before_update");
       debug_log_tensor(selected_ssm_cache_before,
@@ -688,12 +928,22 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
                               state_indices,
                               selected_conv_cache_before,
                               selected_ssm_cache_before);
+      debug_log_state_index_row_pairs("state_index_row_pairs_before_update",
+                                      conv_cache,
+                                      ssm_cache,
+                                      state_indices_contiguous,
+                                      kernel_state_indices_guess);
+      debug_log_cache_rows_by_indices("cache_rows_before_update",
+                                      conv_cache,
+                                      ssm_cache,
+                                      state_indices_contiguous,
+                                      kernel_state_indices_guess);
     }
     xllm::kernel::CausalConv1dUpdateParams params;
     params.x = mixed_qkv;
     params.conv_state = conv_cache;
     params.weight = conv_weight;
-    params.conv_state_indices = state_indices;
+    params.conv_state_indices = state_indices_contiguous;
     mixed_qkv = xllm::kernel::causal_conv1d_update(params);
     if (should_debug) {
       const auto updated_conv_cache =
@@ -708,6 +958,16 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
                               state_indices,
                               updated_conv_cache,
                               selected_ssm_cache_before);
+      debug_log_state_index_row_pairs("state_index_row_pairs_after_conv_update",
+                                      conv_cache,
+                                      ssm_cache,
+                                      state_indices_contiguous,
+                                      kernel_state_indices_guess);
+      debug_log_cache_rows_by_indices("cache_rows_after_conv_update",
+                                      conv_cache,
+                                      ssm_cache,
+                                      state_indices_contiguous,
+                                      kernel_state_indices_guess);
     }
   }
 
