@@ -43,6 +43,15 @@ limitations under the License.
 
 namespace xllm {
 
+namespace {
+
+bool ShouldUseMRope(const ModelArgs* args) {
+  return args != nullptr && (args->rope_scaling_rope_type() == "mrope" ||
+                             !args->rope_scaling_mrope_section().empty());
+}
+
+}  // namespace
+
 RecMultiRoundBatchInputBuilder::RecMultiRoundBatchInputBuilder(
     const std::vector<SequencesGroup*>& sequence_groups,
     const std::vector<uint32_t>& allowed_max_tokens,
@@ -73,9 +82,7 @@ RecMultiRoundBatchInputBuilder::RecMultiRoundBatchInputBuilder(
   num_sequences_ = static_cast<int32_t>(sequences_.size());
   CHECK_GT(num_sequences_, 0);
 
-  if (args_ != nullptr) {
-    use_mrope_ = (args_->rope_scaling_rope_type() == "mrope");
-  }
+  use_mrope_ = ShouldUseMRope(args_);
 
   // Initialize RecMultiRound specific state
   rec_multi_round_state_.total_steps = get_rec_multi_round_decode_rounds();

@@ -99,6 +99,23 @@ std::vector<torch::Tensor> Qwen2VisionAttentionImpl::split_qkv(
 
 namespace {
 
+torch::Tensor rotate_half(const torch::Tensor& x) {
+  auto chunks = x.chunk(2, /*dim=*/-1);
+  return torch::cat({-chunks[1], chunks[0]}, /*dim=*/-1);
+}
+
+#if defined(USE_NPU)
+void apply_qwen2_vision_rotary_npu(torch::Tensor& q,
+                                   torch::Tensor& k,
+                                   const torch::Tensor& cos,
+                                   const torch::Tensor& sin) {
+  auto cos_pos = cos.unsqueeze(1);
+  auto sin_pos = sin.unsqueeze(1);
+  q = (q * cos_pos) + (rotate_half(q) * sin_pos);
+  k = (k * cos_pos) + (rotate_half(k) * sin_pos);
+}
+#endif
+
 #if defined(USE_CUDA)
 // Pure PyTorch scaled dot-product attention for Qwen2 vision.
 void compute_qwen2_vision_attention_cuda(
@@ -175,6 +192,12 @@ torch::Tensor Qwen2VisionAttentionImpl::forward(
   q = q.reshape({B * S, num_attention_heads_per_partition_, head_dim});
   k = k.reshape({B * S, num_attention_heads_per_partition_, head_dim});
 
+  // Vision inputs already carry per-token cos/sin values. On NPU, reuse them
+  // directly instead of the text rotary kernel path, which expects explicit
+  // position_ids backed by a cache tensor.
+#if defined(USE_NPU)
+  apply_qwen2_vision_rotary_npu(q, k, m_cos_pos, m_sin_pos);
+#else
   // Apply rotary position embedding to both q and k in a single call.
   // NOTE: Do NOT call apply_rotary twice; the first call already handles both
   // q and k. A second call would incorrectly apply RoPE to k a second time.
@@ -188,6 +211,7 @@ torch::Tensor Qwen2VisionAttentionImpl::forward(
   rotary_params.cu_query_lens = cu_seq_len;
   rotary_params.max_query_len = max_seqlen;
   xllm::kernel::apply_rotary(rotary_params);
+#endif
 
   // q, k, v = (rearrange(x, "b s ... -> (b s) ...") for x in [q, k, v])
   // q and k are already [B*S, H, D] after the reshape above; just

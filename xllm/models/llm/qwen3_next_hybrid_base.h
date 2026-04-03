@@ -94,11 +94,19 @@ class Qwen3HybridModelImplBase : public Qwen3HybridModelModule {
     layer::AttentionMetadata attn_metadata =
         layer::AttentionMetadataBuilder::build(
             input_params, model_args_, build_attention_mask(input_params));
-    torch::Tensor h = embed_tokens_(tokens);
+    const bool use_deepstack = !input_params.deep_stacks.empty();
+    auto deep_stacks = input_params.deep_stacks;
+    torch::Tensor h = input_params.input_embedding;
+    if (!h.defined()) {
+      h = embed_tokens_(tokens);
+    }
     for (size_t i = 0; i < layers_.size(); i++) {
       auto& layer = layers_[i];
       h = layer->forward(
           h, positions, attn_metadata, kv_caches[i], input_params);
+      if (use_deepstack && i < deep_stacks.size()) {
+        h = deepstack_process(h, input_params.visual_pos_masks, deep_stacks[i]);
+      }
     }
     h = norm_(h);
     return ModelOutput(h);
@@ -138,6 +146,15 @@ class Qwen3HybridModelImplBase : public Qwen3HybridModelModule {
   }
 
  protected:
+  torch::Tensor deepstack_process(torch::Tensor hidden_states,
+                                  torch::Tensor visual_pos_masks,
+                                  const torch::Tensor& visual_embeds) {
+    visual_pos_masks = visual_pos_masks.to(hidden_states.device());
+    auto selected = hidden_states.index({visual_pos_masks});
+    hidden_states.index_put_({visual_pos_masks}, selected + visual_embeds);
+    return hidden_states;
+  }
+
   torch::Tensor build_attention_mask(const ModelInputParams& input_params) {
     max_seq_len_ = std::max(input_params.kv_max_seq_len, max_seq_len_);
     if (!FLAGS_enable_chunked_prefill) {

@@ -26,6 +26,9 @@ limitations under the License.
 
 namespace xllm {
 
+using Qwen3_VLInputProcessor = Qwen2_5_VLInputProcessor;
+using Qwen3VLImageProcessor = Qwen2VLImageProcessor;
+
 class Qwen3_VisionPatchEmbedImpl : public torch::nn::Module {
  public:
   Qwen3_VisionPatchEmbedImpl(const ModelContext& context) {
@@ -746,9 +749,10 @@ class Qwen3_VLForConditionalGenerationImpl : public torch::nn::Module {
 };
 TORCH_MODULE(Qwen3_VLForConditionalGeneration);
 
-REGISTER_INPUT_PROCESSOR(qwen3_vl, Qwen2_5_VLInputProcessor);
+#ifndef XLLM_DISABLE_GENERIC_VLM_REGISTRATION
+REGISTER_INPUT_PROCESSOR(qwen3_vl, Qwen3_VLInputProcessor);
 REGISTER_CAUSAL_VLM_MODEL(qwen3_vl, Qwen3_VLForConditionalGeneration);
-REGISTER_IMAGE_PROCESSOR(qwen3_vl, Qwen2VLImageProcessor);
+REGISTER_IMAGE_PROCESSOR(qwen3_vl, Qwen3VLImageProcessor);
 
 REGISTER_MODEL_ARGS(qwen3_vl, [&] {
   // text config
@@ -809,4 +813,5 @@ REGISTER_MODEL_ARGS(qwen3_vl, [&] {
 
   LOAD_ARG_OR(vocab_size, "text_config.vocab_size", 151936);
 });
+#endif  // XLLM_DISABLE_GENERIC_VLM_REGISTRATION
 }  // namespace xllm

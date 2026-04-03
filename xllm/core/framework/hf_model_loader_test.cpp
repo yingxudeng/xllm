@@ -18,6 +18,7 @@ limitations under the License.
 #include <gtest/gtest.h>
 
 #include "core/platform/device.h"
+#include "core/util/model_config_utils.h"
 #if defined(USE_NPU)
 #include "models/model_registry.h"
 #endif
@@ -74,6 +75,47 @@ TEST(HFModelLoaderTest, KeepLegacyFp8ConfigUnchanged) {
   EXPECT_FALSE(quant_args.activation_dynamic());
 }
 
+TEST(HFModelLoaderTest, RemapQwen35VisionModelTypeWhenArchitecturesPresent) {
+  JsonReader reader;
+  ASSERT_TRUE(reader.parse_text(R"json(
+    {
+      "architectures": ["Qwen3_5ForConditionalGeneration"],
+      "model_type": "qwen3_5",
+      "vision_config": {
+        "depth": 27
+      }
+    }
+  )json"));
+
+  EXPECT_EQ(get_model_type(reader, "/tmp/Qwen3.5-27B"), "qwen3_5_vl");
+}
+
+TEST(HFModelLoaderTest, RemapQwen35VisionModelTypeWithoutArchitectures) {
+  JsonReader reader;
+  ASSERT_TRUE(reader.parse_text(R"json(
+    {
+      "model_type": "qwen3_5",
+      "vision_config": {
+        "depth": 27
+      }
+    }
+  )json"));
+
+  EXPECT_EQ(get_model_type(reader, "/tmp/Qwen3.5-27B"), "qwen3_5_vl");
+}
+
+TEST(HFModelLoaderTest, KeepQwen35TextModelTypeWithoutVisionConfig) {
+  JsonReader reader;
+  ASSERT_TRUE(reader.parse_text(R"json(
+    {
+      "architectures": ["Qwen3_5ForCausalLM"],
+      "model_type": "qwen3_5"
+    }
+  )json"));
+
+  EXPECT_EQ(get_model_type(reader, "/tmp/Qwen3.5-Text"), "qwen3_5");
+}
+
 #if defined(USE_NPU)
 TEST(HFModelLoaderTest, Qwen35MtpModelArgsFromDenseConfig) {
   auto loader = ModelRegistry::get_model_args_loader("qwen3_5_mtp");
@@ -122,6 +164,42 @@ TEST(HFModelLoaderTest, Qwen35MtpModelArgsFromMoeConfig) {
   ASSERT_EQ(args.layer_types().size(), 2);
   EXPECT_EQ(args.layer_types()[0], "full_attention");
   EXPECT_EQ(args.layer_types()[1], "full_attention");
+}
+
+TEST(HFModelLoaderTest, Qwen35VlLoadsMropeInterleavedFromRopeParameters) {
+  auto loader = ModelRegistry::get_model_args_loader("qwen3_5_vl");
+  ASSERT_TRUE(loader != nullptr);
+
+  JsonReader reader;
+  ASSERT_TRUE(reader.parse_text(R"json(
+    {
+      "architectures": ["Qwen3_5ForConditionalGeneration"],
+      "model_type": "qwen3_5",
+      "text_config": {
+        "model_type": "qwen3_5_text",
+        "rope_parameters": {
+          "mrope_interleaved": true,
+          "mrope_section": [11, 11, 10],
+          "partial_rotary_factor": 0.25,
+          "rope_theta": 10000000
+        }
+      },
+      "vision_config": {
+        "depth": 27
+      }
+    }
+  )json"));
+
+  ModelArgs args;
+  ASSERT_TRUE(loader(reader, &args));
+  EXPECT_EQ(args.model_type(), "qwen3_5_vl");
+  ASSERT_EQ(args.rope_scaling_mrope_section().size(), 3);
+  EXPECT_EQ(args.rope_scaling_mrope_section()[0], 11);
+  EXPECT_EQ(args.rope_scaling_mrope_section()[1], 11);
+  EXPECT_EQ(args.rope_scaling_mrope_section()[2], 10);
+  EXPECT_TRUE(args.rope_scaling_mrope_interleaved());
+  EXPECT_FLOAT_EQ(args.partial_rotary_factor(), 0.25f);
+  EXPECT_FLOAT_EQ(args.rope_theta(), 10000000.0f);
 }
 #endif
 
