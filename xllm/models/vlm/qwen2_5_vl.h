@@ -792,6 +792,18 @@ class Qwen2_5_VLForConditionalGenerationImpl : public torch::nn::Module {
     language_model_->set_word_embedding(word_embedding);
   }
 
+#if defined(USE_NPU)
+  layer::NpuLmHead get_npu_lm_head() { return nullptr; }
+
+  void set_npu_lm_head(layer::NpuLmHead& head) { return; }
+
+  layer::NpuWordEmbedding get_npu_word_embedding() { return nullptr; }
+
+  void set_npu_word_embedding(layer::NpuWordEmbedding& word_embedding) {
+    return;
+  }
+#endif
+
  private:
   ModelArgs model_args_;
   torch::TensorOptions options_;

@@ -29,6 +29,7 @@ limitations under the License.
 #include "framework/model/model_args.h"
 #include "framework/request/stopping_checker.h"
 #include "framework/sampling/sampling_params.h"
+#include "mposition.h"
 #include "platform/device.h"
 
 namespace xllm {
@@ -60,6 +61,66 @@ RawSampleOutput make_raw_sample_output(int64_t token_id,
   RawSampleOutput raw_output;
   raw_output.tokens.push_back(std::move(raw_token));
   return raw_output;
+}
+
+TEST(BatchTest, Qwen35VlUsesQwen3VideoPositions) {
+  RequestSamplingParam sampling_param;
+  StoppingChecker stopping_checker;
+  stopping_checker.set_max_generated_tokens(4);
+
+  SequenceParams seq_params;
+  seq_params.seq_capacity = 64;
+  seq_params.stopping_checker = &stopping_checker;
+  seq_params.sampling_param = &sampling_param;
+
+  MMData mm_data;
+  mm_data.add(MMType::VIDEO,
+              "video_grid_thw",
+              torch::tensor({{2, 4, 4}}, torch::dtype(torch::kInt32)));
+  mm_data.add(MMType::VIDEO,
+              "second_per_grid_ts",
+              torch::tensor({0.5f}, torch::dtype(torch::kFloat32)));
+
+  const std::vector<int32_t> prompt_token_ids = {
+      11, 100, 200, 200, 200, 200, 200, 200, 200, 200, 101, 13};
+
+  torch::Tensor input_embedding;
+  Sequence qwen3_seq(
+      /*index=*/0,
+      prompt_token_ids,
+      input_embedding,
+      mm_data,
+      IncrementalDecoder("", prompt_token_ids.size(), false, false),
+      seq_params);
+  Sequence qwen35_seq(
+      /*index=*/1,
+      prompt_token_ids,
+      input_embedding,
+      mm_data,
+      IncrementalDecoder("", prompt_token_ids.size(), false, false),
+      seq_params);
+
+  ModelArgs qwen3_args;
+  qwen3_args.model_type() = "qwen3_vl";
+  qwen3_args.vision_start_token_id() = 100;
+  qwen3_args.vision_end_token_id() = 101;
+  qwen3_args.image_token_id() = 201;
+  qwen3_args.video_token_id() = 200;
+  qwen3_args.mm_spatial_merge_size() = 2;
+  qwen3_args.mm_tokens_per_second() = 2;
+
+  ModelArgs qwen35_args = qwen3_args;
+  qwen35_args.model_type() = "qwen3_5_vl";
+
+  MPositionHelper qwen3_helper(qwen3_seq, qwen3_args);
+  auto qwen3_positions = qwen3_helper.get_positions();
+
+  MPositionHelper qwen35_helper(qwen35_seq, qwen35_args);
+  auto qwen35_positions = qwen35_helper.get_positions();
+
+  EXPECT_TRUE(torch::equal(qwen3_positions, qwen35_positions));
+  EXPECT_EQ(qwen3_seq.get_mrope_position_delta(),
+            qwen35_seq.get_mrope_position_delta());
 }
 
 TEST(BatchTest, Basic) {
