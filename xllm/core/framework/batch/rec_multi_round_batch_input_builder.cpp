@@ -74,7 +74,8 @@ RecMultiRoundBatchInputBuilder::RecMultiRoundBatchInputBuilder(
   CHECK_GT(num_sequences_, 0);
 
   if (args_ != nullptr) {
-    use_mrope_ = (args_->rope_scaling_rope_type() == "mrope");
+    use_mrope_ = (args_->rope_scaling_rope_type() == "mrope" ||
+                  !args_->rope_scaling_mrope_section().empty());
   }
 
   // Initialize RecMultiRound specific state

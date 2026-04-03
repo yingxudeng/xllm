@@ -17,6 +17,8 @@ limitations under the License.
 
 #include <torch/torch.h>
 
+#include <vector>
+
 #include "attention.h"
 #include "framework/kv_cache/kv_cache.h"
 #include "framework/model/model_args.h"
@@ -24,10 +26,10 @@ limitations under the License.
 #include "framework/quant_args.h"
 #include "framework/state_dict/state_dict.h"
 #include "layers/common/linear.h"
-#include "layers/common/partial_rotary_embedding.h"
 #include "layers/common/qwen3_next_rms_norm.h"
 
 namespace xllm {
+
 namespace layer {
 
 class Qwen3NextAttentionImpl : public torch::nn::Module {
@@ -65,7 +67,10 @@ class Qwen3NextAttentionImpl : public torch::nn::Module {
   Qwen3NextRMSNorm k_norm_{nullptr};
 
   Attention attn_{nullptr};
-  PartialRotaryEmbedding rotary_emb_{nullptr};
+  torch::Tensor rotary_cos_sin_cache_;
+  std::vector<int64_t> mrope_section_;
+  int64_t rotary_dim_ = 0;
+  bool rotary_interleaved_ = false;
 };
 TORCH_MODULE(Qwen3NextAttention);
 

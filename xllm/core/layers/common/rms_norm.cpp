@@ -16,6 +16,7 @@ limitations under the License.
 #include "rms_norm.h"
 
 #include <glog/logging.h>
+#include <torch/nn/functional/normalization.h>
 
 #include "kernels/ops_api.h"
 #include "platform/device.h"
@@ -63,6 +64,21 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>> RMSNormImpl::forward(
     if (Device::type_str() == "mlu" || Device::type_str() == "ilu") {
       residual_out = residual.value();
     }
+  }
+
+  if (Device::type_str() == "npu" && mode_ == kLayerNormMode) {
+    CHECK(!residual.has_value())
+        << "NPU LayerNorm fallback does not support fused residual input.";
+    CHECK(!inplace_output.has_value())
+        << "NPU LayerNorm fallback does not support inplace output.";
+    namespace F = torch::nn::functional;
+    output = F::layer_norm(input,
+                           F::LayerNormFuncOptions({norm_dim_})
+                               .weight(weight_)
+                               .bias(bias_)
+                               .eps(eps_));
+    output = output.view(org_shape);
+    return std::make_tuple(output, std::nullopt);
   }
 
   xllm::kernel::FusedLayerNormParams fused_layernorm_params;

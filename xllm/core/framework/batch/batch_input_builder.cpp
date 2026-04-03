@@ -75,7 +75,8 @@ BatchInputBuilder::BatchInputBuilder(
   state_.block_tables_vec.reserve(sequences.size());
   state_.acc_logprob_vec.reserve(sequences.size());
   if (args_ != nullptr) {
-    use_mrope_ = (args_->rope_scaling_rope_type() == "mrope");
+    use_mrope_ = (args_->rope_scaling_rope_type() == "mrope" ||
+                  !args_->rope_scaling_mrope_section().empty());
   }
   write_block_ids_.clear();
   state_.batch_forward_type = batch_forward_type;
