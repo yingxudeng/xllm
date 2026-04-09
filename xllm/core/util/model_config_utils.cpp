@@ -21,33 +21,51 @@ limitations under the License.
 #include <algorithm>
 #include <filesystem>
 
-namespace xllm {
+namespace xllm::util {
 
 namespace {
 
-std::string maybe_remap_multimodal_model_type(const JsonReader& reader,
-                                              const std::string& model_type) {
+bool is_qwen35_multimodal_checkpoint(const JsonReader& reader,
+                                     const std::string& model_type) {
   if (model_type != "qwen3_5" || !reader.contains("vision_config")) {
-    return model_type;
+    return false;
   }
-
   const auto architectures =
       reader.value<std::vector<std::string>>("architectures");
   if (!architectures.has_value()) {
+    return true;
+  }
+
+  return std::find(architectures->begin(),
+                   architectures->end(),
+                   "Qwen3_5ForConditionalGeneration") != architectures->end();
+}
+
+std::string resolve_model_type(const JsonReader& reader,
+                               const std::string& model_type,
+                               const std::optional<std::string>& backend) {
+  if (!is_qwen35_multimodal_checkpoint(reader, model_type)) {
+    return model_type;
+  }
+
+  if (backend.has_value() && backend.value() == "vlm") {
     return "qwen3_5_vl";
   }
 
-  const bool is_qwen3_5_vl =
-      std::find(architectures->begin(),
-                architectures->end(),
-                "Qwen3_5ForConditionalGeneration") != architectures->end();
-  return is_qwen3_5_vl ? "qwen3_5_vl" : model_type;
+  const auto text_model_type =
+      reader.value<std::string>("text_config.model_type");
+  if (text_model_type.has_value()) {
+    return text_model_type.value();
+  }
+
+  return "qwen3_5_vl";
 }
 
 }  // namespace
 
 std::string get_model_type(const JsonReader& reader,
-                           const std::filesystem::path& model_path) {
+                           const std::filesystem::path& model_path,
+                           std::optional<std::string> backend) {
   auto model_type = reader.value<std::string>("model_type");
   if (!model_type.has_value()) {
     model_type = reader.value<std::string>("model_name");
@@ -57,10 +75,11 @@ std::string get_model_type(const JsonReader& reader,
                << ", it should contain model_type or model_name key.";
   }
 
-  return maybe_remap_multimodal_model_type(reader, model_type.value());
+  return resolve_model_type(reader, model_type.value(), backend);
 }
 
-std::string get_model_type(const std::filesystem::path& model_path) {
+std::string get_model_type(const std::filesystem::path& model_path,
+                           std::optional<std::string> backend) {
   JsonReader reader;
   // for llm, vlm and rec models, the config.json file is in the model path
   const std::filesystem::path config_json_path = model_path / "config.json";
@@ -75,7 +94,7 @@ std::string get_model_type(const std::filesystem::path& model_path) {
                << model_path;
   }
 
-  return get_model_type(reader, model_path);
+  return get_model_type(reader, model_path, std::move(backend));
 }
 
-}  // namespace xllm
+}  // namespace xllm::util

@@ -725,8 +725,8 @@ bool HFModelLoader::load_model_args(const std::string& model_weights_path) {
     return false;
   }
 
-  const std::string model_type =
-      get_model_type(reader, std::filesystem::path(model_weights_path));
+  const std::string model_type = util::get_model_type(
+      reader, std::filesystem::path(model_weights_path), FLAGS_backend);
 
   std::string resolved_model_type;
   std::string error_message;
