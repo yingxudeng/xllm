@@ -18,6 +18,7 @@ limitations under the License.
 
 #include <optional>
 #include <tuple>
+#include <vector>
 
 #include "custom_functions_npu/atb_common.h"
 
@@ -134,5 +135,14 @@ std::pair<torch::Tensor, torch::Tensor> apply_npu_partial_rotary_embedding(
     int64_t rotary_dim,
     const torch::Tensor& cos_sin_cache,
     bool is_neox_style);
+
+std::pair<torch::Tensor, torch::Tensor> apply_npu_mrope(
+    const torch::Tensor& positions,
+    const torch::Tensor& query,
+    const torch::Tensor& key,
+    const torch::Tensor& cos_sin_cache,
+    int64_t head_size,
+    const std::vector<int64_t>& mrope_section,
+    bool interleaved);
 
 }  // namespace xllm::kernel::npu

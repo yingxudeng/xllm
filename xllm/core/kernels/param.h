@@ -1382,4 +1382,17 @@ struct PartialRotaryEmbeddingParams {
   torch::Tensor cos_sin_cache;
   bool is_neox_style;
 };
+
+struct MropeParams {
+  torch::Tensor positions;
+  torch::Tensor query;
+  torch::Tensor key;
+  torch::Tensor cos_sin_cache;
+  std::optional<torch::Tensor> cos = std::nullopt;
+  std::optional<torch::Tensor> sin = std::nullopt;
+  int64_t head_size;
+  int64_t rotary_dim = 0;
+  std::vector<int64_t> mrope_section;
+  bool interleaved;
+};
 }  // namespace xllm::kernel

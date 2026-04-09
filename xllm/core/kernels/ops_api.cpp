@@ -957,4 +957,28 @@ std::pair<torch::Tensor, torch::Tensor> partial_rotary_embedding(
   NOT_IMPLEMENTED();
 #endif
 }
+
+std::pair<torch::Tensor, torch::Tensor> apply_mrope(MropeParams& params) {
+#if defined(USE_NPU)
+  if (params.cos.has_value() && params.sin.has_value()) {
+    return npu::triton_mrope(params.query,
+                             params.key,
+                             params.cos.value(),
+                             params.sin.value(),
+                             params.head_size,
+                             params.rotary_dim,
+                             params.mrope_section,
+                             params.interleaved);
+  }
+  return npu::apply_npu_mrope(params.positions,
+                              params.query,
+                              params.key,
+                              params.cos_sin_cache,
+                              params.head_size,
+                              params.mrope_section,
+                              params.interleaved);
+#else
+  NOT_IMPLEMENTED();
+#endif
+}
 }  // namespace xllm::kernel

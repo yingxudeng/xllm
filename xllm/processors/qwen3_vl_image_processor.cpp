@@ -17,6 +17,12 @@ limitations under the License.
 
 namespace xllm {
 
+namespace {
+// Default sampled frame count for Qwen3.5 video when fps path is used
+// without an explicit num_frames override.
+constexpr int32_t kDefaultVideoSampleFrames = 32;
+}  // namespace
+
 std::optional<Qwen2VLImageProcessor::Size>
 Qwen3VLImageProcessor::smart_resize_video(int32_t num_frames,
                                           int32_t height,
@@ -42,7 +48,7 @@ Qwen3VLImageProcessor::smart_resize_video(int32_t num_frames,
   int32_t w_bar =
       static_cast<int32_t>(std::round(width / static_cast<double>(factor))) *
       factor;
-  int32_t t_bar = static_cast<int32_t>(std::ceil(
+  int32_t t_bar = static_cast<int32_t>(std::round(
                       num_frames / static_cast<double>(temporal_factor))) *
                   temporal_factor;
 
@@ -93,15 +99,13 @@ torch::Tensor Qwen3VLImageProcessor::sample_frames(
   int32_t total_num_frames = metadata.total_num_frames;
 
   if (num_frames <= 0 && fps > 0.0) {
-    if (metadata.fps <= 0.0) {
-      LOG(FATAL)
-          << "Asked to sample `fps` frames per second but no video metadata "
-             "was provided which is required when sampling with `fps`. ";
+    const int32_t bounded_max_frames = std::min(max_frames, total_num_frames);
+    if (bounded_max_frames <= 0) {
+      LOG(FATAL) << "invalid bounded_max_frames=" << bounded_max_frames
+                 << " when sampling video frames";
     }
-    num_frames = static_cast<int32_t>(static_cast<double>(total_num_frames) /
-                                      metadata.fps * fps);
-    num_frames = std::min(std::max(num_frames, min_frames),
-                          std::min(max_frames, total_num_frames));
+    num_frames = std::min(kDefaultVideoSampleFrames, bounded_max_frames);
+    num_frames = std::max(num_frames, std::min(min_frames, bounded_max_frames));
   }
 
   if (num_frames <= 0) {
@@ -112,7 +116,7 @@ torch::Tensor Qwen3VLImageProcessor::sample_frames(
                              total_num_frames - 1,
                              num_frames,
                              torch::TensorOptions().dtype(torch::kFloat32));
-  auto idx = torch::round(lin).to(torch::kInt32);
+  auto idx = torch::floor(lin).to(torch::kInt32);
   idx = torch::clamp(idx, 0, total_num_frames - 1);
   return idx;
 }

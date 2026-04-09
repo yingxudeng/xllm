@@ -138,4 +138,6 @@ torch::Tensor gated_layer_norm(GatedLayerNormParams& params);
 std::pair<torch::Tensor, torch::Tensor> partial_rotary_embedding(
     PartialRotaryEmbeddingParams& params);
 
+std::pair<torch::Tensor, torch::Tensor> apply_mrope(MropeParams& params);
+
 }  // namespace xllm::kernel

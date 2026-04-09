@@ -17,6 +17,8 @@ limitations under the License.
 
 #include <torch/torch.h>
 
+#include <vector>
+
 #include "attention.h"
 #include "framework/kv_cache/kv_cache.h"
 #include "framework/model/model_args.h"
@@ -48,6 +50,13 @@ class Qwen3NextAttentionImpl : public torch::nn::Module {
   void load_state_dict(const StateDict& state_dict);
 
  private:
+  bool apply_mrope(const torch::Tensor& positions,
+                   const AttentionMetadata& attn_metadata,
+                   torch::Tensor& q_normed,
+                   torch::Tensor& k_normed,
+                   torch::Tensor& q,
+                   torch::Tensor& k);
+
   int64_t num_heads_;
   int64_t num_kv_heads_;
   int64_t num_kv_head_replicas_;
@@ -69,6 +78,10 @@ class Qwen3NextAttentionImpl : public torch::nn::Module {
   Attention attn_{nullptr};
   int64_t rotary_dim_ = 0;
   bool rotary_interleaved_ = false;
+  bool triton_mrope_aligned_enabled_ = false;
+  bool npu_mrope_aligned_enabled_ = false;
+  std::vector<int64_t> mrope_section_;
+  torch::Tensor mrope_cos_sin_cache_;
 };
 TORCH_MODULE(Qwen3NextAttention);
 

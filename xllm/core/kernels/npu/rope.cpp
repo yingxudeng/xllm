@@ -84,4 +84,31 @@ std::pair<torch::Tensor, torch::Tensor> apply_npu_partial_rotary_embedding(
   return {q_final, k_final};
 }
 
+std::pair<torch::Tensor, torch::Tensor> apply_npu_mrope(
+    const torch::Tensor& positions,
+    const torch::Tensor& query,
+    const torch::Tensor& key,
+    const torch::Tensor& cos_sin_cache,
+    int64_t head_size,
+    const std::vector<int64_t>& mrope_section,
+    bool interleaved) {
+  const at::OptionalIntArrayRef mrope_section_ref =
+      mrope_section.empty()
+          ? c10::nullopt
+          : at::OptionalIntArrayRef(at::IntArrayRef(mrope_section));
+  const c10::optional<c10::string_view> rotary_mode =
+      interleaved ? c10::optional<c10::string_view>("interleave")
+                  : c10::optional<c10::string_view>("half");
+
+  auto outputs =
+      at_npu::native::custom_ops::npu_mrope(positions.contiguous(),
+                                            query.contiguous(),
+                                            key.contiguous(),
+                                            cos_sin_cache.contiguous(),
+                                            head_size,
+                                            mrope_section_ref,
+                                            rotary_mode);
+  return {std::get<0>(outputs), std::get<1>(outputs)};
+}
+
 }  // namespace xllm::kernel::npu

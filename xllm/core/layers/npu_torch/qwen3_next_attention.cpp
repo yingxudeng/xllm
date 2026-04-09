@@ -17,8 +17,11 @@ limitations under the License.
 
 #include <glog/logging.h>
 
+#include <algorithm>
+#include <array>
 #include <tuple>
 
+#include "kernels/ops_api.h"
 #include "layers/common/rotary_embedding_util.h"
 
 namespace xllm {
@@ -28,6 +31,124 @@ namespace {
 
 using torch::indexing::None;
 using ISlice = torch::indexing::Slice;
+constexpr int64_t kTritonMropeHeadSize = 256;
+constexpr int64_t kTritonMropeRotaryDim = 64;
+constexpr std::array<int64_t, 3> kNpuMropeSection = {16, 24, 24};
+
+bool matches_mrope_section(const std::vector<int64_t>& mrope_section,
+                           const std::array<int64_t, 3>& expected) {
+  return mrope_section.size() == expected.size() &&
+         std::equal(
+             mrope_section.begin(), mrope_section.end(), expected.begin());
+}
+
+bool apply_triton_mrope(const torch::Tensor& positions,
+                        int64_t num_heads,
+                        int64_t num_kv_heads,
+                        int64_t head_dim,
+                        int64_t q_size,
+                        int64_t kv_size,
+                        int64_t rotary_dim,
+                        const std::vector<int64_t>& mrope_section,
+                        bool rotary_interleaved,
+                        const torch::Tensor& mrope_cos_sin_cache,
+                        torch::Tensor& q_normed,
+                        torch::Tensor& k_normed,
+                        torch::Tensor& q,
+                        torch::Tensor& k) {
+  auto cache = mrope_cos_sin_cache;
+  if (cache.device() != q_normed.device() ||
+      cache.dtype() != q_normed.dtype()) {
+    cache = cache.to(q_normed.device(), q_normed.dtype());
+  }
+
+  auto cos_sin = cache.index({positions.to(torch::kLong)});
+  auto cos_sin_split = cos_sin.chunk(2, -1);
+  q = q_normed.reshape({q_normed.size(0), q_size});
+  k = k_normed.reshape({k_normed.size(0), kv_size});
+  xllm::kernel::MropeParams mrope_params;
+  mrope_params.positions = positions;
+  mrope_params.query = q;
+  mrope_params.key = k;
+  mrope_params.cos_sin_cache = cache;
+  mrope_params.cos = cos_sin_split[0].contiguous();
+  mrope_params.sin = cos_sin_split[1].contiguous();
+  mrope_params.head_size = head_dim;
+  mrope_params.rotary_dim = rotary_dim;
+  mrope_params.mrope_section = mrope_section;
+  mrope_params.interleaved = rotary_interleaved;
+  std::tie(q, k) = xllm::kernel::apply_mrope(mrope_params);
+  q_normed = q.view({q_normed.size(0), num_heads, head_dim});
+  k_normed = k.view({k_normed.size(0), num_kv_heads, head_dim});
+  return true;
+}
+
+bool apply_npu_mrope(const torch::Tensor& positions,
+                     int64_t q_size,
+                     int64_t kv_size,
+                     int64_t head_dim,
+                     int64_t rotary_dim,
+                     const std::vector<int64_t>& mrope_section,
+                     const torch::Tensor& mrope_cos_sin_cache,
+                     torch::Tensor& q_normed,
+                     torch::Tensor& k_normed,
+                     torch::Tensor& q,
+                     torch::Tensor& k) {
+  static const std::vector<int64_t> kDecodeMropeSection = {0, 0, 0};
+  const auto& mrope_section_for_call =
+      positions.dim() == 1 ? kDecodeMropeSection : mrope_section;
+
+  auto q_rotary = q_normed.index({"...", ISlice(0, rotary_dim)});
+  auto k_rotary = k_normed.index({"...", ISlice(0, rotary_dim)});
+  xllm::kernel::MropeParams mrope_params;
+  mrope_params.positions = positions;
+  mrope_params.query = q_rotary;
+  mrope_params.key = k_rotary;
+  mrope_params.cos_sin_cache = mrope_cos_sin_cache;
+  mrope_params.head_size = head_dim;
+  mrope_params.mrope_section = mrope_section_for_call;
+  mrope_params.interleaved = false;
+  std::tie(q_rotary, k_rotary) = xllm::kernel::apply_mrope(mrope_params);
+  q_normed = torch::cat(
+      {q_rotary, q_normed.index({"...", ISlice(rotary_dim, None)})}, -1);
+  k_normed = torch::cat(
+      {k_rotary, k_normed.index({"...", ISlice(rotary_dim, None)})}, -1);
+  q = q_normed.reshape({q_normed.size(0), q_size});
+  k = k_normed.reshape({k_normed.size(0), kv_size});
+  return true;
+}
+
+bool apply_native_mrope(const torch::Tensor& positions,
+                        const AttentionMetadata& attn_metadata,
+                        int64_t q_size,
+                        int64_t kv_size,
+                        int64_t rotary_dim,
+                        bool rotary_interleaved,
+                        torch::Tensor& q_normed,
+                        torch::Tensor& k_normed,
+                        torch::Tensor& q,
+                        torch::Tensor& k) {
+  if (positions.dim() != 2 || !attn_metadata.mrope_cos.defined() ||
+      !attn_metadata.mrope_sin.defined()) {
+    return false;
+  }
+
+  auto q_rotary = q_normed.index({"...", ISlice(0, rotary_dim)});
+  auto k_rotary = k_normed.index({"...", ISlice(0, rotary_dim)});
+  std::tie(q_rotary, k_rotary) =
+      layer::rotary::apply_rotary_pos_emb(q_rotary,
+                                          k_rotary,
+                                          attn_metadata.mrope_cos.unsqueeze(1),
+                                          attn_metadata.mrope_sin.unsqueeze(1),
+                                          rotary_interleaved);
+  q_normed = torch::cat(
+      {q_rotary, q_normed.index({"...", ISlice(rotary_dim, None)})}, -1);
+  k_normed = torch::cat(
+      {k_rotary, k_normed.index({"...", ISlice(rotary_dim, None)})}, -1);
+  q = q_normed.reshape({q_normed.size(0), q_size});
+  k = k_normed.reshape({k_normed.size(0), kv_size});
+  return true;
+}
 
 }  // namespace
 
@@ -95,8 +216,6 @@ Qwen3NextAttentionImpl::Qwen3NextAttentionImpl(
   // 5. Rotary embedding
   rotary_dim_ = static_cast<int64_t>(head_dim_ * args.partial_rotary_factor());
   CHECK_GT(rotary_dim_, 0) << "rotary_dim must be positive";
-  rotary_interleaved_ = !args.rope_scaling_mrope_section().empty() &&
-                        args.rope_scaling_mrope_interleaved();
   partial_rotary_emb_ =
       register_module("partial_rotary_emb",
                       PartialRotaryEmbedding(rotary_dim_,
@@ -106,6 +225,47 @@ Qwen3NextAttentionImpl::Qwen3NextAttentionImpl(
                                              /*is_neox_style=*/true,
                                              /*interleaved=*/false,
                                              options));
+  mrope_section_ = args.rope_scaling_mrope_section();
+  rotary_interleaved_ =
+      !mrope_section_.empty() && args.rope_scaling_mrope_interleaved();
+  // prefer Triton for 2D interleaved positions, use npu_mrope for the
+  // non-interleaved [16, 24, 24] fast path, otherwise fall back to native
+  // MRoPE.
+  triton_mrope_aligned_enabled_ =
+      !mrope_section_.empty() && rotary_interleaved_ &&
+      head_dim_ == kTritonMropeHeadSize && rotary_dim_ == kTritonMropeRotaryDim;
+  if (triton_mrope_aligned_enabled_) {
+    auto inv_freq = layer::rotary::compute_inv_freq(
+        rotary_dim_, args.rope_theta(), options);
+    const int64_t triton_cache_max_position_embeddings =
+        args.max_position_embeddings() * 4;
+    auto inv_freq_fp32 = inv_freq.to(torch::kFloat32).contiguous();
+    auto seq = torch::arange(triton_cache_max_position_embeddings,
+                             torch::TensorOptions()
+                                 .dtype(torch::kFloat32)
+                                 .device(inv_freq_fp32.device()));
+    auto freqs = torch::einsum("i,j->ij", {seq, inv_freq_fp32});
+    auto cache_options = torch::TensorOptions()
+                             .dtype(options.dtype())
+                             .device(inv_freq_fp32.device());
+    mrope_cos_sin_cache_ = register_buffer(
+        "mrope_cos_sin_cache",
+        torch::cat({freqs.cos(), freqs.sin()}, -1).to(cache_options));
+  }
+  npu_mrope_aligned_enabled_ =
+      matches_mrope_section(mrope_section_, kNpuMropeSection) &&
+      !rotary_interleaved_;
+  if (npu_mrope_aligned_enabled_ && !mrope_cos_sin_cache_.defined()) {
+    auto inv_freq = layer::rotary::compute_inv_freq(
+        rotary_dim_, args.rope_theta(), options);
+    mrope_cos_sin_cache_ = register_buffer(
+        "mrope_cos_sin_cache",
+        layer::rotary::compute_cos_sin_cache(rotary_dim_,
+                                             args.max_position_embeddings(),
+                                             rotary_interleaved_,
+                                             inv_freq,
+                                             options));
+  }
 
   // 6. Attention
   attn_ = register_module("attn",
@@ -114,6 +274,60 @@ Qwen3NextAttentionImpl::Qwen3NextAttentionImpl(
                                     scaling_,
                                     num_kv_heads_,
                                     args.sliding_window()));
+}
+
+bool Qwen3NextAttentionImpl::apply_mrope(const torch::Tensor& positions,
+                                         const AttentionMetadata& attn_metadata,
+                                         torch::Tensor& q_normed,
+                                         torch::Tensor& k_normed,
+                                         torch::Tensor& q,
+                                         torch::Tensor& k) {
+  if (mrope_section_.empty()) {
+    return false;
+  }
+
+  if (triton_mrope_aligned_enabled_ && positions.dim() == 2) {
+    return apply_triton_mrope(positions,
+                              num_heads_,
+                              num_kv_heads_,
+                              head_dim_,
+                              q_size_,
+                              kv_size_,
+                              rotary_dim_,
+                              mrope_section_,
+                              rotary_interleaved_,
+                              mrope_cos_sin_cache_,
+                              q_normed,
+                              k_normed,
+                              q,
+                              k);
+  }
+
+  if (npu_mrope_aligned_enabled_ &&
+      (positions.dim() == 1 || positions.dim() == 2)) {
+    return apply_npu_mrope(positions,
+                           q_size_,
+                           kv_size_,
+                           head_dim_,
+                           rotary_dim_,
+                           mrope_section_,
+                           mrope_cos_sin_cache_,
+                           q_normed,
+                           k_normed,
+                           q,
+                           k);
+  }
+
+  return apply_native_mrope(positions,
+                            attn_metadata,
+                            q_size_,
+                            kv_size_,
+                            rotary_dim_,
+                            rotary_interleaved_,
+                            q_normed,
+                            k_normed,
+                            q,
+                            k);
 }
 
 torch::Tensor Qwen3NextAttentionImpl::forward(
@@ -173,23 +387,9 @@ torch::Tensor Qwen3NextAttentionImpl::forward(
   auto k_reshaped = k.reshape({T, num_kv_heads_, head_dim_});
   auto q_normed = q_norm_->forward(q_reshaped);
   auto k_normed = k_norm_->forward(k_reshaped);
-  if (positions.dim() == 2 && attn_metadata.mrope_cos.defined() &&
-      attn_metadata.mrope_sin.defined()) {
-    auto q_rotary = q_normed.index({"...", ISlice(0, rotary_dim_)});
-    auto k_rotary = k_normed.index({"...", ISlice(0, rotary_dim_)});
-    std::tie(q_rotary, k_rotary) = layer::rotary::apply_rotary_pos_emb(
-        q_rotary,
-        k_rotary,
-        attn_metadata.mrope_cos.unsqueeze(1),
-        attn_metadata.mrope_sin.unsqueeze(1),
-        rotary_interleaved_);
-    q_normed = torch::cat(
-        {q_rotary, q_normed.index({"...", ISlice(rotary_dim_, None)})}, -1);
-    k_normed = torch::cat(
-        {k_rotary, k_normed.index({"...", ISlice(rotary_dim_, None)})}, -1);
-    q = q_normed.reshape({T, q_size_});
-    k = k_normed.reshape({T, kv_size_});
-  } else {
+  q = q_normed.reshape({T, q_size_});
+  k = k_normed.reshape({T, kv_size_});
+  if (!apply_mrope(positions, attn_metadata, q_normed, k_normed, q, k)) {
     q = q_normed.reshape({T, q_size_});
     k = k_normed.reshape({T, kv_size_});
     const torch::Tensor rotary_positions =
