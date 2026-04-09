@@ -20,7 +20,6 @@ limitations under the License.
 
 #include <algorithm>
 #include <numeric>
-#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -31,7 +30,6 @@ limitations under the License.
 
 // -------------------
 #include <filesystem>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -145,10 +143,6 @@ inline std::string get_model_name(
   return model_name;
 }
 
-inline std::string get_model_type(const std::filesystem::path& model_path) {
-  return ::xllm::get_model_type(model_path);
-}
-
 inline std::string get_model_backend(const std::filesystem::path& model_path) {
   JsonReader reader;
   std::filesystem::path model_index_json_path = model_path / "model_index.json";
@@ -173,7 +167,7 @@ inline bool should_enable_mla(
   if (resolved_backend == "dit") {
     return false;
   }
-  return is_mla_model_type(get_model_type(model_path));
+  return is_mla_model_type(get_model_type(model_path, backend));
 }
 
 }  // namespace util
