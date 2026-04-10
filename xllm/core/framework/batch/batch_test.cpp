@@ -32,6 +32,7 @@ limitations under the License.
 #include "framework/sampling/sampling_params.h"
 #include "platform/device.h"
 #include "runtime/forward_shared_memory_manager.h"
+#include "runtime/linear_attention_cache_utils.h"
 #include "runtime/params_utils.h"
 
 namespace xllm {
@@ -322,6 +323,29 @@ TEST(BatchTest, KVCacheEmptySupportsLinearOnlyAndFullOnlyLayouts) {
 
   KVCache empty_cache;
   EXPECT_TRUE(empty_cache.empty());
+}
+
+TEST(BatchTest, LinearAttentionSsmCacheKeepsExpectedPrecision) {
+  torch::ScalarType model_dtype = torch::kBFloat16;
+  int64_t model_dtype_size =
+      static_cast<int64_t>(torch::scalarTypeToTypeMeta(model_dtype).itemsize());
+  torch::ScalarType ssm_cache_dtype =
+      get_linear_attention_ssm_cache_dtype(model_dtype);
+  int64_t ssm_cache_dtype_size =
+      get_linear_attention_ssm_cache_dtype_size_in_bytes(model_dtype_size);
+
+  auto conv_cache = torch::zeros(
+      {2, 4, 3}, torch::TensorOptions().dtype(model_dtype).device(torch::kCPU));
+  auto ssm_cache = torch::zeros(
+      {2, 1, 4, 4},
+      torch::TensorOptions().dtype(ssm_cache_dtype).device(torch::kCPU));
+  KVCache linear_only_cache(
+      torch::Tensor(), torch::Tensor(), conv_cache, ssm_cache);
+
+  EXPECT_EQ(ssm_cache_dtype, torch::kFloat32);
+  EXPECT_EQ(ssm_cache_dtype_size, static_cast<int64_t>(sizeof(float)));
+  EXPECT_EQ(linear_only_cache.get_conv_cache().scalar_type(), model_dtype);
+  EXPECT_EQ(linear_only_cache.get_ssm_cache().scalar_type(), ssm_cache_dtype);
 }
 
 TEST(BatchTest, SampleRequestKeepsThreadedRawBuilderOffsetsStable) {

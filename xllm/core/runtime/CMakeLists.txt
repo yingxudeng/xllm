@@ -31,6 +31,7 @@ cc_library(
     mm_embed_vlm_worker_impl.h
     worker_client.h
     xservice_client.h
+    linear_attention_cache_utils.h
     speculative_worker_impl.h
     mtp_worker_impl.h
     suffix_worker_impl.h

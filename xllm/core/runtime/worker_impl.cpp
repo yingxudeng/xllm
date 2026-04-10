@@ -59,6 +59,7 @@ limitations under the License.
 #include "framework/kv_cache/mooncake_weight_transfer.h"
 #include "layers/npu/loader/rolling_weight_buffer.h"
 #endif
+#include "runtime/linear_attention_cache_utils.h"
 #include "util/net.h"
 #include "util/tensor_helper.h"
 #include "util/threadpool.h"
@@ -238,6 +239,8 @@ bool WorkerImpl::allocate_kv_cache(
     // Original mode: create torch tensors with optional int8 kv quantization.
     torch::ScalarType cache_dtype =
         enable_kv_cache_quant ? torch::kInt8 : dtype_;
+    torch::ScalarType linear_ssm_cache_dtype =
+        get_linear_attention_ssm_cache_dtype(dtype_);
 
     // Helper function to check if a layer is linear attention
     auto is_linear_attention_layer = [&](int64_t layer_idx) {
@@ -262,23 +265,26 @@ bool WorkerImpl::allocate_kv_cache(
                            torch::dtype(dtype_).device(device_)),
               2);
           ssm_cache = at_npu::native::npu_format_cast(
-              torch::zeros(kv_cache_shape[3],
-                           torch::dtype(dtype_).device(device_)),
+              torch::zeros(
+                  kv_cache_shape[3],
+                  torch::dtype(linear_ssm_cache_dtype).device(device_)),
               2);
         }
 #elif defined(USE_ILU) || defined(USE_MLU) || defined(USE_MUSA)
         if (enable_linear_attention) {
           conv_cache = torch::zeros(kv_cache_shape[2],
                                     torch::dtype(dtype_).device(device_));
-          ssm_cache = torch::zeros(kv_cache_shape[3],
-                                   torch::dtype(dtype_).device(device_));
+          ssm_cache = torch::zeros(
+              kv_cache_shape[3],
+              torch::dtype(linear_ssm_cache_dtype).device(device_));
         }
 #else
         if (enable_linear_attention) {
           conv_cache = torch::empty(kv_cache_shape[2],
                                     torch::dtype(dtype_).device(device_));
-          ssm_cache = torch::empty(kv_cache_shape[3],
-                                   torch::dtype(dtype_).device(device_));
+          ssm_cache = torch::empty(
+              kv_cache_shape[3],
+              torch::dtype(linear_ssm_cache_dtype).device(device_));
         }
 #endif
         // Create empty KVCache with only conv and ssm

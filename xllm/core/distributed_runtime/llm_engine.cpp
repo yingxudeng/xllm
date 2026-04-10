@@ -38,6 +38,7 @@ limitations under the License.
 #include "framework/xtensor/page_allocator.h"
 #include "framework/xtensor/phy_page_pool.h"
 #include "framework/xtensor/xtensor_allocator.h"
+#include "runtime/linear_attention_cache_utils.h"
 #include "runtime/llm_worker_impl.h"
 #include "runtime/worker.h"
 #include "server/xllm_server_registry.h"
@@ -497,8 +498,11 @@ Engine::KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
   if (args_.linear_num_value_heads() > 0) {
     int64_t head_k_dim = args_.linear_key_head_dim();
     int64_t head_v_dim = args_.linear_value_head_dim();
-    int64_t linear_ssm_slot_size =
-        dtype_size * n_local_linear_v_heads_ * head_k_dim * head_v_dim;
+    int64_t linear_ssm_dtype_size =
+        get_linear_attention_ssm_cache_dtype_size_in_bytes(dtype_size);
+    int64_t linear_ssm_slot_size = linear_ssm_dtype_size *
+                                   n_local_linear_v_heads_ * head_k_dim *
+                                   head_v_dim;
     int64_t linear_conv_slot_size = dtype_size *
                                     (head_k_dim * n_local_linear_k_heads_ * 2 +
                                      head_v_dim * n_local_linear_v_heads_) *
