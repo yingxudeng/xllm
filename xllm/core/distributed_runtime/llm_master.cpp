@@ -50,6 +50,26 @@ bool should_use_ssm_engine(const Options& options) {
           options.num_speculative_tokens() > 0);
 }
 
+void maybe_add_tokenizer_eos_stop_token(const TokenizerArgs& tokenizer_args,
+                                        const Tokenizer& tokenizer,
+                                        std::unordered_set<int32_t>* tokens) {
+  CHECK(tokens != nullptr);
+  if (tokenizer_args.eos_token().empty()) {
+    return;
+  }
+
+  // Some chat models, such as Qwen3.5, expose a generation EOS token in the
+  // tokenizer/chat template that differs from config.json's eos_token_id.
+  // Include both so normal chat serving stops on the real dialogue terminator.
+  std::vector<int> eos_token_ids;
+  if (!tokenizer.encode(tokenizer_args.eos_token(), &eos_token_ids) ||
+      eos_token_ids.size() != 1) {
+    return;
+  }
+
+  tokens->insert(eos_token_ids.front());
+}
+
 }  // namespace
 
 volatile bool LLMAssistantMaster::running_ = false;
@@ -395,6 +415,8 @@ std::shared_ptr<Request> LLMMaster::generate_request(
   } else {
     stop_tokens = model_args_.stop_token_ids();
   }
+  maybe_add_tokenizer_eos_stop_token(
+      engine_->tokenizer_args(), *tokenizer_, &stop_tokens);
   std::vector<std::vector<int32_t>> stop_sequences;
   if (sp.stop.has_value()) {
     for (const auto& s : sp.stop.value()) {

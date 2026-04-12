@@ -785,6 +785,63 @@ std::tuple<torch::Tensor, torch::Tensor> fp8_scaled_quantize(
 #endif
 }
 
+torch::Tensor causal_conv1d(CausalConv1dParams& params) {
+#if defined(USE_NPU)
+  return npu::causal_conv1d(params.x,
+                            params.weight,
+                            params.bias,
+                            params.seq_lens,
+                            params.conv_state_source,
+                            params.conv_state_indices,
+                            params.has_initial_state,
+                            params.activation,
+                            params.pad_slot_id);
+#else
+  NOT_IMPLEMENTED();
+#endif
+}
+
+std::tuple<torch::Tensor, torch::Tensor> chunk_gated_delta_rule(
+    ChunkGatedDeltaRuleParams& params) {
+#if defined(USE_NPU)
+  return npu::chunk_gated_delta_rule(params.q,
+                                     params.k,
+                                     params.v,
+                                     params.g,
+                                     params.beta,
+                                     params.seq_lens,
+                                     params.chunk_size,
+                                     params.initial_state,
+                                     params.output_final_state,
+                                     params.use_qk_l2norm_in_kernel);
+#else
+  NOT_IMPLEMENTED();
+#endif
+}
+
+torch::Tensor fused_sigmoid_gating_delta_rule_update(
+    FusedSigmoidGatingDeltaRuleUpdateParams& params) {
+#if defined(USE_NPU)
+  return npu::fused_sigmoid_gating_delta_rule_update(
+      params.A_log,
+      params.a,
+      params.dt_bias,
+      params.softplus_beta,
+      params.softplus_threshold,
+      params.q,
+      params.k,
+      params.v,
+      params.b,
+      params.initial_state_source,
+      params.initial_state_indices,
+      params.scale,
+      params.use_qk_l2norm_in_kernel,
+      params.cu_seqlens);
+#else
+  NOT_IMPLEMENTED();
+#endif
+}
+
 std::pair<torch::Tensor, torch::Tensor> fused_gdn_gating(
     FusedGdnGatingParams& params) {
 #if defined(USE_NPU)

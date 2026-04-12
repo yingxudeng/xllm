@@ -1320,6 +1320,48 @@ struct FusedAddRmsNormStaticFp8QuantParams {
 };
 
 // NPU Fused GDN Gating parameters
+struct CausalConv1dParams {
+  torch::Tensor x;
+  torch::Tensor weight;
+  std::optional<torch::Tensor> bias = std::nullopt;
+  std::optional<torch::Tensor> seq_lens = std::nullopt;
+  std::optional<torch::Tensor> conv_state_source = std::nullopt;
+  std::optional<torch::Tensor> conv_state_indices = std::nullopt;
+  std::optional<torch::Tensor> has_initial_state = std::nullopt;
+  bool activation = true;
+  int64_t pad_slot_id = -1;
+};
+
+struct ChunkGatedDeltaRuleParams {
+  torch::Tensor q;
+  torch::Tensor k;
+  torch::Tensor v;
+  torch::Tensor g;
+  torch::Tensor beta;
+  std::optional<torch::Tensor> seq_lens = std::nullopt;
+  int64_t chunk_size = 64;
+  std::optional<torch::Tensor> initial_state = std::nullopt;
+  bool output_final_state = true;
+  bool use_qk_l2norm_in_kernel = true;
+};
+
+struct FusedSigmoidGatingDeltaRuleUpdateParams {
+  torch::Tensor A_log;
+  torch::Tensor a;
+  torch::Tensor dt_bias;
+  float softplus_beta = 1.0f;
+  float softplus_threshold = 20.0f;
+  torch::Tensor q;
+  torch::Tensor k;
+  torch::Tensor v;
+  torch::Tensor b;
+  torch::Tensor initial_state_source;
+  torch::Tensor initial_state_indices;
+  std::optional<float> scale = std::nullopt;
+  bool use_qk_l2norm_in_kernel = false;
+  std::optional<torch::Tensor> cu_seqlens = std::nullopt;
+};
+
 struct FusedGdnGatingParams {
   torch::Tensor A_log;
   torch::Tensor a;

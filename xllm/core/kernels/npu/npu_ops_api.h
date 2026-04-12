@@ -135,4 +135,43 @@ std::pair<torch::Tensor, torch::Tensor> apply_npu_partial_rotary_embedding(
     const torch::Tensor& cos_sin_cache,
     bool is_neox_style);
 
+torch::Tensor causal_conv1d(
+    torch::Tensor& x,
+    torch::Tensor& weight,
+    const std::optional<torch::Tensor>& bias = std::nullopt,
+    const std::optional<torch::Tensor>& seq_lens = std::nullopt,
+    std::optional<torch::Tensor> conv_state_source = std::nullopt,
+    const std::optional<torch::Tensor>& conv_state_indices = std::nullopt,
+    const std::optional<torch::Tensor>& has_initial_state = std::nullopt,
+    bool activation = true,
+    int64_t pad_slot_id = -1);
+
+std::tuple<torch::Tensor, torch::Tensor> chunk_gated_delta_rule(
+    torch::Tensor& q,
+    torch::Tensor& k,
+    torch::Tensor& v,
+    torch::Tensor& g,
+    torch::Tensor& beta,
+    const std::optional<torch::Tensor>& seq_lens = std::nullopt,
+    int64_t chunk_size = 64,
+    const std::optional<torch::Tensor>& initial_state = std::nullopt,
+    bool output_final_state = true,
+    bool use_qk_l2norm_in_kernel = true);
+
+torch::Tensor fused_sigmoid_gating_delta_rule_update(
+    torch::Tensor& A_log,
+    torch::Tensor& a,
+    torch::Tensor& dt_bias,
+    float softplus_beta,
+    float softplus_threshold,
+    torch::Tensor& q,
+    torch::Tensor& k,
+    torch::Tensor& v,
+    torch::Tensor& b,
+    torch::Tensor& initial_state_source,
+    torch::Tensor& initial_state_indices,
+    const std::optional<float>& scale = std::nullopt,
+    bool use_qk_l2norm_in_kernel = false,
+    const std::optional<torch::Tensor>& cu_seqlens = std::nullopt);
+
 }  // namespace xllm::kernel::npu

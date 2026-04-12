@@ -125,6 +125,14 @@ torch::Tensor rms_norm_static_fp8_quant(RmsNormStaticFp8QuantParams& params);
 std::tuple<torch::Tensor, torch::Tensor> fused_add_rms_norm_static_fp8_quant(
     FusedAddRmsNormStaticFp8QuantParams& params);
 
+torch::Tensor causal_conv1d(CausalConv1dParams& params);
+
+std::tuple<torch::Tensor, torch::Tensor> chunk_gated_delta_rule(
+    ChunkGatedDeltaRuleParams& params);
+
+torch::Tensor fused_sigmoid_gating_delta_rule_update(
+    FusedSigmoidGatingDeltaRuleUpdateParams& params);
+
 std::pair<torch::Tensor, torch::Tensor> fused_gdn_gating(
     FusedGdnGatingParams& params);
 

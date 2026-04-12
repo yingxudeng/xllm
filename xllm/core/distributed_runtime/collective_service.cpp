@@ -27,6 +27,9 @@ CollectiveService::CollectiveService(int dp_group_num,
                                      int device_idx)
     : total_num_(total_num) {
 #if defined(USE_NPU)
+  if (total_num_ <= 1) {
+    return;
+  }
   root_infos_.reserve(dp_group_num + 1);
   for (size_t i = 0; i < (dp_group_num + 1); ++i) {
     HcclRootInfo root_info;

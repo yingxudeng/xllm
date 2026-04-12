@@ -22,228 +22,6 @@ limitations under the License.
 namespace xllm {
 namespace layer {
 
-namespace {
-torch::Tensor l2norm(const torch::Tensor& x, int64_t dim, double eps = 1e-6) {
-  auto norm = torch::sqrt(torch::sum(torch::square(x), dim, true) + eps);
-  return x / norm;
-}
-
-std::tuple<torch::Tensor, torch::Tensor> torch_recurrent_gated_delta_rule(
-    torch::Tensor query,
-    torch::Tensor key,
-    torch::Tensor value,
-    torch::Tensor g,
-    torch::Tensor beta,
-    std::optional<torch::Tensor> initial_state,
-    bool output_final_state = true,
-    bool use_qk_l2norm_in_kernel = true) {
-  auto initial_dtype = query.dtype();
-
-  if (use_qk_l2norm_in_kernel) {
-    query = l2norm(query, -1, 1e-6);
-    key = l2norm(key, -1, 1e-6);
-  }
-
-  auto to_float32_and_transpose = [](torch::Tensor x) {
-    return x.transpose(1, 2).contiguous().to(torch::kFloat32);
-  };
-  query = to_float32_and_transpose(query);
-  key = to_float32_and_transpose(key);
-  value = to_float32_and_transpose(value);
-  beta = to_float32_and_transpose(beta);
-  g = to_float32_and_transpose(g);
-
-  int64_t batch_size = key.size(0);
-  int64_t num_heads = key.size(1);
-  int64_t sequence_length = key.size(2);
-  int64_t k_head_dim = key.size(3);
-  int64_t v_head_dim = value.size(3);
-
-  float scale_val = 1.0 / std::sqrt(static_cast<float>(query.size(-1)));
-  torch::Tensor scale = torch::tensor(scale_val, query.options());
-  query = query * scale;
-  torch::Tensor core_attn_out = torch::zeros(
-      {batch_size, num_heads, sequence_length, v_head_dim},
-      torch::TensorOptions().dtype(torch::kFloat32).device(value.device()));
-  torch::Tensor last_recurrent_state;
-  if (!initial_state.has_value()) {
-    last_recurrent_state = torch::zeros(
-        {batch_size, num_heads, k_head_dim, v_head_dim},
-        torch::TensorOptions().dtype(torch::kFloat32).device(value.device()));
-  } else {
-    last_recurrent_state =
-        initial_state.value().to(value.device(), torch::kFloat32);
-  }
-
-  for (int64_t i = 0; i < sequence_length; ++i) {
-    torch::Tensor q_t = query.select(2, i);
-    torch::Tensor k_t = key.select(2, i);
-    torch::Tensor v_t = value.select(2, i);
-    torch::Tensor g_t = g.select(2, i).exp().unsqueeze(-1).unsqueeze(-1);
-    torch::Tensor beta_t = beta.select(2, i).unsqueeze(-1);
-    last_recurrent_state = last_recurrent_state * g_t;
-    torch::Tensor kv_mem =
-        torch::sum(last_recurrent_state * k_t.unsqueeze(-1), -2);
-    torch::Tensor delta = (v_t - kv_mem) * beta_t;
-    last_recurrent_state =
-        last_recurrent_state + k_t.unsqueeze(-1) * delta.unsqueeze(-2);
-    core_attn_out.select(2, i) =
-        torch::sum(last_recurrent_state * q_t.unsqueeze(-1), -2);
-  }
-
-  core_attn_out = core_attn_out.transpose(1, 2).contiguous().to(initial_dtype);
-  return std::make_tuple(core_attn_out, last_recurrent_state);
-}
-
-std::tuple<torch::Tensor, torch::Tensor> torch_chunk_gated_delta_rule(
-    torch::Tensor query,
-    torch::Tensor key,
-    torch::Tensor value,
-    torch::Tensor g,
-    torch::Tensor beta,
-    int64_t chunk_size = 64,
-    c10::optional<torch::Tensor> initial_state = c10::nullopt,
-    bool output_final_state = true,
-    bool use_qk_l2norm_in_kernel = true) {
-  auto initial_dtype = query.dtype();
-  if (use_qk_l2norm_in_kernel) {
-    query = l2norm(query, -1, 1e-6);
-    key = l2norm(key, -1, 1e-6);
-  }
-  auto to_float32 = [](torch::Tensor x) {
-    return x.transpose(1, 2).contiguous().to(torch::kFloat32);
-  };
-
-  query = to_float32(query);
-  key = to_float32(key);
-  value = to_float32(value);
-  beta = to_float32(beta);
-  g = to_float32(g);
-
-  auto batch_size = query.size(0);
-  auto num_heads = query.size(1);
-  auto sequence_length = query.size(2);
-  auto k_head_dim = key.size(-1);
-  auto v_head_dim = value.size(-1);
-
-  int64_t pad_size = (chunk_size - sequence_length % chunk_size) % chunk_size;
-  query = torch::nn::functional::pad(
-      query, torch::nn::functional::PadFuncOptions({0, 0, 0, pad_size}));
-  key = torch::nn::functional::pad(
-      key, torch::nn::functional::PadFuncOptions({0, 0, 0, pad_size}));
-  value = torch::nn::functional::pad(
-      value, torch::nn::functional::PadFuncOptions({0, 0, 0, pad_size}));
-  beta = torch::nn::functional::pad(
-      beta, torch::nn::functional::PadFuncOptions({0, pad_size}));
-  g = torch::nn::functional::pad(
-      g, torch::nn::functional::PadFuncOptions({0, pad_size}));
-
-  int64_t total_sequence_length = sequence_length + pad_size;
-  float scale = 1.0 / std::sqrt(static_cast<float>(query.size(-1)));
-  query = query * scale;
-  auto v_beta = value * beta.unsqueeze(-1);
-  auto k_beta = key * beta.unsqueeze(-1);
-  auto reshape_to_chunks = [chunk_size](torch::Tensor x) {
-    auto shape = x.sizes();
-    std::vector<int64_t> new_shape = {
-        shape[0], shape[1], shape[2] / chunk_size, chunk_size, shape[3]};
-    return x.reshape(new_shape);
-  };
-
-  query = reshape_to_chunks(query);
-  key = reshape_to_chunks(key);
-  value = reshape_to_chunks(value);
-  k_beta = reshape_to_chunks(k_beta);
-  v_beta = reshape_to_chunks(v_beta);
-
-  auto g_shape = g.sizes();
-  std::vector<int64_t> g_new_shape = {
-      g_shape[0], g_shape[1], g_shape[2] / chunk_size, chunk_size};
-  g = g.reshape(g_new_shape);
-  auto mask = torch::triu(
-      torch::ones(
-          {chunk_size, chunk_size},
-          torch::TensorOptions().dtype(torch::kBool).device(query.device())),
-      0);
-
-  g = g.cumsum(-1);
-  auto g_diff = g.unsqueeze(-1) - g.unsqueeze(-2);
-  auto decay_mask = g_diff.tril().exp().to(torch::kFloat32);
-  decay_mask = decay_mask.tril();
-  auto attn = -(torch::matmul(k_beta, key.transpose(-1, -2)) * decay_mask)
-                   .masked_fill(mask, 0.0);
-  for (int64_t i = 1; i < chunk_size; ++i) {
-    if (!attn.is_contiguous()) {
-      attn = attn.contiguous();
-    }
-    auto row = attn.slice(-2, i, i + 1)
-                   .slice(-1, 0, i)
-                   .squeeze(-2)
-                   .clone()
-                   .contiguous();
-    auto sub = attn.slice(-2, 0, i).slice(-1, 0, i).clone().contiguous();
-    auto row_unsq = row.unsqueeze(-1).contiguous();
-    auto row_sub_mul = (row_unsq * sub).contiguous();
-    auto row_sub_sum = row_sub_mul.sum(-2).contiguous();
-    auto row_final = (row + row_sub_sum).contiguous();
-    attn.index_put_({torch::indexing::Ellipsis,
-                     torch::indexing::Slice(i, i + 1),
-                     torch::indexing::Slice(0, i)},
-                    row_final.unsqueeze(-2));
-  }
-
-  attn = attn +
-         torch::eye(
-             chunk_size,
-             torch::TensorOptions().dtype(attn.dtype()).device(attn.device()));
-  value = torch::matmul(attn, v_beta);
-  auto k_cumdecay = torch::matmul(attn, (k_beta * g.exp().unsqueeze(-1)));
-  torch::Tensor last_recurrent_state;
-  if (!initial_state.has_value()) {
-    last_recurrent_state = torch::zeros(
-        {batch_size, num_heads, k_head_dim, v_head_dim},
-        torch::TensorOptions().dtype(torch::kFloat32).device(value.device()));
-  } else {
-    last_recurrent_state = initial_state.value().to(torch::kFloat32);
-  }
-  auto core_attn_out = torch::zeros_like(value);
-  mask = torch::triu(
-      torch::ones(
-          {chunk_size, chunk_size},
-          torch::TensorOptions().dtype(torch::kBool).device(query.device())),
-      1);
-  int64_t num_chunks = total_sequence_length / chunk_size;
-  for (int64_t i = 0; i < num_chunks; ++i) {
-    auto q_i = query.select(2, i);
-    auto k_i = key.select(2, i);
-    auto v_i = value.select(2, i);
-    auto attn_i =
-        (torch::matmul(q_i, k_i.transpose(-1, -2)) * decay_mask.select(2, i))
-            .masked_fill_(mask, 0.0);
-    auto v_prime = torch::matmul(k_cumdecay.select(2, i), last_recurrent_state);
-    auto v_new = v_i - v_prime;
-    auto attn_inter = torch::matmul(q_i * g.select(2, i).unsqueeze(-1).exp(),
-                                    last_recurrent_state);
-    core_attn_out.select(2, i) = attn_inter + torch::matmul(attn_i, v_new);
-    auto g_i_last = g.select(2, i).select(-1, -1).unsqueeze(-1);
-    auto g_exp_term = (g_i_last - g.select(2, i)).exp().unsqueeze(-1);
-    auto k_g_exp = (k_i * g_exp_term).transpose(-1, -2).contiguous();
-    last_recurrent_state = last_recurrent_state * g_i_last.unsqueeze(-1).exp() +
-                           torch::matmul(k_g_exp, v_new);
-  }
-  auto core_attn_out_shape = core_attn_out.sizes();
-  std::vector<int64_t> reshape_shape = {
-      core_attn_out_shape[0],
-      core_attn_out_shape[1],
-      core_attn_out_shape[2] * core_attn_out_shape[3],
-      core_attn_out_shape[4]};
-  core_attn_out = core_attn_out.reshape(reshape_shape);
-  core_attn_out = core_attn_out.slice(2, 0, sequence_length);
-  core_attn_out = core_attn_out.transpose(1, 2).contiguous().to(initial_dtype);
-  return std::make_tuple(core_attn_out, last_recurrent_state);
-}
-}  // namespace
-
 Qwen3GatedDeltaNetBaseImpl::Qwen3GatedDeltaNetBaseImpl(
     const ModelArgs& args,
     const QuantArgs& quant_args,
@@ -353,86 +131,94 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
   // Run the causal conv update on the mixed QKV states.
   torch::Tensor mixed_qkv = torch::cat({q, k, v}, q.dim() - 1);
   mixed_qkv = mixed_qkv.transpose(1, 2);
-  int64_t seq_len = mixed_qkv.size(2);
   torch::Tensor conv_cache = kv_cache.get_conv_cache();
   torch::Tensor ssm_cache = kv_cache.get_ssm_cache();
-  torch::Tensor g, beta, core_attn_out, last_recurrent_state;
+  torch::Tensor core_attn_out;
   auto device = mixed_qkv.device();
   auto conv_weight = conv1d_->weight();
+  torch::Tensor cache_indices;
+  torch::Tensor has_initial_state;
+  if (attn_metadata.is_prefill) {
+    CHECK(input_params.block_tables.defined())
+        << "Qwen3.5 GDN prefill requires input_params.block_tables.";
+    cache_indices = input_params.block_tables.select(1, 0).contiguous();
+    has_initial_state =
+        (attn_metadata.kv_seq_lens > attn_metadata.q_seq_lens).contiguous();
+  } else {
+    CHECK(attn_metadata.block_table.defined())
+        << "Qwen3.5 GDN decode requires attn_metadata.block_table.";
+    cache_indices = attn_metadata.block_table.select(1, 0)
+                        .to(device, torch::kInt32)
+                        .contiguous();
+  }
 
   if (attn_metadata.is_prefill) {
-    torch::Tensor conv_state =
-        (seq_len < conv_kernel_size_ - 1)
-            ? torch::pad(mixed_qkv, {0, conv_kernel_size_ - 1 - seq_len})
-        : (seq_len > conv_kernel_size_ - 1)
-            ? mixed_qkv.narrow(
-                  -1, seq_len - conv_kernel_size_ + 1, conv_kernel_size_ - 1)
-            : mixed_qkv;
-    conv_cache.index_put_({input_params.block_tables.select(1, 0)},
-                          conv_state.to(conv_cache.dtype()));
-    torch::Tensor bias;
-    auto conv_output =
-        torch::conv1d(mixed_qkv,
-                      conv_weight.unsqueeze(1).to(device),
-                      bias,
-                      /*stride=*/std::vector<int64_t>{1},
-                      /*padding=*/std::vector<int64_t>{3},
-                      /*dilation=*/std::vector<int64_t>{1},
-                      /*groups=*/static_cast<int64_t>(mixed_qkv.size(1)));
-    mixed_qkv = torch::silu(conv_output.slice(2, 0, seq_len));
-
+    xllm::kernel::CausalConv1dParams conv_params;
+    conv_params.x = mixed_qkv;
+    conv_params.weight = conv_weight.to(device);
+    conv_params.seq_lens = attn_metadata.q_seq_lens;
+    conv_params.conv_state_source = conv_cache;
+    conv_params.conv_state_indices = cache_indices;
+    conv_params.has_initial_state = has_initial_state;
+    conv_params.activation = true;
+    mixed_qkv = xllm::kernel::causal_conv1d(conv_params);
   } else {
     xllm::kernel::CausalConv1dUpdateParams params;
     params.x = mixed_qkv;
     params.conv_state = conv_cache;
     params.weight = conv_weight;
-    params.conv_state_indices =
-        attn_metadata.block_table.select(1, 0).contiguous();
+    params.conv_state_indices = cache_indices;
     mixed_qkv = xllm::kernel::causal_conv1d_update(params);
   }
 
-  // Compute gated delta net decay and beta terms.
-  if (attn_metadata.is_prefill) {
-    beta = torch::sigmoid(b);
-    torch::Tensor A_log_exp = A_log_.exp();
-    torch::Tensor a_float = a.to(torch::kFloat32);
-    torch::Tensor a_plus_dt = a_float + dt_bias_;
-    torch::Tensor softplus_out = torch::nn::functional::softplus(
-        a_plus_dt,
-        torch::nn::functional::SoftplusFuncOptions().beta(1.0).threshold(20.0));
-    g = -A_log_exp * softplus_out;
-    g = g.to(a.dtype()).contiguous();
-  } else {
-    xllm::kernel::FusedGdnGatingParams gdn_params;
-    gdn_params.A_log = A_log_;
-    gdn_params.a = a.view({-1, a.size(-1)});
-    gdn_params.b = b.view({-1, b.size(-1)});
-    gdn_params.dt_bias = dt_bias_;
-    gdn_params.beta = 1.0f;
-    gdn_params.threshold = 20.0f;
-    std::tie(g, beta) = xllm::kernel::fused_gdn_gating(gdn_params);
-  }
   auto [processed_q, processed_k, processed_v] = process_mixed_qkv(mixed_qkv);
-  int64_t repeat_times = num_v_heads_ / num_k_heads_;
-  if (repeat_times > 1) {
-    processed_q = processed_q.repeat_interleave(repeat_times, 2);
-    processed_k = processed_k.repeat_interleave(repeat_times, 2);
-  }
-  // Apply chunked or recurrent gated-delta attention and update caches.
   if (attn_metadata.is_prefill) {
+    torch::Tensor beta = torch::sigmoid(b).contiguous();
+    torch::Tensor a_plus_dt = a.to(torch::kFloat32) + dt_bias_.view({1, 1, -1});
+    torch::Tensor g =
+        -A_log_.exp().view({1, 1, -1}) *
+        torch::nn::functional::softplus(
+            a_plus_dt,
+            torch::nn::functional::SoftplusFuncOptions().beta(1.0f).threshold(
+                20.0f));
+    g = g.contiguous();
+
+    torch::Tensor initial_state =
+        ssm_cache.index_select(0, cache_indices).contiguous();
+    initial_state.index_put_({torch::logical_not(has_initial_state)}, 0);
+    torch::Tensor last_recurrent_state;
+    xllm::kernel::ChunkGatedDeltaRuleParams chunk_params;
+    chunk_params.q = processed_q;
+    chunk_params.k = processed_k;
+    chunk_params.v = processed_v;
+    chunk_params.g = g;
+    chunk_params.beta = beta;
+    chunk_params.seq_lens = attn_metadata.q_seq_lens;
+    chunk_params.chunk_size = 64;
+    chunk_params.initial_state = initial_state;
+    chunk_params.output_final_state = true;
+    chunk_params.use_qk_l2norm_in_kernel = true;
     std::tie(core_attn_out, last_recurrent_state) =
-        torch_chunk_gated_delta_rule(
-            processed_q, processed_k, processed_v, g, beta);
-    ssm_cache.index_put_({input_params.block_tables.select(1, 0)},
+        xllm::kernel::chunk_gated_delta_rule(chunk_params);
+    ssm_cache.index_put_({cache_indices},
                          last_recurrent_state.to(ssm_cache.dtype()));
   } else {
-    auto ssm_state = torch::index_select(
-        ssm_cache, 0, attn_metadata.block_table.select(1, 0));
-    std::tie(core_attn_out, last_recurrent_state) =
-        torch_recurrent_gated_delta_rule(
-            processed_q, processed_k, processed_v, g, beta, ssm_state);
-    ssm_cache.index_put_({attn_metadata.block_table.select(1, 0)},
-                         last_recurrent_state.to(ssm_cache.dtype()));
+    xllm::kernel::FusedSigmoidGatingDeltaRuleUpdateParams recurrent_params;
+    recurrent_params.A_log = A_log_.contiguous();
+    recurrent_params.a = a.contiguous();
+    recurrent_params.dt_bias = dt_bias_.contiguous();
+    recurrent_params.softplus_beta = 1.0f;
+    recurrent_params.softplus_threshold = 20.0f;
+    recurrent_params.q = processed_q.contiguous();
+    recurrent_params.k = processed_k.contiguous();
+    recurrent_params.v = processed_v.contiguous();
+    recurrent_params.b = b.contiguous();
+    recurrent_params.initial_state_source = ssm_cache;
+    recurrent_params.initial_state_indices = cache_indices;
+    recurrent_params.use_qk_l2norm_in_kernel = true;
+    recurrent_params.cu_seqlens = attn_metadata.q_cu_seq_lens;
+    core_attn_out =
+        xllm::kernel::fused_sigmoid_gating_delta_rule_update(recurrent_params);
   }
 
   auto z_reshaped = z.view({-1, z.size(-1)});
@@ -446,8 +232,7 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
   // Project the normalized attention output back to hidden size.
   auto rearranged_norm = rearrange_merge(norm_out);
   rearranged_norm = reshape_qkvz_unpad(attn_metadata, rearranged_norm);
-  auto attn_output = o_proj_->forward(rearranged_norm);
-  return attn_output;
+  return o_proj_->forward(rearranged_norm);
 }
 
 torch::Tensor Qwen3GatedDeltaNetBaseImpl::reshape_qkvz_unpad(

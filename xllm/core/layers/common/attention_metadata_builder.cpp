@@ -34,7 +34,7 @@ AttentionMetadata build_attention_metadata(
   // MLA mode still affects which shared tensors must be materialized for
   // attention execution, but the flag itself is no longer carried in metadata.
   AttentionMetadata attn_metadata;
-  attn_metadata.q_cu_seq_lens = params.q_seq_lens;
+  attn_metadata.q_cu_seq_lens = params.q_cu_seq_lens;
   attn_metadata.kv_cu_seq_lens = params.kv_seq_lens;
   attn_metadata.max_query_len = params.q_max_seq_len;
   attn_metadata.max_seq_len = params.kv_max_seq_len;
