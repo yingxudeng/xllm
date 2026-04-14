@@ -18,6 +18,7 @@ limitations under the License.
 #if defined(USE_MLU)
 #include "mlu/mlu_ops_api.h"
 #elif defined(USE_NPU)
+#include "core/kernels/npu/tilelang/tilelang_ops_api.h"
 #include "npu/npu_ops_api.h"
 #include "triton_npu/torch_api/triton_ops_api.h"
 #elif defined(USE_CUDA)
@@ -788,12 +789,18 @@ std::tuple<torch::Tensor, torch::Tensor> fp8_scaled_quantize(
 std::pair<torch::Tensor, torch::Tensor> fused_gdn_gating(
     FusedGdnGatingParams& params) {
 #if defined(USE_NPU)
-  return npu::npu_fused_gdn_gating(params.A_log,
-                                   params.a,
-                                   params.b,
-                                   params.dt_bias,
-                                   params.beta,
-                                   params.threshold);
+  return npu::tilelang::fused_gdn_gating(params.A_log,
+                                         params.a,
+                                         params.b,
+                                         params.dt_bias,
+                                         params.beta,
+                                         params.threshold);
+  // return npu::npu_fused_gdn_gating(params.A_log,
+  //                                  params.a,
+  //                                  params.b,
+  //                                  params.dt_bias,
+  //                                  params.beta,
+  //                                  params.threshold);
 #else
   NOT_IMPLEMENTED();
 #endif
