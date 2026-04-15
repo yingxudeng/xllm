@@ -145,6 +145,12 @@ TEST_F(TileLangFusedGdnGatingWrapperTest, MatchesTorchReference) {
           .seed = 106,
       },
       {
+          .name = "chunked_b8192_h32",
+          .num_batches = 8192,
+          .num_heads = 32,
+          .seed = 108,
+      },
+      {
           .name = "custom_beta2_threshold0p5_b33_h64",
           .num_batches = 33,
           .num_heads = 64,
