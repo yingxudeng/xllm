@@ -65,6 +65,6 @@ cc_library(
     $<$<BOOL:${USE_MUSA}>:musa_layers>
 )
 
-if(USE_MLU)
+if(USE_MLU OR USE_NPU)
   add_subdirectory(tests)
 endif()

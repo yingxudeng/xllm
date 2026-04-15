@@ -66,6 +66,22 @@ struct XAttentionTwoStageDecodeCache {
 // KV cache indices, plan_info). Use
 // AttentionMetadataBuilder to build instances from ModelInputParams.
 struct AttentionMetadata {
+  struct GatedDeltaNetMetadata {
+    int32_t num_non_spec_prefills = 0;
+    int32_t num_non_spec_prefill_tokens = 0;
+    int32_t num_decodes = 0;
+    int32_t max_non_spec_query_len = 0;
+    torch::Tensor non_spec_prefill_token_indices;
+    torch::Tensor decode_token_indices;
+    torch::Tensor non_spec_query_start_loc_host;
+    torch::Tensor non_spec_query_start_loc;
+    torch::Tensor non_spec_state_indices_host;
+    torch::Tensor non_spec_state_indices;
+    torch::Tensor decode_state_indices;
+    torch::Tensor has_initial_state_host;
+    torch::Tensor has_initial_state;
+  };
+
   torch::Tensor q_cu_seq_lens;
   torch::Tensor kv_cu_seq_lens;
   torch::Tensor kv_seq_lens;
@@ -145,6 +161,7 @@ struct AttentionMetadata {
 #if defined(USE_NPU)
   // for npu
   torch::Tensor kv_seq_lens_host;
+  std::optional<GatedDeltaNetMetadata> gated_delta_net_metadata;
   // For ACL graph execution - tiling data for CustomPagedAttention.
   // If defined, use this instead of kv_seq_lens_host to avoid .to(kCPU)
   // operations that break ACL graph capture.

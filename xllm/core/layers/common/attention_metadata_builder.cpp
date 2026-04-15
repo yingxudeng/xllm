@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "attention_metadata_builder.h"
 
+#include <algorithm>
 #include <numeric>
 
 #include "attention_metadata.h"
@@ -26,9 +27,107 @@ namespace xllm::layer {
 
 namespace {
 
+AttentionMetadata::GatedDeltaNetMetadata build_gated_delta_net_metadata(
+    const ModelInputParams& params) {
+  CHECK(params.block_tables.defined())
+      << "GatedDeltaNet metadata requires block_tables.";
+  CHECK_EQ(params.q_seq_lens_vec.size(),
+           static_cast<size_t>(params.num_sequences))
+      << "q_seq_lens_vec size must match num_sequences.";
+  CHECK_EQ(params.kv_cache_tokens_nums_host.size(),
+           static_cast<size_t>(params.num_sequences))
+      << "kv_cache_tokens_nums_host size must match num_sequences.";
+
+  std::vector<int64_t> non_spec_prefill_token_indices_vec;
+  std::vector<int64_t> decode_token_indices_vec;
+  std::vector<int32_t> non_spec_query_start_loc_host_vec;
+  std::vector<int32_t> non_spec_state_indices_vec;
+  std::vector<int32_t> decode_state_indices_vec;
+  std::vector<uint8_t> has_initial_state_host_vec;
+  non_spec_query_start_loc_host_vec.reserve(
+      static_cast<size_t>(params.num_sequences) + 1);
+  non_spec_query_start_loc_host_vec.emplace_back(0);
+
+  torch::Tensor state_anchors = params.block_tables.select(1, 0).contiguous();
+
+  int32_t token_offset = 0;
+  int32_t num_non_spec_prefill_tokens = 0;
+  int32_t max_non_spec_query_len = 0;
+  for (int32_t seq_idx = 0; seq_idx < params.num_sequences; ++seq_idx) {
+    const int32_t q_seq_len =
+        static_cast<int32_t>(params.q_seq_lens_vec[seq_idx]);
+    if (q_seq_len <= 0) {
+      continue;
+    }
+
+    if (q_seq_len > 1) {
+      non_spec_prefill_token_indices_vec.reserve(
+          non_spec_prefill_token_indices_vec.size() +
+          static_cast<size_t>(q_seq_len));
+      for (int32_t token_idx = 0; token_idx < q_seq_len; ++token_idx) {
+        non_spec_prefill_token_indices_vec.emplace_back(token_offset +
+                                                        token_idx);
+      }
+      non_spec_query_start_loc_host_vec.emplace_back(
+          non_spec_query_start_loc_host_vec.back() + q_seq_len);
+      non_spec_state_indices_vec.emplace_back(
+          state_anchors[seq_idx].item<int32_t>());
+      has_initial_state_host_vec.emplace_back(
+          static_cast<uint8_t>(params.kv_cache_tokens_nums_host[seq_idx] > 0));
+      num_non_spec_prefill_tokens += q_seq_len;
+      max_non_spec_query_len = std::max(max_non_spec_query_len, q_seq_len);
+    } else {
+      decode_token_indices_vec.emplace_back(token_offset);
+      decode_state_indices_vec.emplace_back(
+          state_anchors[seq_idx].item<int32_t>());
+    }
+    token_offset += q_seq_len;
+  }
+
+  torch::Device meta_device = params.block_tables.device();
+  torch::TensorOptions int32_cpu_options =
+      torch::TensorOptions().device(torch::kCPU).dtype(torch::kInt32);
+  torch::TensorOptions int32_device_options =
+      torch::TensorOptions().device(meta_device).dtype(torch::kInt32);
+  torch::TensorOptions int64_device_options =
+      torch::TensorOptions().device(meta_device).dtype(torch::kInt64);
+
+  AttentionMetadata::GatedDeltaNetMetadata gdn_metadata;
+  gdn_metadata.num_non_spec_prefills =
+      static_cast<int32_t>(non_spec_state_indices_vec.size());
+  gdn_metadata.num_non_spec_prefill_tokens = num_non_spec_prefill_tokens;
+  gdn_metadata.num_decodes =
+      static_cast<int32_t>(decode_state_indices_vec.size());
+  gdn_metadata.max_non_spec_query_len = max_non_spec_query_len;
+  gdn_metadata.non_spec_prefill_token_indices =
+      torch::tensor(non_spec_prefill_token_indices_vec, int64_device_options);
+  gdn_metadata.decode_token_indices =
+      torch::tensor(decode_token_indices_vec, int64_device_options);
+  gdn_metadata.non_spec_query_start_loc_host =
+      torch::tensor(non_spec_query_start_loc_host_vec, int32_cpu_options);
+  gdn_metadata.non_spec_query_start_loc =
+      gdn_metadata.non_spec_query_start_loc_host.to(meta_device,
+                                                    /*non_blocking=*/false);
+  gdn_metadata.non_spec_state_indices_host =
+      torch::tensor(non_spec_state_indices_vec, int32_cpu_options);
+  gdn_metadata.non_spec_state_indices =
+      torch::tensor(non_spec_state_indices_vec, int32_device_options);
+  gdn_metadata.decode_state_indices =
+      torch::tensor(decode_state_indices_vec, int32_device_options);
+  gdn_metadata.has_initial_state_host =
+      torch::tensor(
+          has_initial_state_host_vec,
+          torch::TensorOptions().device(torch::kCPU).dtype(torch::kUInt8))
+          .to(torch::kBool);
+  gdn_metadata.has_initial_state = gdn_metadata.has_initial_state_host.to(
+      meta_device, /*non_blocking=*/false);
+  return gdn_metadata;
+}
+
 AttentionMetadata build_attention_metadata(
     const ModelInputParams& params,
     bool enable_mla,
+    bool build_gdn_metadata,
     const std::string& compute_dtype,
     const std::optional<torch::Tensor>& attn_mask) {
   // MLA mode still affects which shared tensors must be materialized for
@@ -93,6 +192,10 @@ AttentionMetadata build_attention_metadata(
   if (!params.kv_seq_lens_vec.empty()) {
     attn_metadata.kv_seq_lens_host =
         torch::tensor(params.kv_seq_lens_vec, torch::kInt);
+  }
+  if (build_gdn_metadata) {
+    attn_metadata.gated_delta_net_metadata =
+        build_gated_delta_net_metadata(params);
   }
 #endif
   attn_metadata.is_chunked_prefill =
@@ -212,8 +315,11 @@ AttentionMetadata AttentionMetadataBuilder::build(
     const ModelInputParams& params,
     const std::string& compute_dtype,
     const std::optional<torch::Tensor>& attn_mask) {
-  return build_attention_metadata(
-      params, params.enable_mla, compute_dtype, attn_mask);
+  return build_attention_metadata(params,
+                                  params.enable_mla,
+                                  /*build_gdn_metadata=*/false,
+                                  compute_dtype,
+                                  attn_mask);
 }
 
 AttentionMetadata AttentionMetadataBuilder::build(
@@ -222,7 +328,11 @@ AttentionMetadata AttentionMetadataBuilder::build(
     const std::string& compute_dtype,
     const std::optional<torch::Tensor>& attn_mask) {
   return build_attention_metadata(
-      params, model_args.enable_mla(), compute_dtype, attn_mask);
+      params,
+      model_args.enable_mla(),
+      /*build_gdn_metadata=*/has_linear_attention_layers(model_args),
+      compute_dtype,
+      attn_mask);
 }
 
 }  // namespace xllm::layer

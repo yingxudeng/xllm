@@ -64,76 +64,81 @@ Qwen3_5GatedDeltaNetImpl::Qwen3_5GatedDeltaNetImpl(
 torch::Tensor Qwen3_5GatedDeltaNetImpl::merge_qkvz_from_split_activations(
     const torch::Tensor& qkv,
     const torch::Tensor& z) const {
-  CHECK_EQ(qkv.dim(), 3) << "Expected qkv activation to be 3D, got "
-                         << qkv.sizes();
-  CHECK_EQ(z.dim(), 3) << "Expected z activation to be 3D, got " << z.sizes();
-  CHECK_EQ(qkv.size(0), z.size(0)) << "qkv/z batch size mismatch.";
-  CHECK_EQ(qkv.size(1), z.size(1)) << "qkv/z sequence size mismatch.";
-  CHECK_EQ(qkv.size(2), (2 * k_size_ + v_size_) / tp_size_)
+  CHECK(qkv.dim() == 2 || qkv.dim() == 3)
+      << "Expected qkv activation to be 2D/3D, got " << qkv.sizes();
+  CHECK_EQ(qkv.dim(), z.dim()) << "qkv/z rank mismatch.";
+  CHECK_EQ(qkv.sizes().slice(0, qkv.dim() - 1), z.sizes().slice(0, z.dim() - 1))
+      << "qkv/z prefix shape mismatch.";
+  CHECK_EQ(qkv.size(-1), (2 * k_size_ + v_size_) / tp_size_)
       << "Unexpected qkv hidden size for Qwen3.5.";
-  CHECK_EQ(z.size(2), v_size_ / tp_size_)
+  CHECK_EQ(z.size(-1), v_size_ / tp_size_)
       << "Unexpected z hidden size for Qwen3.5.";
   CHECK_GT(num_k_heads_, 0) << "linear_num_key_heads must be positive.";
   CHECK_EQ(num_v_heads_ % num_k_heads_, 0)
       << "linear_num_value_heads must be divisible by linear_num_key_heads.";
 
-  const int64_t bs = qkv.size(0);
-  const int64_t seqlen = qkv.size(1);
   const int64_t local_k_heads = num_k_heads_ / tp_size_;
   const int64_t local_v_heads = num_v_heads_ / tp_size_;
   const int64_t num_v_heads_per_k = num_v_heads_ / num_k_heads_;
+  std::vector<int64_t> prefix_shape(qkv.sizes().begin(), qkv.sizes().end() - 1);
 
   auto qkv_split = torch::split(
-      qkv, {k_size_ / tp_size_, k_size_ / tp_size_, v_size_ / tp_size_}, 2);
-  auto q = qkv_split[0].view({bs, seqlen, local_k_heads, head_k_dim_});
-  auto k = qkv_split[1].view({bs, seqlen, local_k_heads, head_k_dim_});
-  auto v = qkv_split[2].view({bs, seqlen, local_v_heads, head_v_dim_});
-  auto z_view = z.view({bs, seqlen, local_v_heads, head_v_dim_});
+      qkv, {k_size_ / tp_size_, k_size_ / tp_size_, v_size_ / tp_size_}, -1);
+  auto q_shape = prefix_shape;
+  q_shape.push_back(local_k_heads);
+  q_shape.push_back(head_k_dim_);
+  auto v_shape = prefix_shape;
+  v_shape.push_back(local_v_heads);
+  v_shape.push_back(head_v_dim_);
+  auto merged_v_shape = prefix_shape;
+  merged_v_shape.push_back(local_k_heads);
+  merged_v_shape.push_back(num_v_heads_per_k * head_v_dim_);
+  auto out_shape = prefix_shape;
+  out_shape.push_back(-1);
 
-  v = v.view({bs, seqlen, local_k_heads, num_v_heads_per_k * head_v_dim_});
-  z_view =
-      z_view.view({bs, seqlen, local_k_heads, num_v_heads_per_k * head_v_dim_});
-
-  return torch::cat({q, k, v, z_view}, -1).view({bs, seqlen, -1}).contiguous();
+  auto q = qkv_split[0].view(q_shape);
+  auto k = qkv_split[1].view(q_shape);
+  auto v = qkv_split[2].view(v_shape).view(merged_v_shape);
+  auto z_view = z.view(v_shape).view(merged_v_shape);
+  return torch::cat({q, k, v, z_view}, -1).view(out_shape).contiguous();
 }
 
 torch::Tensor Qwen3_5GatedDeltaNetImpl::merge_ba_from_split_activations(
     const torch::Tensor& b,
     const torch::Tensor& a) const {
-  CHECK_EQ(b.dim(), 3) << "Expected b activation to be 3D, got " << b.sizes();
-  CHECK_EQ(a.dim(), 3) << "Expected a activation to be 3D, got " << a.sizes();
-  CHECK_EQ(b.size(0), a.size(0)) << "b/a batch size mismatch.";
-  CHECK_EQ(b.size(1), a.size(1)) << "b/a sequence size mismatch.";
-  CHECK_EQ(b.size(2), num_v_heads_ / tp_size_)
+  CHECK(b.dim() == 2 || b.dim() == 3)
+      << "Expected b activation to be 2D/3D, got " << b.sizes();
+  CHECK_EQ(b.dim(), a.dim()) << "b/a rank mismatch.";
+  CHECK_EQ(b.sizes().slice(0, b.dim() - 1), a.sizes().slice(0, a.dim() - 1))
+      << "b/a prefix shape mismatch.";
+  CHECK_EQ(b.size(-1), num_v_heads_ / tp_size_)
       << "Unexpected b hidden size for Qwen3.5.";
-  CHECK_EQ(a.size(2), num_v_heads_ / tp_size_)
+  CHECK_EQ(a.size(-1), num_v_heads_ / tp_size_)
       << "Unexpected a hidden size for Qwen3.5.";
   CHECK_GT(num_k_heads_, 0) << "linear_num_key_heads must be positive.";
   CHECK_EQ(num_v_heads_ % num_k_heads_, 0)
       << "linear_num_value_heads must be divisible by linear_num_key_heads.";
 
-  const int64_t bs = b.size(0);
-  const int64_t seqlen = b.size(1);
   const int64_t local_k_heads = num_k_heads_ / tp_size_;
   const int64_t num_v_heads_per_k = num_v_heads_ / num_k_heads_;
+  std::vector<int64_t> prefix_shape(b.sizes().begin(), b.sizes().end() - 1);
+  auto split_shape = prefix_shape;
+  split_shape.push_back(local_k_heads);
+  split_shape.push_back(num_v_heads_per_k);
+  auto out_shape = prefix_shape;
+  out_shape.push_back(-1);
 
-  auto b_view = b.view({bs, seqlen, local_k_heads, num_v_heads_per_k});
-  auto a_view = a.view({bs, seqlen, local_k_heads, num_v_heads_per_k});
-  return torch::cat({b_view, a_view}, -1).view({bs, seqlen, -1}).contiguous();
+  auto b_view = b.view(split_shape);
+  auto a_view = a.view(split_shape);
+  return torch::cat({b_view, a_view}, -1).view(out_shape).contiguous();
 }
 
 std::pair<torch::Tensor, torch::Tensor>
-Qwen3_5GatedDeltaNetImpl::project_padded_inputs(
-    const torch::Tensor& hidden_states,
-    const AttentionMetadata& attn_metadata) {
-  auto qkv = reshape_qkvz_with_pad(attn_metadata,
-                                   in_proj_qkv_->forward(hidden_states));
-  auto z_proj =
-      reshape_qkvz_with_pad(attn_metadata, in_proj_z_->forward(hidden_states));
-  auto b_proj =
-      reshape_qkvz_with_pad(attn_metadata, in_proj_b_->forward(hidden_states));
-  auto a_proj =
-      reshape_qkvz_with_pad(attn_metadata, in_proj_a_->forward(hidden_states));
+Qwen3_5GatedDeltaNetImpl::project_inputs(const torch::Tensor& hidden_states) {
+  auto qkv = in_proj_qkv_->forward(hidden_states);
+  auto z_proj = in_proj_z_->forward(hidden_states);
+  auto b_proj = in_proj_b_->forward(hidden_states);
+  auto a_proj = in_proj_a_->forward(hidden_states);
   return {merge_qkvz_from_split_activations(qkv, z_proj),
           merge_ba_from_split_activations(b_proj, a_proj)};
 }
