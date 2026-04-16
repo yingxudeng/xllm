@@ -1362,6 +1362,22 @@ struct CausalConv1dUpdateParams {
   bool validate_data = false;
 };
 
+// NPU Causal Conv1d Update v2 parameters
+struct CausalConv1dUpdateV2Params {
+  torch::Tensor x;
+  torch::Tensor conv_state;
+  torch::Tensor weight;
+  bool activation = true;
+  std::optional<torch::Tensor> bias = std::nullopt;
+  std::optional<torch::Tensor> conv_state_indices = std::nullopt;
+  std::optional<torch::Tensor> query_start_loc = std::nullopt;
+  int32_t max_query_len = -1;
+  int32_t pad_slot_id = -1;
+  std::optional<torch::Tensor> block_idx_last_scheduled_token;
+  std::optional<torch::Tensor> initial_state_idx;
+  bool validate_data = false;
+};
+
 struct GatedLayerNormParams {
   torch::Tensor x;
   torch::Tensor weight;

@@ -939,6 +939,26 @@ torch::Tensor causal_conv1d_update(CausalConv1dUpdateParams& params) {
 #endif
 }
 
+torch::Tensor causal_conv1d_update_v2(CausalConv1dUpdateV2Params& params) {
+#if defined(USE_NPU)
+  return npu::npu_causal_conv1d_update_v2(params.x,
+                                          params.conv_state,
+                                          params.weight,
+                                          params.activation,
+                                          params.bias,
+                                          params.conv_state_indices,
+                                          params.query_start_loc,
+                                          params.max_query_len,
+                                          params.pad_slot_id,
+                                          params.block_idx_last_scheduled_token,
+                                          params.initial_state_idx,
+                                          params.validate_data);
+
+#else
+  NOT_IMPLEMENTED();
+#endif
+}
+
 torch::Tensor gated_layer_norm(GatedLayerNormParams& params) {
 #if defined(USE_NPU)
   return npu::layer_norm_fwd(params.x,
