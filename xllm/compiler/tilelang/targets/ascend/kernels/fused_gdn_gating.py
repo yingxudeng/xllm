@@ -18,7 +18,7 @@ from compiler.tilelang.common.spec import (
 
 DEFAULT_NUM_HEADS = 32
 DEFAULT_DTYPE = "bf16"
-DEFAULT_MAX_BATCH = 4096
+DEFAULT_MAX_BATCH = 262144
 DEFAULT_MAX_HEADS = 128
 REF_CHECK_NUM_BATCHES = 16
 REF_CHECK_NUM_HEADS = (1, 16, 32, 48, 64, 128)
@@ -55,6 +55,33 @@ def _align_count_to_vector_bytes(count: int, dtype: str) -> int:
     return ((count + elems_per_iter - 1) // elems_per_iter) * elems_per_iter
 
 
+UB_BUDGET_BYTES = 64 * 1024
+
+
+def _compute_rows_per_iter(num_heads: int) -> int:
+    """Compute how many rows to process per loop iteration based on UB budget."""
+    ub_dim = _align_count_to_vector_bytes(num_heads, "float32")
+    cmp_mask_bytes = ub_dim // 8
+    shared_bytes = 1 * ub_dim * 4  # A_log_ub (1, dim) f32
+    per_row_bytes = (
+        2 * ub_dim * 4        # neg_exp_A_ub, dt_bias_ub (f32)
+        + 2 * ub_dim * 2      # a_half_ub, b_half_ub (bf16)
+        + 5 * ub_dim * 4      # x, beta_x, softplus_abs, softplus_tmp, beta_fp32 (f32)
+        + 1 * ub_dim * 1      # sigmoid_tmp (u8)
+        + 1 * cmp_mask_bytes  # softplus_cmp_mask (u8)
+    )
+    max_rows = (UB_BUDGET_BYTES - shared_bytes) // per_row_bytes
+    if max_rows >= 16:
+        return 16
+    if max_rows >= 8:
+        return 8
+    if max_rows >= 4:
+        return 4
+    if max_rows >= 2:
+        return 2
+    return 1
+
+
 def build_fused_gdn_gating_kernel(
     *,
     batch_size: int,
@@ -77,8 +104,6 @@ def build_fused_gdn_gating_kernel(
             f"batch_size({batch_size}) must be <= compile_max_batch({compile_max_batch})"
         )
 
-    # vec_core_num is hardware capability; block_num is launch-time choice.
-    # block_num = min(num_batches, full_vec_core_num).
     vec_core_num = MAX_VEC_CORE_NUM
     block_num = select_launch_block_num(
         num_batches=batch_size, vec_core_num=vec_core_num
@@ -90,6 +115,9 @@ def build_fused_gdn_gating_kernel(
     mask_dtype = "uint8"
     ub_tensor_dim = _align_count_to_vector_bytes(num_heads, acc_dtype)
     compare_select_mask_bytes = ub_tensor_dim // 8
+    rows_per_iter = _compute_rows_per_iter(num_heads)
+    multi_count = rows_per_iter * ub_tensor_dim
+    multi_cmp_mask = rows_per_iter * compare_select_mask_bytes
 
     @T.prim_func
     def fused_gdn_gating_kernel(
@@ -105,48 +133,89 @@ def build_fused_gdn_gating_kernel(
     ):
         with T.Kernel(cubecore_block_num, is_npu=True) as (cid, vid):
             task_id = cid * VEC_NUM + vid
-            block_m = (num_batches + task_num - 1) // task_num
-            row_start = task_id * block_m
-            rows_left = T.if_then_else(
-                num_batches > row_start, num_batches - row_start, 0
+            total_chunks = (num_batches + rows_per_iter - 1) // rows_per_iter
+            chunks_per_task = (total_chunks + task_num - 1) // task_num
+            chunk_start = task_id * chunks_per_task
+            chunks_left = T.if_then_else(
+                total_chunks > chunk_start,
+                total_chunks - chunk_start,
+                0,
             )
-            num_rows_per_vec = T.if_then_else(
-                rows_left < block_m,
-                rows_left,
-                block_m,
+            num_chunks = T.if_then_else(
+                chunks_left < chunks_per_task,
+                chunks_left,
+                chunks_per_task,
             )
 
             with T.Scope("V"):
                 A_log_ub = T.alloc_shared((1, ub_tensor_dim), acc_dtype)
-                neg_exp_A_ub = T.alloc_shared((1, ub_tensor_dim), acc_dtype)
-                dt_bias_ub = T.alloc_shared((1, ub_tensor_dim), acc_dtype)
-                a_half_ub = T.alloc_shared((1, ub_tensor_dim), input_dtype)
-                b_half_ub = T.alloc_shared((1, ub_tensor_dim), input_dtype)
-                x_ub = T.alloc_shared((1, ub_tensor_dim), acc_dtype)
-                beta_x_ub = T.alloc_shared((1, ub_tensor_dim), acc_dtype)
-                softplus_abs_ub = T.alloc_shared((1, ub_tensor_dim), acc_dtype)
-                softplus_tmp_ub = T.alloc_shared((1, ub_tensor_dim), acc_dtype)
-                beta_fp32_ub = T.alloc_shared((1, ub_tensor_dim), acc_dtype)
-                sigmoid_tmp_ub = T.alloc_ub((1, ub_tensor_dim), mask_dtype)
+                neg_exp_A_ub = T.alloc_shared(
+                    (rows_per_iter, ub_tensor_dim), acc_dtype
+                )
+                dt_bias_ub = T.alloc_shared(
+                    (rows_per_iter, ub_tensor_dim), acc_dtype
+                )
+                a_half_ub = T.alloc_shared(
+                    (rows_per_iter, ub_tensor_dim), input_dtype
+                )
+                b_half_ub = T.alloc_shared(
+                    (rows_per_iter, ub_tensor_dim), input_dtype
+                )
+                x_ub = T.alloc_shared(
+                    (rows_per_iter, ub_tensor_dim), acc_dtype
+                )
+                beta_x_ub = T.alloc_shared(
+                    (rows_per_iter, ub_tensor_dim), acc_dtype
+                )
+                softplus_abs_ub = T.alloc_shared(
+                    (rows_per_iter, ub_tensor_dim), acc_dtype
+                )
+                softplus_tmp_ub = T.alloc_shared(
+                    (rows_per_iter, ub_tensor_dim), acc_dtype
+                )
+                beta_fp32_ub = T.alloc_shared(
+                    (rows_per_iter, ub_tensor_dim), acc_dtype
+                )
+                sigmoid_tmp_ub = T.alloc_ub(
+                    (rows_per_iter, ub_tensor_dim), mask_dtype
+                )
                 softplus_cmp_mask_ub = T.alloc_ub(
-                    (1, compare_select_mask_bytes), mask_dtype
+                    (rows_per_iter, compare_select_mask_bytes), mask_dtype
                 )
 
+                # Preamble: load constants and replicate to R rows.
                 T.copy(A_log[0], A_log_ub[0, :num_heads])
+                T.tile.exp(A_log_ub, A_log_ub)
+                T.tile.mul(A_log_ub, A_log_ub, -1.0)
+
                 T.copy(dt_bias[0], dt_bias_ub[0, :num_heads])
-                T.tile.exp(neg_exp_A_ub, A_log_ub)
-                T.tile.mul(neg_exp_A_ub, neg_exp_A_ub, -1.0)
+                for r in T.serial(rows_per_iter):
+                    T.copy(
+                        A_log_ub[0, :ub_tensor_dim],
+                        neg_exp_A_ub[r, :ub_tensor_dim],
+                    )
+                    if r > 0:
+                        T.copy(
+                            dt_bias_ub[0, :ub_tensor_dim],
+                            dt_bias_ub[r, :ub_tensor_dim],
+                        )
 
-                for row_local in T.serial(num_rows_per_vec):
-                    row = row_start + row_local
+                for chunk_idx in T.serial(num_chunks):
+                    base_row = (chunk_start + chunk_idx) * rows_per_iter
 
-                    T.copy(a[row, 0], a_half_ub[0, :num_heads])
-                    T.copy(b[row, 0], b_half_ub[0, :num_heads])
+                    for r in T.serial(rows_per_iter):
+                        T.copy(
+                            a[base_row + r, 0],
+                            a_half_ub[r, :num_heads],
+                        )
+                        T.copy(
+                            b[base_row + r, 0],
+                            b_half_ub[r, :num_heads],
+                        )
 
-                    # x = a + dt_bias
-                    # beta_x = beta * x
-                    # softplus_tmp = log(1 + exp(-abs(beta_x)))
-                    T.tile.cast(x_ub, a_half_ub, "CAST_NONE", ub_tensor_dim)
+                    T.tile.cast(
+                        x_ub, a_half_ub, "CAST_NONE", multi_count
+                    )
                     T.tile.axpy(x_ub, dt_bias_ub, 1.0)
                     T.tile.mul(beta_x_ub, x_ub, softplus_beta)
                     T.tile.abs(softplus_abs_ub, beta_x_ub)
@@ -155,20 +224,17 @@ def build_fused_gdn_gating_kernel(
                     T.tile.add(beta_fp32_ub, beta_fp32_ub, 1.0)
                     T.tile.ln(softplus_tmp_ub, beta_fp32_ub)
 
-                    # Ascend compare/select consumes one 256B vector chunk per
-                    # iteration. For float32 this is 64 elements, so num_heads
-                    # < 64 still uses UB tensors aligned to the full chunk.
                     T.tile.compare(
                         softplus_cmp_mask_ub,
                         beta_x_ub,
                         softplus_threshold,
                         "GT",
                     )
-                    # softplus(x) = log(1 + exp(-abs(beta_x))) / beta
-                    #             + 0.5 * (beta_x + abs(beta_x)) / beta
                     T.tile.add(beta_x_ub, beta_x_ub, softplus_abs_ub)
                     T.tile.mul(beta_x_ub, beta_x_ub, 0.5 / softplus_beta)
-                    T.tile.axpy(beta_x_ub, softplus_tmp_ub, 1.0 / softplus_beta)
+                    T.tile.axpy(
+                        beta_x_ub, softplus_tmp_ub, 1.0 / softplus_beta
+                    )
                     T.tile.select(
                         beta_x_ub,
                         softplus_cmp_mask_ub,
@@ -177,17 +243,24 @@ def build_fused_gdn_gating_kernel(
                         "VSEL_TENSOR_TENSOR_MODE",
                     )
 
-                    # Reuse x_ub as b_fp32 and g output buffer, and reuse
-                    # b_half_ub as beta_half output buffer.
-                    T.tile.cast(x_ub, b_half_ub, "CAST_NONE", ub_tensor_dim)
+                    T.tile.cast(
+                        x_ub, b_half_ub, "CAST_NONE", multi_count
+                    )
                     T.tile.sigmoid(beta_fp32_ub, x_ub, sigmoid_tmp_ub)
                     T.tile.mul(x_ub, neg_exp_A_ub, beta_x_ub)
                     T.tile.cast(
-                        b_half_ub, beta_fp32_ub, "CAST_RINT", ub_tensor_dim
+                        b_half_ub, beta_fp32_ub, "CAST_RINT", multi_count
                     )
 
-                    T.copy(x_ub[0, :num_heads], g_out[row, 0])
-                    T.copy(b_half_ub[0, :num_heads], beta_out[row, 0])
+                    for r in T.serial(rows_per_iter):
+                        T.copy(
+                            x_ub[r, :num_heads],
+                            g_out[base_row + r, :],
+                        )
+                        T.copy(
+                            b_half_ub[r, :num_heads],
+                            beta_out[base_row + r, :],
+                        )
 
     return fused_gdn_gating_kernel
 

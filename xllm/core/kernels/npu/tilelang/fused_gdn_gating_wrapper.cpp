@@ -35,7 +35,7 @@ limitations under the License.
 namespace xllm::kernel::npu::tilelang {
 namespace {
 
-constexpr int64_t kCompileMaxBatch = 4096;
+constexpr int64_t kCompileMaxBatch = 262144;
 constexpr int64_t kCompileMaxHeads = 128;
 constexpr int32_t kBatchSpecializationMin = 2;
 constexpr int32_t kBatchSpecializationStep = 2;

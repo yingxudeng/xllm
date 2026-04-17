@@ -158,6 +158,18 @@ TEST_F(TileLangFusedGdnGatingWrapperTest, MatchesTorchReference) {
           .beta = 2.0F,
           .threshold = 0.5F,
       },
+      {
+          .name = "large_b65536_h32",
+          .num_batches = 65536,
+          .num_heads = 32,
+          .seed = 109,
+      },
+      {
+          .name = "large_b262144_h32",
+          .num_batches = 262144,
+          .num_heads = 32,
+          .seed = 110,
+      },
   };
 
   for (const auto& test_case : cases) {
