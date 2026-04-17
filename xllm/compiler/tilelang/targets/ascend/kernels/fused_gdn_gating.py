@@ -202,8 +202,18 @@ def build_fused_gdn_gating_kernel(
 
                 for chunk_idx in T.serial(num_chunks):
                     base_row = (chunk_start + chunk_idx) * rows_per_iter
+                    remaining = T.if_then_else(
+                        num_batches > base_row,
+                        num_batches - base_row,
+                        0,
+                    )
+                    valid_rows = T.if_then_else(
+                        remaining >= rows_per_iter,
+                        rows_per_iter,
+                        remaining,
+                    )
 
-                    for r in T.serial(rows_per_iter):
+                    for r in T.serial(valid_rows):
                         T.copy(
                             a[base_row + r, 0],
                             a_half_ub[r, :num_heads],
@@ -252,7 +262,7 @@ def build_fused_gdn_gating_kernel(
                         b_half_ub, beta_fp32_ub, "CAST_RINT", multi_count
                     )
 
-                    for r in T.serial(rows_per_iter):
+                    for r in T.serial(valid_rows):
                         T.copy(
                             x_ub[r, :num_heads],
                             g_out[base_row + r, :],
