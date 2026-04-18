@@ -94,7 +94,7 @@ echo ""
 echo "=== [3/4] Python perf compare (TileLang vs Triton) ==="
 python "$BENCH_DIR/$BENCH_SCRIPT" \
     --num-heads-list 32 128 \
-    --num-batches-list 16 48 1024 4096 16384 65536 262144 \
+    --num-batches-list 1 2 4 8 16 32 48 1024 4096 16384 65536 262144 \
     --compile-max-batch 262144 \
     --warmup-iters 20 \
     --measure-iters 200 \
@@ -109,7 +109,7 @@ python "$BENCH_DIR/kernel_msprof_task_duration.py" \
     --runner-script "$BENCH_DIR/$BENCH_SCRIPT" \
     --worker-cmd-template \
     "{python} {runner_script} --worker --num-heads-list {num_heads} --num-batches-list {num_batches} --compile-max-batch {compile_max_batch} --warmup-iters {warmup_iters} --measure-iters {measure_iters} --softplus-beta {softplus_beta} --softplus-threshold {softplus_threshold} --seed {seed}" \
-    --num-batches-list 16 48 1024 4096 16384 65536 262144 \
+    --num-batches-list 1 2 4 8 16 32 48 1024 4096 16384 65536 262144 \
     --num-heads-list 32 128 \
     --compile-max-batch 262144 \
     --warmup-iters 20 \

@@ -138,6 +138,14 @@ def build_fused_gdn_gating_kernel(
     else:
         ub_tensor_dim = _align_count_to_vector_bytes(num_heads, acc_dtype)
         rows_per_iter = rows_conservative
+
+    if batch_size <= rows_per_iter:
+        rows_per_iter = max(1, batch_size // block_num)
+        use_bulk_dma = _can_use_bulk_dma(num_heads, rows_per_iter)
+        if use_bulk_dma:
+            ub_tensor_dim = num_heads
+        else:
+            ub_tensor_dim = _align_count_to_vector_bytes(num_heads, acc_dtype)
     compare_select_mask_bytes = (ub_tensor_dim + 7) // 8
     multi_count = rows_per_iter * ub_tensor_dim
     multi_cmp_mask = rows_per_iter * compare_select_mask_bytes
