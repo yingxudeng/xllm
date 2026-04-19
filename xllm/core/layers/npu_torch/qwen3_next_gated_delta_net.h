@@ -43,9 +43,10 @@ class Qwen3NextGatedDeltaNetImpl : public Qwen3GatedDeltaNetBaseImpl {
                              const torch::TensorOptions& options,
                              bool init_projections);
 
-  std::pair<torch::Tensor, torch::Tensor> project_padded_inputs(
+  std::pair<torch::Tensor, torch::Tensor> project_inputs(
       const torch::Tensor& hidden_states,
-      const AttentionMetadata& attn_metadata) override;
+      const AttentionMetadata& attn_metadata,
+      const GdnPrefillMetadata* prefill_meta) override;
 
   virtual void load_projection_state_dict(const StateDict& state_dict);
   virtual void verify_projection_weights(const std::string& prefix) const;
