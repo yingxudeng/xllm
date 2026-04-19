@@ -20,6 +20,7 @@ limitations under the License.
 #include <string>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include "attention.h"
 #include "framework/kv_cache/kv_cache.h"
@@ -33,6 +34,13 @@ limitations under the License.
 
 namespace xllm {
 namespace layer {
+
+struct GdnPrefillMetadata {
+  torch::Tensor query_start_loc;  // [batch_size + 1], int64, cumulative, CPU
+  int64_t max_seq_len;
+  int64_t total_tokens;
+  int64_t batch_size;
+};
 
 class Qwen3GatedDeltaNetBaseImpl : public torch::nn::Module {
  public:
@@ -51,9 +59,15 @@ class Qwen3GatedDeltaNetBaseImpl : public torch::nn::Module {
                         const ModelInputParams& input_params);
 
  protected:
-  virtual std::pair<torch::Tensor, torch::Tensor> project_padded_inputs(
+  virtual std::pair<torch::Tensor, torch::Tensor> project_inputs(
       const torch::Tensor& hidden_states,
-      const AttentionMetadata& attn_metadata) = 0;
+      const AttentionMetadata& attn_metadata,
+      const GdnPrefillMetadata* prefill_meta) = 0;
+
+  GdnPrefillMetadata build_gdn_prefill_metadata(
+      const AttentionMetadata& attn_metadata,
+      const ModelInputParams& input_params,
+      int64_t total_tokens) const;
 
   void load_common_state_dict(const StateDict& state_dict);
   void verify_common_loaded_weights(const std::string& prefix) const;
