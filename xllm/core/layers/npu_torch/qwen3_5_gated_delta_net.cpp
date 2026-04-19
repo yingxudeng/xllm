@@ -123,17 +123,41 @@ torch::Tensor Qwen3_5GatedDeltaNetImpl::merge_ba_from_split_activations(
 }
 
 std::pair<torch::Tensor, torch::Tensor>
-Qwen3_5GatedDeltaNetImpl::project_padded_inputs(
+Qwen3_5GatedDeltaNetImpl::project_inputs(
     const torch::Tensor& hidden_states,
-    const AttentionMetadata& attn_metadata) {
-  auto qkv = reshape_qkvz_with_pad(attn_metadata,
-                                   in_proj_qkv_->forward(hidden_states));
-  auto z_proj =
-      reshape_qkvz_with_pad(attn_metadata, in_proj_z_->forward(hidden_states));
-  auto b_proj =
-      reshape_qkvz_with_pad(attn_metadata, in_proj_b_->forward(hidden_states));
-  auto a_proj =
-      reshape_qkvz_with_pad(attn_metadata, in_proj_a_->forward(hidden_states));
+    const AttentionMetadata& attn_metadata,
+    const GdnPrefillMetadata* prefill_meta) {
+  auto qkv = in_proj_qkv_->forward(hidden_states);
+  auto z_proj = in_proj_z_->forward(hidden_states);
+  auto b_proj = in_proj_b_->forward(hidden_states);
+  auto a_proj = in_proj_a_->forward(hidden_states);
+
+  if (prefill_meta != nullptr) {
+    int64_t n = hidden_states.size(0);
+    int64_t local_k_heads = num_k_heads_ / tp_size_;
+    int64_t local_v_heads = num_v_heads_ / tp_size_;
+    int64_t num_v_per_k = num_v_heads_ / num_k_heads_;
+
+    auto qkv_split = torch::split(
+        qkv, {k_size_ / tp_size_, k_size_ / tp_size_, v_size_ / tp_size_}, 1);
+    auto q = qkv_split[0].view({n, local_k_heads, head_k_dim_});
+    auto k = qkv_split[1].view({n, local_k_heads, head_k_dim_});
+    auto v = qkv_split[2].view({n, local_k_heads, num_v_per_k * head_v_dim_});
+    auto z_v = z_proj.view({n, local_k_heads, num_v_per_k * head_v_dim_});
+    auto merged_qkvz =
+        torch::cat({q, k, v, z_v}, -1).view({n, -1}).contiguous();
+
+    auto b_v = b_proj.view({n, local_k_heads, num_v_per_k});
+    auto a_v = a_proj.view({n, local_k_heads, num_v_per_k});
+    auto merged_ba = torch::cat({b_v, a_v}, -1).view({n, -1}).contiguous();
+
+    return {merged_qkvz, merged_ba};
+  }
+
+  qkv = reshape_qkvz_with_pad(attn_metadata, qkv);
+  z_proj = reshape_qkvz_with_pad(attn_metadata, z_proj);
+  b_proj = reshape_qkvz_with_pad(attn_metadata, b_proj);
+  a_proj = reshape_qkvz_with_pad(attn_metadata, a_proj);
   return {merge_qkvz_from_split_activations(qkv, z_proj),
           merge_ba_from_split_activations(b_proj, a_proj)};
 }
