@@ -1018,4 +1018,33 @@ std::pair<torch::Tensor, torch::Tensor> chunk_gated_delta_rule(
   NOT_IMPLEMENTED();
 #endif
 }
+
+torch::Tensor recurrent_gated_delta_rule(
+    const torch::Tensor& query,
+    const torch::Tensor& key,
+    const torch::Tensor& value,
+    torch::Tensor& state,
+    const std::optional<torch::Tensor>& beta,
+    const std::optional<double> scale,
+    const std::optional<torch::Tensor>& actual_seq_lengths,
+    const std::optional<torch::Tensor>& ssm_state_indices,
+    const std::optional<torch::Tensor>& num_accepted_tokens,
+    const std::optional<torch::Tensor>& g,
+    const std::optional<torch::Tensor>& gk) {
+#if defined(USE_NPU)
+  return npu::npu_recurrent_gated_delta_rule(query,
+                                             key,
+                                             value,
+                                             state,
+                                             beta,
+                                             scale,
+                                             actual_seq_lengths,
+                                             ssm_state_indices,
+                                             num_accepted_tokens,
+                                             g,
+                                             gk);
+#else
+  NOT_IMPLEMENTED();
+#endif
+}
 }  // namespace xllm::kernel
