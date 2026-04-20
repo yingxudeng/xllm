@@ -69,10 +69,12 @@ class Qwen3HybridModelImplBase : public Qwen3HybridModelModule {
             model_args_.hidden_size(), model_args_.rms_norm_eps(), options));
     embed_tokens_ =
         register_module("embed_tokens", layer::WordEmbedding(context));
-    int32_t mask_value = FLAGS_enable_chunked_prefill ? -9984 : 1;
     attn_mask_ = layer::AttentionMask(options.device(),
                                       options.dtype().toScalarType(),
-                                      /*mask_value=*/mask_value);
+                                      /*mask_value=*/1);
+    chunked_attn_mask_ = layer::AttentionMask(options.device(),
+                                              options.dtype().toScalarType(),
+                                              /*mask_value=*/-9984);
     dp_size_ = parallel_args.dp_size();
   }
 
@@ -140,7 +142,10 @@ class Qwen3HybridModelImplBase : public Qwen3HybridModelModule {
  protected:
   torch::Tensor build_attention_mask(const ModelInputParams& input_params) {
     max_seq_len_ = std::max(input_params.kv_max_seq_len, max_seq_len_);
-    if (!FLAGS_enable_chunked_prefill) {
+    bool use_chunked_mask =
+        input_params.batch_forward_type.is_chunked_prefill() ||
+        input_params.batch_forward_type.is_mixed();
+    if (!use_chunked_mask) {
       return attn_mask_.get_attn_mask(max_seq_len_, dtype_, device_);
     }
 
@@ -153,11 +158,11 @@ class Qwen3HybridModelImplBase : public Qwen3HybridModelModule {
     req_mask_vec.reserve(num_sequences);
     for (int32_t j = 0; j < num_sequences; ++j) {
       req_mask_vec.emplace_back(
-          attn_mask_.gen_append_mask(input_params.q_seq_lens_vec[j],
-                                     input_params.kv_seq_lens_vec[j],
-                                     max_seq_len_,
-                                     dtype_,
-                                     device_));
+          chunked_attn_mask_.gen_append_mask(input_params.q_seq_lens_vec[j],
+                                             input_params.kv_seq_lens_vec[j],
+                                             max_seq_len_,
+                                             dtype_,
+                                             device_));
     }
     return torch::cat(req_mask_vec, 0);
   }
@@ -171,6 +176,7 @@ class Qwen3HybridModelImplBase : public Qwen3HybridModelModule {
   torch::ScalarType dtype_ = torch::kFloat;
   layer::Qwen3NextRMSNorm norm_{nullptr};
   layer::AttentionMask attn_mask_;
+  layer::AttentionMask chunked_attn_mask_;
   layer::WordEmbedding embed_tokens_{nullptr};
 };
 

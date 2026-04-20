@@ -37,6 +37,7 @@ namespace layer {
 
 struct GdnPrefillMetadata {
   torch::Tensor query_start_loc;  // [batch_size + 1], int64, cumulative, CPU
+  std::vector<int32_t> history_lengths;
   int64_t max_seq_len;
   int64_t total_tokens;
   int64_t batch_size;
