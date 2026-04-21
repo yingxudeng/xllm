@@ -17,7 +17,6 @@ limitations under the License.
 
 #include <tuple>
 
-#include "torch_npu/csrc/aten/CustomFunctions.h"
 #include "xllm/core/kernels/ops_api.h"
 
 namespace xllm {
@@ -440,8 +439,7 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
     initial_state_tensor.fill_(0.0);
     chunk_gated_delta_params.initial_state = initial_state_tensor;
     chunk_gated_delta_params.output_final_state = true;
-    chunk_gated_delta_params.cu_seqlens =
-        attn_metadata.q_cu_seq_lens.to(torch::kInt32);
+    chunk_gated_delta_params.cu_seqlens = attn_metadata.q_cu_seq_lens;
     chunk_gated_delta_params.head_first = false;
     chunk_gated_delta_params.use_qk_l2norm_in_kernel = true;
     std::tie(core_attn_out, last_recurrent_state) =
