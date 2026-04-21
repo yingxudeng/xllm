@@ -170,8 +170,7 @@ WorkerImpl::WorkerImpl(const ParallelArgs& parallel_args,
 
 WorkerImpl::~WorkerImpl() = default;
 
-bool WorkerImpl::allocate_kv_cache(
-    const std::vector<std::vector<int64_t>>& kv_cache_shape) {
+bool WorkerImpl::allocate_kv_cache(const KVCacheShape& kv_cache_shape) {
   CHECK(model_ != nullptr) << "Model is not initialized.";
   CHECK(kv_caches_.empty()) << "KV caches are already initialized.";
   const auto& args = context_.get_model_args();
@@ -235,7 +234,7 @@ bool WorkerImpl::allocate_kv_cache(
 }
 
 bool WorkerImpl::allocate_kv_cache_with_transfer(
-    const std::vector<std::vector<int64_t>>& kv_cache_shape) {
+    const KVCacheShape& kv_cache_shape) {
   CHECK(model_ != nullptr) << "Model is not initialized.";
   CHECK(kv_caches_.empty()) << "KV caches are already initialized.";
 
@@ -254,9 +253,7 @@ bool WorkerImpl::allocate_kv_cache_with_transfer(
       dtype_,
       kv_caches_,
       num_layers,
-      [this](const std::vector<std::vector<int64_t>>& shape) {
-        this->allocate_kv_cache(shape);
-      },
+      [this](const KVCacheShape& shape) { this->allocate_kv_cache(shape); },
       enable_lighting_indexer,
       context_.get_model_args().model_type(),
       options_.model_id());
@@ -270,7 +267,7 @@ bool WorkerImpl::allocate_kv_cache_with_transfer(
 #if defined(USE_NPU)
 bool WorkerImpl::allocate_kv_cache_with_transfer(
     std::shared_ptr<KVCacheTransfer> kv_cache_transfer,
-    const std::vector<std::vector<int64_t>>& kv_cache_shape) {
+    const KVCacheShape& kv_cache_shape) {
   CHECK(model_ != nullptr) << "Model is not initialized.";
   CHECK(kv_caches_.empty()) << "KV caches are already initialized.";
 
@@ -1051,11 +1048,11 @@ void WorkerImpl::lazy_load_model(std::unique_ptr<ModelLoader> loader) {
 }
 
 folly::SemiFuture<bool> WorkerImpl::allocate_kv_cache_async(
-    const std::vector<std::vector<int64_t>>& kv_cache_shape) {
+    const KVCacheShape& kv_cache_shape) {
   folly::Promise<bool> promise;
   auto future = promise.getSemiFuture();
   threadpool_.schedule(
-      [this, &kv_cache_shape, promise = std::move(promise)]() mutable {
+      [this, kv_cache_shape, promise = std::move(promise)]() mutable {
         const bool success = this->allocate_kv_cache(kv_cache_shape);
         promise.setValue(success);
       });
@@ -1063,11 +1060,11 @@ folly::SemiFuture<bool> WorkerImpl::allocate_kv_cache_async(
 }
 
 folly::SemiFuture<bool> WorkerImpl::allocate_kv_cache_with_transfer_async(
-    const std::vector<std::vector<int64_t>>& kv_cache_shape) {
+    const KVCacheShape& kv_cache_shape) {
   folly::Promise<bool> promise;
   auto future = promise.getSemiFuture();
   threadpool_.schedule(
-      [this, &kv_cache_shape, promise = std::move(promise)]() mutable {
+      [this, kv_cache_shape, promise = std::move(promise)]() mutable {
         const bool success =
             this->allocate_kv_cache_with_transfer(kv_cache_shape);
         promise.setValue(success);

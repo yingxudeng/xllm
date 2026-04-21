@@ -11,6 +11,7 @@ cc_library(
     kv_cache.h
     kv_cache_event.h
     kv_cache_impl.h
+    kv_cache_shape.h
     kv_cache_utils.h
     linear_attention_kv_cache_impl.h
     quantized_kv_cache_impl.h
@@ -19,6 +20,7 @@ cc_library(
     indexed_kv_cache_impl.cpp
     kv_cache.cpp
     kv_cache_impl.cpp
+    kv_cache_shape.cpp
     kv_cache_utils.cpp
     linear_attention_kv_cache_impl.cpp
     quantized_kv_cache_impl.cpp

@@ -68,16 +68,14 @@ class MooncakeKVCacheTransferDefault final
                                  const torch::Device& device,
                                  const std::string& model_type);
 
-  void allocate_kv_cache(
-      std::vector<xllm::KVCache>& kv_caches,
-      const int64_t num_layers,
-      const std::vector<std::vector<int64_t>>& kv_cache_shape,
-      torch::ScalarType dtype) override;
+  void allocate_kv_cache(std::vector<xllm::KVCache>& kv_caches,
+                         const int64_t num_layers,
+                         const KVCacheShape& kv_cache_shape,
+                         torch::ScalarType dtype) override;
 
-  void register_kv_cache(
-      std::vector<xllm::KVCache>& kv_caches,
-      const std::vector<std::vector<int64_t>>& kv_cache_shape,
-      const torch::ScalarType dtype) override;
+  void register_kv_cache(std::vector<xllm::KVCache>& kv_caches,
+                         const KVCacheShape& kv_cache_shape,
+                         const torch::ScalarType dtype) override;
 
   bool pull_kv_blocks(const uint64_t src_cluster_id,
                       const std::string& src_addr,
@@ -92,11 +90,10 @@ class MooncakeKVCacheTransferDefault final
       bool is_spec_draft) override;
 
  private:
-  void allocate_kv_cache_impl(
-      std::vector<xllm::KVCache>& kv_caches,
-      int64_t num_layers,
-      const std::vector<std::vector<int64_t>>& kv_cache_shape,
-      torch::ScalarType dtype);
+  void allocate_kv_cache_impl(std::vector<xllm::KVCache>& kv_caches,
+                              int64_t num_layers,
+                              const KVCacheShape& kv_cache_shape,
+                              torch::ScalarType dtype);
 
   void add_buf(const torch::Tensor& tensor,
                std::vector<void*>& addrs,
@@ -122,16 +119,14 @@ class MooncakeKVCacheTransferXTensor final
 
   void set_model_id(const std::string& model_id) { model_id_ = model_id; }
 
-  void allocate_kv_cache(
-      std::vector<xllm::KVCache>& kv_caches,
-      const int64_t num_layers,
-      const std::vector<std::vector<int64_t>>& kv_cache_shape,
-      torch::ScalarType dtype) override;
+  void allocate_kv_cache(std::vector<xllm::KVCache>& kv_caches,
+                         const int64_t num_layers,
+                         const KVCacheShape& kv_cache_shape,
+                         torch::ScalarType dtype) override;
 
-  void register_kv_cache(
-      std::vector<xllm::KVCache>& kv_caches,
-      const std::vector<std::vector<int64_t>>& kv_cache_shape,
-      const torch::ScalarType dtype) override;
+  void register_kv_cache(std::vector<xllm::KVCache>& kv_caches,
+                         const KVCacheShape& kv_cache_shape,
+                         const torch::ScalarType dtype) override;
 
   bool pull_kv_blocks(const uint64_t src_cluster_id,
                       const std::string& src_addr,
@@ -146,11 +141,10 @@ class MooncakeKVCacheTransferXTensor final
       bool is_spec_draft) override;
 
  private:
-  void allocate_kv_cache_impl(
-      std::vector<xllm::KVCache>& kv_caches,
-      int64_t num_layers,
-      const std::vector<std::vector<int64_t>>& kv_cache_shape,
-      torch::ScalarType dtype);
+  void allocate_kv_cache_impl(std::vector<xllm::KVCache>& kv_caches,
+                              int64_t num_layers,
+                              const KVCacheShape& kv_cache_shape,
+                              torch::ScalarType dtype);
 
   // Register GlobalXTensor memory region.
   void register_kv_cache_impl();

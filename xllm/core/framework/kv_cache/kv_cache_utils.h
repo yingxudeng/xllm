@@ -38,6 +38,26 @@ limitations under the License.
 
 namespace xllm {
 
+class KVCacheShape;
+
+struct KVCacheCapacity {
+  PROPERTY(int64_t, n_blocks) = 0;
+  PROPERTY(int64_t, cache_size_in_bytes) = 0;
+  PROPERTY(int64_t, block_size) = 0;
+  PROPERTY(int64_t, slot_size) = 0;
+
+  // for index cache
+  PROPERTY(int64_t, index_slot_size) = 0;
+
+  // for linear attention
+  PROPERTY(int64_t, linear_slot_size) = 0;
+  PROPERTY(int64_t, linear_cache_size_in_bytes) = 0;
+  PROPERTY(int64_t, n_layers) = 0;
+  PROPERTY(int64_t, num_linear_state_blocks) = 0;
+  PROPERTY(int64_t, num_full_attention_layers) = 0;
+  PROPERTY(int64_t, num_linear_attention_layers) = 0;
+};
+
 struct KVCacheCreateOptions {
   PROPERTY(torch::Device, device) = torch::Device(torch::kCPU);
   // kvcache dtype for key/value cacahe, index cache
@@ -82,19 +102,19 @@ bool is_linear_attention_layer(int64_t layer_idx,
                                int64_t full_attention_interval);
 
 KVCacheTensors create_kv_cache_tensors(
-    const std::vector<std::vector<int64_t>>& kv_cache_shape,
+    const KVCacheShape& kv_cache_shape,
     const KVCacheCreateOptions& create_options);
 
 IndexedKVCacheTensors create_indexed_kv_cache_tensors(
-    const std::vector<std::vector<int64_t>>& kv_cache_shape,
+    const KVCacheShape& kv_cache_shape,
     const KVCacheCreateOptions& create_options);
 
 QuantizedKVCacheTensors create_quantized_kv_cache_tensors(
-    const std::vector<std::vector<int64_t>>& kv_cache_shape,
+    const KVCacheShape& kv_cache_shape,
     const KVCacheCreateOptions& create_options);
 
 LinearAttentionKVCacheTensors create_linear_attention_kv_cache_tensors(
-    const std::vector<std::vector<int64_t>>& kv_cache_shape,
+    const KVCacheShape& kv_cache_shape,
     const KVCacheCreateOptions& create_options);
 
 #if defined(USE_NPU)

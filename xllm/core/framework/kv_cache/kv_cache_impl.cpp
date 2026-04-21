@@ -15,18 +15,24 @@ limitations under the License.
 
 #include "framework/kv_cache/kv_cache_impl.h"
 
+#include "framework/kv_cache/kv_cache_shape.h"
 #include "framework/kv_cache/kv_cache_utils.h"
 #include "util/tensor_helper.h"
 
 namespace xllm {
 
 KVCacheImpl::KVCacheImpl(const KVCacheTensors& tensors)
-    : key_cache_(tensors.key_cache), value_cache_(tensors.value_cache) {}
+    : key_cache_(tensors.key_cache),
+      value_cache_(tensors.value_cache),
+      key_cache_shape_(get_tensor_shape(tensors.key_cache)),
+      value_cache_shape_(get_tensor_shape(tensors.value_cache)) {}
 
-KVCacheImpl::KVCacheImpl(
-    const std::vector<std::vector<int64_t>>& kv_cache_shape,
-    const KVCacheCreateOptions& create_options)
-    : KVCacheImpl(create_kv_cache_tensors(kv_cache_shape, create_options)) {}
+KVCacheImpl::KVCacheImpl(const KVCacheShape& kv_cache_shape,
+                         const KVCacheCreateOptions& create_options)
+    : KVCacheImpl(create_kv_cache_tensors(kv_cache_shape, create_options)) {
+  key_cache_shape_ = kv_cache_shape.key_cache_shape();
+  value_cache_shape_ = kv_cache_shape.value_cache_shape();
+}
 
 torch::Tensor KVCacheImpl::get_k_cache() const { return key_cache_; }
 
@@ -51,10 +57,11 @@ bool KVCacheImpl::empty() const {
 }
 
 std::vector<std::vector<int64_t>> KVCacheImpl::get_shapes() const {
-  std::vector<std::vector<int64_t>> tensor_shapes(2);
-  tensor_shapes[0] = get_tensor_shape(key_cache_);
-  tensor_shapes[1] = get_tensor_shape(value_cache_);
-  return tensor_shapes;
+  std::vector<std::vector<int64_t>> shapes;
+  shapes.reserve(2);
+  shapes.emplace_back(key_cache_shape_);
+  shapes.emplace_back(value_cache_shape_);
+  return shapes;
 }
 
 void KVCacheImpl::swap_blocks(torch::Tensor& src_tensor,

@@ -165,34 +165,14 @@ class Qwen2AttentionTest : public ::testing::Test {
                                  torch::Tensor value_cache,
                                  torch::Tensor key_cache_scale,
                                  torch::Tensor value_cache_scale) const {
-    std::vector<int64_t> key_cache_shape(key_cache.sizes().begin(),
-                                         key_cache.sizes().end());
-    std::vector<int64_t> value_cache_shape(value_cache.sizes().begin(),
-                                           value_cache.sizes().end());
-    std::vector<std::vector<int64_t>> kv_cache_shape = {key_cache_shape,
-                                                        value_cache_shape};
-
-    KVCacheCreateOptions create_options;
-    create_options.device(key_cache.device())
-        .dtype(key_cache.scalar_type())
-        .model_type(model_args_.model_type())
-        .enable_kv_cache_quant(true);
-
-    KVCache kv_cache(kv_cache_shape, create_options, /*layer_id=*/0);
-    kv_cache.get_k_cache().copy_(key_cache);
-    kv_cache.get_v_cache().copy_(value_cache);
-
-    std::optional<torch::Tensor> allocated_k_cache_scale =
-        kv_cache.get_k_cache_scale();
-    std::optional<torch::Tensor> allocated_v_cache_scale =
-        kv_cache.get_v_cache_scale();
-    CHECK(allocated_k_cache_scale.has_value())
-        << "Quantized KV cache must allocate key scale tensor.";
-    CHECK(allocated_v_cache_scale.has_value())
-        << "Quantized KV cache must allocate value scale tensor.";
-    allocated_k_cache_scale.value().copy_(key_cache_scale);
-    allocated_v_cache_scale.value().copy_(value_cache_scale);
-    return kv_cache;
+    return KVCache(QuantizedKVCacheTensors{
+        KVCacheTensors{
+            key_cache,
+            value_cache,
+        },
+        key_cache_scale,
+        value_cache_scale,
+    });
   }
 
   AttentionMetadata CreateAttentionMetadata(int64_t batch_size,

@@ -51,7 +51,7 @@ SpecKVCacheTransfer::SpecKVCacheTransfer(const std::string& device_ip,
 void SpecKVCacheTransfer::allocate_kv_cache(
     std::vector<xllm::KVCache>& kv_caches,
     const int64_t num_layers,
-    const std::vector<std::vector<int64_t>>& kv_cache_shape,
+    const KVCacheShape& kv_cache_shape,
     torch::ScalarType dtype) {
   allocate_kv_cache_internal(kv_caches,
                              num_layers,
@@ -65,7 +65,7 @@ void SpecKVCacheTransfer::allocate_kv_cache(
 void SpecKVCacheTransfer::allocate_kv_cache_spec(
     std::vector<xllm::KVCache>& kv_caches,
     const int64_t num_layers,
-    const std::vector<std::vector<int64_t>>& kv_cache_shape,
+    const KVCacheShape& kv_cache_shape,
     torch::ScalarType dtype) {
   allocate_kv_cache_internal(kv_caches,
                              num_layers,
@@ -78,11 +78,16 @@ void SpecKVCacheTransfer::allocate_kv_cache_spec(
 void SpecKVCacheTransfer::allocate_kv_cache_internal(
     std::vector<xllm::KVCache>& kv_caches,
     const int64_t num_layers,
-    const std::vector<std::vector<int64_t>>& kv_cache_shape,
+    const KVCacheShape& kv_cache_shape,
     torch::ScalarType dtype,
     bool is_spec,
     Cache& k_cache,
     Cache& v_cache) {
+  const std::vector<int64_t>& key_cache_shape =
+      kv_cache_shape.key_cache_shape();
+  const std::vector<int64_t>& value_cache_shape =
+      kv_cache_shape.value_cache_shape();
+
   if (is_spec) {
     spec_num_layers_ = num_layers;
   } else {
@@ -95,12 +100,12 @@ void SpecKVCacheTransfer::allocate_kv_cache_internal(
 
   // calculate the size of kv cache for each layer
   auto data_size = torch::elementSize(dtype);
-  int64_t k_cache_size_per_layer = std::accumulate(kv_cache_shape[0].begin(),
-                                                   kv_cache_shape[0].end(),
+  int64_t k_cache_size_per_layer = std::accumulate(key_cache_shape.begin(),
+                                                   key_cache_shape.end(),
                                                    data_size,
                                                    std::multiplies<int64_t>());
-  int64_t v_cache_size_per_layer = std::accumulate(kv_cache_shape[1].begin(),
-                                                   kv_cache_shape[1].end(),
+  int64_t v_cache_size_per_layer = std::accumulate(value_cache_shape.begin(),
+                                                   value_cache_shape.end(),
                                                    data_size,
                                                    std::multiplies<int64_t>());
 
@@ -133,9 +138,9 @@ void SpecKVCacheTransfer::allocate_kv_cache_internal(
           ? ACL_FORMAT_FRACTAL_NZ
           : ACL_FORMAT_ND;
   auto k_torch_tensors = convert_to_torch_tensor(
-      kv_cache_shape[0], dtype, k_cache.tensor_addrs, npu_format_type);
+      key_cache_shape, dtype, k_cache.tensor_addrs, npu_format_type);
   auto v_torch_tensors = convert_to_torch_tensor(
-      kv_cache_shape[1], dtype, v_cache.tensor_addrs, npu_format_type);
+      value_cache_shape, dtype, v_cache.tensor_addrs, npu_format_type);
   torch::Tensor key_cache, value_cache;
   for (int64_t i = 0; i < num_layers; ++i) {
     key_cache = k_torch_tensors[i];
@@ -147,7 +152,7 @@ void SpecKVCacheTransfer::allocate_kv_cache_internal(
   CacheDesc& k_cache_desc = k_cache.cache_desc;
   k_cache_desc.num_tensors = num_layers;
   k_cache_desc.data_type = ge_dtype;
-  k_cache_desc.shape = kv_cache_shape[0];
+  k_cache_desc.shape = key_cache_shape;
   auto ret = llm_data_dist_->RegisterKvCache(
       k_cache_desc, k_cache_addrs, {}, k_cache.cache_id);
   CHECK(ret == LLM_SUCCESS)
@@ -157,7 +162,7 @@ void SpecKVCacheTransfer::allocate_kv_cache_internal(
   CacheDesc& v_cache_desc = v_cache.cache_desc;
   v_cache_desc.num_tensors = num_layers;
   v_cache_desc.data_type = ge_dtype;
-  v_cache_desc.shape = kv_cache_shape[1];
+  v_cache_desc.shape = value_cache_shape;
   ret = llm_data_dist_->RegisterKvCache(
       v_cache_desc, v_cache_addrs, {}, v_cache.cache_id);
   CHECK(ret == LLM_SUCCESS)

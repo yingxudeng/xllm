@@ -25,6 +25,7 @@ limitations under the License.
 
 #include "common/global_flags.h"
 #include "common/metrics.h"
+#include "framework/kv_cache/kv_cache_shape.h"
 #include "framework/model/model_args.h"
 #include "framework/model_loader.h"
 #include "framework/parallel_state/parallel_state.h"
@@ -128,7 +129,7 @@ bool RecEngine::init_model() {
   return pipeline_->init_model_workers(model_path);
 }
 
-Engine::KVCacheCapacity RecEngine::estimate_kv_cache_capacity() {
+KVCacheCapacity RecEngine::estimate_kv_cache_capacity() {
   const int64_t max_cache_size = options_.max_cache_size();
   const double max_memory_utilization = options_.max_memory_utilization();
 
@@ -141,52 +142,44 @@ Engine::KVCacheCapacity RecEngine::estimate_kv_cache_capacity() {
   }
 
   KVCacheCapacity kv_cache_cap;
-  kv_cache_cap.cache_size_in_bytes = std::max(cache_size_in_bytes, int64_t(0));
-  CHECK_GT(kv_cache_cap.cache_size_in_bytes, 0)
+  kv_cache_cap.cache_size_in_bytes() =
+      std::max(cache_size_in_bytes, int64_t(0));
+  CHECK_GT(kv_cache_cap.cache_size_in_bytes(), 0)
       << "Available kv cache size must be greater than 0";
 
   // compute kv cache slot size
   const int64_t dtype_size = torch::scalarTypeToTypeMeta(dtype_).itemsize();
   const int64_t slot_size = 2 * dtype_size * head_dim_ * n_local_kv_heads_;
-  kv_cache_cap.slot_size = slot_size;
-  kv_cache_cap.n_layers = args_.n_layers();
+  kv_cache_cap.slot_size() = slot_size;
+  kv_cache_cap.n_layers() = args_.n_layers();
+  kv_cache_cap.block_size() = options_.block_size();
 
-  const int32_t block_size = options_.block_size();
+  const int64_t block_size = kv_cache_cap.block_size();
   const int64_t block_size_in_bytes = block_size * slot_size;
-  kv_cache_cap.n_blocks = kv_cache_cap.cache_size_in_bytes /
-                          (args_.n_layers() * block_size_in_bytes);
-  CHECK_GT(kv_cache_cap.n_blocks, 0) << "no n_blocks for kv cache";
+  kv_cache_cap.n_blocks() = kv_cache_cap.cache_size_in_bytes() /
+                            (args_.n_layers() * block_size_in_bytes);
+  CHECK_GT(kv_cache_cap.n_blocks(), 0) << "no n_blocks for kv cache";
 
   return kv_cache_cap;
 }
 
-bool RecEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
+bool RecEngine::allocate_kv_cache(const KVCacheCapacity& kv_cache_cap) {
   LOG(INFO) << "kv cache capacity: "
-            << "bytes: " << kv_cache_cap.cache_size_in_bytes
-            << ", blocks: " << kv_cache_cap.n_blocks
-            << ", slot_size: " << kv_cache_cap.slot_size;
+            << "bytes: " << kv_cache_cap.cache_size_in_bytes()
+            << ", blocks: " << kv_cache_cap.n_blocks()
+            << ", slot_size: " << kv_cache_cap.slot_size();
 
-  const int32_t block_size = options_.block_size();
+  const int32_t block_size = static_cast<int32_t>(kv_cache_cap.block_size());
+  const int64_t world_size = static_cast<int64_t>(pipeline_->num_workers());
 
   // init kv cache for each worker
-  std::vector<std::vector<int64_t>> kv_cache_shape;
-  kv_cache_shape.reserve(2);
-  kv_cache_shape.emplace_back(std::vector<int64_t>{
-      kv_cache_cap.n_blocks, block_size, n_local_kv_heads_, head_dim_});
-  kv_cache_shape.emplace_back(std::vector<int64_t>{
-      kv_cache_cap.n_blocks, block_size, n_local_kv_heads_, head_dim_});
-#if defined(USE_MLU)
-  for (auto& shape : kv_cache_shape) {
-    std::swap(shape[1], shape[2]);
-  }
-#endif
+  const KVCacheShape kv_cache_shape(kv_cache_cap, args_, world_size);
 
-  LOG(INFO) << "Initializing k cache with shape: [" << kv_cache_shape[0] << "]";
-  LOG(INFO) << "Initializing v cache with shape: [" << kv_cache_shape[1] << "]";
+  kv_cache_shape.print_shapes();
 
   // initialize block manager
   BlockManagerPool::Options options;
-  options.num_blocks(kv_cache_cap.n_blocks)
+  options.num_blocks(kv_cache_cap.n_blocks())
       .host_num_blocks(0)
       .block_size(block_size)
       .enable_prefix_cache(options_.enable_prefix_cache())
@@ -297,7 +290,7 @@ int64_t RecEngine::LlmRecEnginePipeline::estimate_min_available_memory() {
 }
 
 bool RecEngine::LlmRecEnginePipeline::allocate_kv_cache(
-    const std::vector<std::vector<int64_t>>& kv_cache_shape) {
+    const KVCacheShape& kv_cache_shape) {
   std::vector<folly::SemiFuture<bool>> futures;
   futures.reserve(engine_.worker_clients_.size());
   for (auto& worker : engine_.worker_clients_) {
@@ -613,7 +606,7 @@ int64_t RecEngine::OneRecEnginePipeline::estimate_min_available_memory() {
 }
 
 bool RecEngine::OneRecEnginePipeline::allocate_kv_cache(
-    const std::vector<std::vector<int64_t>>& kv_cache_shape) {
+    const KVCacheShape& kv_cache_shape) {
   std::vector<folly::SemiFuture<bool>> futures;
   futures.reserve(engine_.workers_.size());
   for (auto& worker : engine_.workers_) {
@@ -882,7 +875,7 @@ RecEngine::RecMultiRoundEnginePipeline::estimate_min_available_memory() {
 }
 
 bool RecEngine::RecMultiRoundEnginePipeline::allocate_kv_cache(
-    const std::vector<std::vector<int64_t>>& kv_cache_shape) {
+    const KVCacheShape& kv_cache_shape) {
   std::vector<folly::SemiFuture<bool>> futures;
   futures.reserve(engine_.workers_.size());
   for (auto& worker : engine_.workers_) {

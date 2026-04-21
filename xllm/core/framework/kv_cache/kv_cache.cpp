@@ -37,7 +37,7 @@ namespace xllm {
 namespace {
 
 std::unique_ptr<KVCacheImpl> create_kv_cache_impl(
-    const std::vector<std::vector<int64_t>>& kv_cache_shape,
+    const KVCacheShape& kv_cache_shape,
     const KVCacheCreateOptions& create_options,
     int64_t layer_id) {
   CHECK_GE(layer_id, 0) << "KV cache layer_id must be non-negative.";
@@ -82,7 +82,10 @@ KVCache::KVCache(const IndexedKVCacheTensors& tensors)
 KVCache::KVCache(const LinearAttentionKVCacheTensors& tensors)
     : impl_(std::make_unique<LinearAttentionKVCacheImpl>(tensors)) {}
 
-KVCache::KVCache(const std::vector<std::vector<int64_t>>& kv_cache_shape,
+KVCache::KVCache(const QuantizedKVCacheTensors& tensors)
+    : impl_(std::make_unique<QuantizedKVCacheImpl>(tensors)) {}
+
+KVCache::KVCache(const KVCacheShape& kv_cache_shape,
                  const KVCacheCreateOptions& create_options,
                  int64_t layer_id)
     : impl_(create_kv_cache_impl(kv_cache_shape, create_options, layer_id)) {}
@@ -117,7 +120,7 @@ void KVCache::swap_blocks(torch::Tensor& src_tensor,
 }
 
 void allocate_kv_caches(std::vector<KVCache>& kv_caches,
-                        const std::vector<std::vector<int64_t>>& kv_cache_shape,
+                        const KVCacheShape& kv_cache_shape,
                         const KVCacheCreateOptions& create_options) {
   CHECK(kv_caches.empty()) << "KV caches are already initialized.";
 
@@ -125,7 +128,15 @@ void allocate_kv_caches(std::vector<KVCache>& kv_caches,
   kv_caches.reserve(num_layers);
 
   if (create_options.enable_xtensor()) {
-    CHECK_EQ(kv_cache_shape.size(), 2)
+    CHECK(kv_cache_shape.has_key_cache_shape())
+        << "key_cache_shape must be initialized for XTensor mode.";
+    CHECK(kv_cache_shape.has_value_cache_shape())
+        << "value_cache_shape must be initialized for XTensor mode.";
+    CHECK(!kv_cache_shape.has_index_cache_shape())
+        << "Only support key and value cache for XTensor mode.";
+    CHECK(!kv_cache_shape.has_conv_cache_shape())
+        << "Only support key and value cache for XTensor mode.";
+    CHECK(!kv_cache_shape.has_ssm_cache_shape())
         << "Only support key and value cache for XTensor mode.";
     CHECK(!create_options.model_id().empty())
         << "model_id must not be empty for XTensor mode.";
@@ -135,12 +146,12 @@ void allocate_kv_caches(std::vector<KVCache>& kv_caches,
     XTensorAllocator& allocator = XTensorAllocator::get_instance();
     std::vector<torch::Tensor> k_tensors =
         allocator.create_k_tensors(create_options.model_id(),
-                                   kv_cache_shape[0],
+                                   kv_cache_shape.key_cache_shape(),
                                    create_options.dtype(),
                                    num_layers);
     std::vector<torch::Tensor> v_tensors =
         allocator.create_v_tensors(create_options.model_id(),
-                                   kv_cache_shape[1],
+                                   kv_cache_shape.value_cache_shape(),
                                    create_options.dtype(),
                                    num_layers);
 

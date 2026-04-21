@@ -24,11 +24,13 @@ limitations under the License.
 #include "framework/kv_cache/kv_cache_utils.h"
 namespace xllm {
 
+class KVCacheShape;
+
 class KVCacheImpl {
  public:
   KVCacheImpl() = default;
   explicit KVCacheImpl(const KVCacheTensors& tensors);
-  KVCacheImpl(const std::vector<std::vector<int64_t>>& kv_cache_shape,
+  KVCacheImpl(const KVCacheShape& kv_cache_shape,
               const KVCacheCreateOptions& create_options);
 
   virtual ~KVCacheImpl() = default;
@@ -51,6 +53,8 @@ class KVCacheImpl {
  protected:
   torch::Tensor key_cache_;
   torch::Tensor value_cache_;
+  std::vector<int64_t> key_cache_shape_;
+  std::vector<int64_t> value_cache_shape_;
 };
 
 }  // namespace xllm

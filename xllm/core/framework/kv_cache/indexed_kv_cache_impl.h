@@ -22,7 +22,7 @@ namespace xllm {
 class IndexedKVCacheImpl final : public KVCacheImpl {
  public:
   explicit IndexedKVCacheImpl(const IndexedKVCacheTensors& tensors);
-  IndexedKVCacheImpl(const std::vector<std::vector<int64_t>>& kv_cache_shape,
+  IndexedKVCacheImpl(const KVCacheShape& kv_cache_shape,
                      const KVCacheCreateOptions& create_options);
 
   torch::Tensor get_index_cache() const override;
@@ -38,6 +38,7 @@ class IndexedKVCacheImpl final : public KVCacheImpl {
 
  private:
   torch::Tensor index_cache_;
+  std::vector<int64_t> index_cache_shape_;
 };
 
 }  // namespace xllm

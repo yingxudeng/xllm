@@ -111,7 +111,7 @@ MooncakeKVCacheTransferDefault::MooncakeKVCacheTransferDefault(
 void MooncakeKVCacheTransferDefault::allocate_kv_cache(
     std::vector<xllm::KVCache>& kv_caches,
     const int64_t num_layers,
-    const std::vector<std::vector<int64_t>>& kv_cache_shape,
+    const KVCacheShape& kv_cache_shape,
     torch::ScalarType dtype) {
   num_layers_ = num_layers;
   allocate_kv_cache_impl(kv_caches, num_layers, kv_cache_shape, dtype);
@@ -119,9 +119,11 @@ void MooncakeKVCacheTransferDefault::allocate_kv_cache(
 
 void MooncakeKVCacheTransferDefault::register_kv_cache(
     std::vector<xllm::KVCache>& kv_caches,
-    const std::vector<std::vector<int64_t>>& kv_cache_shape,
+    const KVCacheShape& kv_cache_shape,
     torch::ScalarType dtype) {
   num_layers_ = kv_caches.size();
+  const std::vector<int64_t>& key_cache_shape =
+      kv_cache_shape.key_cache_shape();
   if (!kv_caches.empty()) {
     torch::Tensor value_cache = kv_caches[0].get_v_cache();
     torch::Tensor index_cache = kv_caches[0].get_index_cache();
@@ -133,8 +135,8 @@ void MooncakeKVCacheTransferDefault::register_kv_cache(
 
   int64_t data_size = torch::scalarTypeToTypeMeta(dtype).itemsize();
   int64_t count_per_block = 1;
-  for (size_t i = 1; i < kv_cache_shape[0].size(); ++i) {
-    count_per_block *= kv_cache_shape[0][i];
+  for (size_t i = 1; i < key_cache_shape.size(); ++i) {
+    count_per_block *= key_cache_shape[i];
   }
   size_per_block_ = count_per_block * data_size;
 
@@ -144,20 +146,22 @@ void MooncakeKVCacheTransferDefault::register_kv_cache(
 void MooncakeKVCacheTransferDefault::allocate_kv_cache_impl(
     std::vector<xllm::KVCache>& kv_caches,
     int64_t num_layers,
-    const std::vector<std::vector<int64_t>>& kv_cache_shape,
+    const KVCacheShape& kv_cache_shape,
     torch::ScalarType dtype) {
+  const std::vector<int64_t>& key_cache_shape =
+      kv_cache_shape.key_cache_shape();
+  const std::vector<int64_t>& value_cache_shape =
+      kv_cache_shape.value_cache_shape();
 #if defined(USE_MLU)
   torch::TensorOptions options =
       torch::TensorOptions().dtype(dtype).device(device_);
   for (int64_t i = 0; i < num_layers; ++i) {
-    torch::Tensor key_cache = torch::zeros(kv_cache_shape[0], options);
+    torch::Tensor key_cache = torch::zeros(key_cache_shape, options);
     torch::Tensor value_cache;
     torch::Tensor index_cache;
-    if (kv_cache_shape.size() > 1 && !kv_cache_shape[1].empty()) {
-      value_cache = torch::zeros(kv_cache_shape[1], options);
-    }
-    if (kv_cache_shape.size() > 2 && !kv_cache_shape[2].empty()) {
-      index_cache = torch::zeros(kv_cache_shape[2], options);
+    value_cache = torch::zeros(value_cache_shape, options);
+    if (kv_cache_shape.has_index_cache_shape()) {
+      index_cache = torch::zeros(kv_cache_shape.index_cache_shape(), options);
     }
     if (index_cache.defined()) {
       kv_caches.emplace_back(IndexedKVCacheTensors{
@@ -171,12 +175,12 @@ void MooncakeKVCacheTransferDefault::allocate_kv_cache_impl(
   // calculate the size of kv cache for each layer
   auto data_size = torch::elementSize(dtype);
   int64_t k_cache_size_per_layer = data_size;
-  for (int64_t i = 0; i < kv_cache_shape[0].size(); ++i) {
-    k_cache_size_per_layer *= kv_cache_shape[0][i];
+  for (int64_t i = 0; i < key_cache_shape.size(); ++i) {
+    k_cache_size_per_layer *= key_cache_shape[i];
   }
   int64_t v_cache_size_per_layer = data_size;
-  for (int64_t i = 0; i < kv_cache_shape[1].size(); ++i) {
-    v_cache_size_per_layer *= kv_cache_shape[1][i];
+  for (int64_t i = 0; i < value_cache_shape.size(); ++i) {
+    v_cache_size_per_layer *= value_cache_shape[i];
   }
 
   // allocate device memory for kv cache
@@ -212,9 +216,9 @@ void MooncakeKVCacheTransferDefault::allocate_kv_cache_impl(
           ? ACL_FORMAT_FRACTAL_NZ
           : ACL_FORMAT_ND;
   auto k_torch_tensors = convert_to_torch_tensor(
-      kv_cache_shape[0], dtype, k_tensor_addrs, npu_format_type);
+      key_cache_shape, dtype, k_tensor_addrs, npu_format_type);
   auto v_torch_tensors = convert_to_torch_tensor(
-      kv_cache_shape[1], dtype, v_tensor_addrs, npu_format_type);
+      value_cache_shape, dtype, v_tensor_addrs, npu_format_type);
 
   torch::Tensor key_cache, value_cache;
   for (int64_t i = 0; i < num_layers; ++i) {
@@ -358,7 +362,7 @@ MooncakeKVCacheTransferXTensor::MooncakeKVCacheTransferXTensor(
 void MooncakeKVCacheTransferXTensor::allocate_kv_cache(
     std::vector<xllm::KVCache>& kv_caches,
     const int64_t num_layers,
-    const std::vector<std::vector<int64_t>>& kv_cache_shape,
+    const KVCacheShape& kv_cache_shape,
     torch::ScalarType dtype) {
   num_layers_ = num_layers;
   allocate_kv_cache_impl(kv_caches, num_layers, kv_cache_shape, dtype);
@@ -366,14 +370,16 @@ void MooncakeKVCacheTransferXTensor::allocate_kv_cache(
 
 void MooncakeKVCacheTransferXTensor::register_kv_cache(
     std::vector<xllm::KVCache>& kv_caches,
-    const std::vector<std::vector<int64_t>>& kv_cache_shape,
+    const KVCacheShape& kv_cache_shape,
     torch::ScalarType dtype) {
   num_layers_ = kv_caches.size();
+  const std::vector<int64_t>& key_cache_shape =
+      kv_cache_shape.key_cache_shape();
 
   int64_t data_size = torch::scalarTypeToTypeMeta(dtype).itemsize();
   int64_t count_per_block = 1;
-  for (int32_t i = 1; i < kv_cache_shape[0].size(); ++i) {
-    count_per_block *= kv_cache_shape[0][i];
+  for (size_t i = 1; i < key_cache_shape.size(); ++i) {
+    count_per_block *= key_cache_shape[i];
   }
   size_per_block_ = count_per_block * data_size;
 
@@ -383,15 +389,19 @@ void MooncakeKVCacheTransferXTensor::register_kv_cache(
 void MooncakeKVCacheTransferXTensor::allocate_kv_cache_impl(
     std::vector<xllm::KVCache>& kv_caches,
     int64_t num_layers,
-    const std::vector<std::vector<int64_t>>& kv_cache_shape,
+    const KVCacheShape& kv_cache_shape,
     torch::ScalarType dtype) {
   auto& allocator = XTensorAllocator::get_instance();
   CHECK(!model_id_.empty()) << "model_id must be set for XTensor mode";
+  const std::vector<int64_t>& key_cache_shape =
+      kv_cache_shape.key_cache_shape();
+  const std::vector<int64_t>& value_cache_shape =
+      kv_cache_shape.value_cache_shape();
 
-  auto k_tensors = allocator.create_k_tensors(
-      model_id_, kv_cache_shape[0], dtype, num_layers);
+  auto k_tensors =
+      allocator.create_k_tensors(model_id_, key_cache_shape, dtype, num_layers);
   auto v_tensors = allocator.create_v_tensors(
-      model_id_, kv_cache_shape[1], dtype, num_layers);
+      model_id_, value_cache_shape, dtype, num_layers);
 
   for (int64_t i = 0; i < num_layers; ++i) {
 #if defined(USE_NPU)

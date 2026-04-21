@@ -33,6 +33,8 @@ limitations under the License.
 
 namespace xllm {
 
+class KVCacheShape;
+
 class RecEngine : public Engine {
  public:
   RecEngine(const runtime::Options& options,
@@ -66,8 +68,7 @@ class RecEngine : public Engine {
 
     // KV Cache
     virtual int64_t estimate_min_available_memory() = 0;
-    virtual bool allocate_kv_cache(
-        const std::vector<std::vector<int64_t>>& kv_cache_shape) = 0;
+    virtual bool allocate_kv_cache(const KVCacheShape& kv_cache_shape) = 0;
 
     // Execution
     virtual ForwardOutput step(std::vector<Batch>& batches) = 0;
@@ -91,8 +92,7 @@ class RecEngine : public Engine {
     void process_group_test() override;
     bool init_model_workers(const std::string& model_path) override;
     int64_t estimate_min_available_memory() override;
-    bool allocate_kv_cache(
-        const std::vector<std::vector<int64_t>>& kv_cache_shape) override;
+    bool allocate_kv_cache(const KVCacheShape& kv_cache_shape) override;
     ForwardOutput step(std::vector<Batch>& batches) override;
     std::vector<int64_t> get_active_activation_memory() const override;
     size_t num_workers() const override;
@@ -115,8 +115,7 @@ class RecEngine : public Engine {
     void process_group_test() override;
     bool init_model_workers(const std::string& model_path) override;
     int64_t estimate_min_available_memory() override;
-    bool allocate_kv_cache(
-        const std::vector<std::vector<int64_t>>& kv_cache_shape) override;
+    bool allocate_kv_cache(const KVCacheShape& kv_cache_shape) override;
     ForwardOutput step(std::vector<Batch>& batches) override;
     std::vector<int64_t> get_active_activation_memory() const override;
     size_t num_workers() const override;
@@ -137,8 +136,7 @@ class RecEngine : public Engine {
     void process_group_test() override;
     bool init_model_workers(const std::string& model_path) override;
     int64_t estimate_min_available_memory() override;
-    bool allocate_kv_cache(
-        const std::vector<std::vector<int64_t>>& kv_cache_shape) override;
+    bool allocate_kv_cache(const KVCacheShape& kv_cache_shape) override;
     ForwardOutput step(std::vector<Batch>& batches) override;
     std::vector<int64_t> get_active_activation_memory() const override;
     size_t num_workers() const override;
@@ -156,8 +154,8 @@ class RecEngine : public Engine {
   // Private methods
   // ============================================================
   bool init_model();
-  Engine::KVCacheCapacity estimate_kv_cache_capacity();
-  bool allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap);
+  KVCacheCapacity estimate_kv_cache_capacity();
+  bool allocate_kv_cache(const KVCacheCapacity& kv_cache_cap);
 
   // ============================================================
   // Member variables

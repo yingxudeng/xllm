@@ -59,26 +59,23 @@ class KVCacheTransfer {
 
   virtual void finalize() {};
 
-  virtual void allocate_kv_cache(
-      std::vector<xllm::KVCache>& kv_caches,
-      const int64_t num_layers,
-      const std::vector<std::vector<int64_t>>& kv_cache_shape,
-      const torch::ScalarType dtype) {};
+  virtual void allocate_kv_cache(std::vector<xllm::KVCache>& kv_caches,
+                                 const int64_t num_layers,
+                                 const KVCacheShape& kv_cache_shape,
+                                 const torch::ScalarType dtype) {};
 
-  virtual void allocate_kv_cache_spec(
-      std::vector<xllm::KVCache>& kv_caches,
-      const int64_t num_layers,
-      const std::vector<std::vector<int64_t>>& kv_cache_shape,
-      torch::ScalarType dtype) {
+  virtual void allocate_kv_cache_spec(std::vector<xllm::KVCache>& kv_caches,
+                                      const int64_t num_layers,
+                                      const KVCacheShape& kv_cache_shape,
+                                      torch::ScalarType dtype) {
     NOT_IMPLEMENTED();
   };
 
   virtual void free_kv_cache() {};
 
-  virtual void register_kv_cache(
-      std::vector<xllm::KVCache>& kv_caches,
-      const std::vector<std::vector<int64_t>>& kv_cache_shape,
-      const torch::ScalarType dtype) {};
+  virtual void register_kv_cache(std::vector<xllm::KVCache>& kv_caches,
+                                 const KVCacheShape& kv_cache_shape,
+                                 const torch::ScalarType dtype) {};
 
   virtual void get_cache_info(uint64_t& cluster_id,
                               std::string& addr,
@@ -152,12 +149,11 @@ class KVCacheTransferFactory {
       uint16_t transfer_listen_port,
       InstanceRole instance_role,
       const Device& device,
-      const std::vector<std::vector<int64_t>>& kv_cache_shape,
+      const KVCacheShape& kv_cache_shape,
       torch::ScalarType dtype,
       std::vector<xllm::KVCache>& kv_caches,
       int64_t num_layers,
-      std::function<void(const std::vector<std::vector<int64_t>>&)>
-          allocate_kv_cache_func,
+      std::function<void(const KVCacheShape&)> allocate_kv_cache_func,
       bool enable_lighting_indexer,
       const std::string& model_type = "",
       const std::string& model_id = "");

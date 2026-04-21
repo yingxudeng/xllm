@@ -21,8 +21,8 @@ limitations under the License.
 
 #include "common/global_flags.h"
 #include "framework/kv_cache/kv_cache_impl.h"
+#include "framework/kv_cache/kv_cache_shape.h"
 #include "framework/kv_cache/kv_cache_utils.h"
-#include "framework/model/model_args.h"
 
 namespace xllm {
 
@@ -32,7 +32,8 @@ class KVCache final {
   explicit KVCache(const KVCacheTensors& tensors);
   explicit KVCache(const IndexedKVCacheTensors& tensors);
   explicit KVCache(const LinearAttentionKVCacheTensors& tensors);
-  KVCache(const std::vector<std::vector<int64_t>>& kv_cache_shape,
+  explicit KVCache(const QuantizedKVCacheTensors& tensors);
+  KVCache(const KVCacheShape& kv_cache_shape,
           const KVCacheCreateOptions& create_options,
           int64_t layer_id);
   KVCache(const KVCache&) = delete;
@@ -62,7 +63,7 @@ class KVCache final {
 };
 
 void allocate_kv_caches(std::vector<KVCache>& kv_caches,
-                        const std::vector<std::vector<int64_t>>& kv_cache_shape,
+                        const KVCacheShape& kv_cache_shape,
                         const KVCacheCreateOptions& create_options);
 
 }  // namespace xllm

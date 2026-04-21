@@ -36,11 +36,10 @@ class LlmDataDistTransfer : public KVCacheTransfer {
 
   virtual void finalize() override;
 
-  virtual void allocate_kv_cache(
-      std::vector<xllm::KVCache>& kv_caches,
-      const int64_t num_layers,
-      const std::vector<std::vector<int64_t>>& kv_cache_shape,
-      const torch::ScalarType dtype) override;
+  virtual void allocate_kv_cache(std::vector<xllm::KVCache>& kv_caches,
+                                 const int64_t num_layers,
+                                 const KVCacheShape& kv_cache_shape,
+                                 const torch::ScalarType dtype) override;
 
   virtual void free_kv_cache() override;
 

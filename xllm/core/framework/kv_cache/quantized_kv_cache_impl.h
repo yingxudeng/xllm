@@ -22,7 +22,7 @@ namespace xllm {
 class QuantizedKVCacheImpl final : public KVCacheImpl {
  public:
   explicit QuantizedKVCacheImpl(const QuantizedKVCacheTensors& tensors);
-  QuantizedKVCacheImpl(const std::vector<std::vector<int64_t>>& kv_cache_shape,
+  QuantizedKVCacheImpl(const KVCacheShape& kv_cache_shape,
                        const KVCacheCreateOptions& create_options);
 
   std::optional<torch::Tensor> get_k_cache_scale() const override;

@@ -112,9 +112,8 @@ int64_t MTPWorkerImpl::get_embedding_placeholder_size() {
   return static_cast<int64_t>(embedding_size_);
 }
 
-bool MTPWorkerImpl::allocate_kv_cache(
-    const std::vector<std::vector<int64_t>>& kv_cache_shape) {
-  const int64_t num_blocks = kv_cache_shape[0][0];
+bool MTPWorkerImpl::allocate_kv_cache(const KVCacheShape& kv_cache_shape) {
+  const int64_t num_blocks = kv_cache_shape.key_cache_shape()[0];
   // init_model() must run first so dtype_/embedding_size_ are initialized.
   embedding_cache_ = std::make_shared<EmbeddingCache>(num_blocks);
   if (embedding_cache_) {
@@ -148,7 +147,8 @@ bool MTPWorkerImpl::allocate_kv_cache(
 
 #if defined(USE_NPU)
 bool MTPWorkerImpl::allocate_kv_cache_with_transfer(
-    const std::vector<std::vector<int64_t>>& kv_cache_shape) {
+    const KVCacheShape& kv_cache_shape) {
+  const int64_t num_blocks = kv_cache_shape.key_cache_shape()[0];
   CHECK(impl_ != nullptr);
   CHECK(draft_impl_ != nullptr);
 
@@ -181,7 +181,7 @@ bool MTPWorkerImpl::allocate_kv_cache_with_transfer(
     CHECK_EQ(draft_status, WorkerImpl::Status::READY);
   }
 
-  embedding_cache_ = std::make_shared<EmbeddingCache>(kv_cache_shape[0][0]);
+  embedding_cache_ = std::make_shared<EmbeddingCache>(num_blocks);
   if (embedding_cache_) {
     int64_t size = get_embedding_placeholder_size();
     if (size > 0) {

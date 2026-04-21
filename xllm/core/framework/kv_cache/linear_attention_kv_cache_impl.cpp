@@ -15,20 +15,27 @@ limitations under the License.
 
 #include "framework/kv_cache/linear_attention_kv_cache_impl.h"
 
+#include "framework/kv_cache/kv_cache_shape.h"
 #include "util/tensor_helper.h"
 
 namespace xllm {
 
 LinearAttentionKVCacheImpl::LinearAttentionKVCacheImpl(
     const LinearAttentionKVCacheTensors& tensors)
-    : conv_cache_(tensors.conv_cache), ssm_cache_(tensors.ssm_cache) {}
+    : conv_cache_(tensors.conv_cache),
+      ssm_cache_(tensors.ssm_cache),
+      conv_cache_shape_(get_tensor_shape(tensors.conv_cache)),
+      ssm_cache_shape_(get_tensor_shape(tensors.ssm_cache)) {}
 
 LinearAttentionKVCacheImpl::LinearAttentionKVCacheImpl(
-    const std::vector<std::vector<int64_t>>& kv_cache_shape,
+    const KVCacheShape& kv_cache_shape,
     const KVCacheCreateOptions& create_options)
     : LinearAttentionKVCacheImpl(
           create_linear_attention_kv_cache_tensors(kv_cache_shape,
-                                                   create_options)) {}
+                                                   create_options)) {
+  conv_cache_shape_ = kv_cache_shape.conv_cache_shape();
+  ssm_cache_shape_ = kv_cache_shape.ssm_cache_shape();
+}
 
 torch::Tensor LinearAttentionKVCacheImpl::get_conv_cache() const {
   return conv_cache_;
@@ -44,10 +51,11 @@ bool LinearAttentionKVCacheImpl::empty() const {
 
 std::vector<std::vector<int64_t>> LinearAttentionKVCacheImpl::get_shapes()
     const {
-  std::vector<std::vector<int64_t>> tensor_shapes(2);
-  tensor_shapes[0] = get_tensor_shape(conv_cache_);
-  tensor_shapes[1] = get_tensor_shape(ssm_cache_);
-  return tensor_shapes;
+  std::vector<std::vector<int64_t>> shapes;
+  shapes.reserve(2);
+  shapes.emplace_back(conv_cache_shape_);
+  shapes.emplace_back(ssm_cache_shape_);
+  return shapes;
 }
 
 }  // namespace xllm

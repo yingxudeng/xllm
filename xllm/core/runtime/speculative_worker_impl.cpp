@@ -71,13 +71,13 @@ bool SpeculativeWorkerImpl::init_model(const std::string& model_weights_path,
 }
 
 bool SpeculativeWorkerImpl::allocate_kv_cache(
-    const std::vector<std::vector<int64_t>>& kv_cache_shape) {
+    const KVCacheShape& kv_cache_shape) {
   return impl_->allocate_kv_cache(kv_cache_shape);
 }
 
 #if defined(USE_NPU)
 bool SpeculativeWorkerImpl::allocate_kv_cache_with_transfer(
-    const std::vector<std::vector<int64_t>>& kv_cache_shape) {
+    const KVCacheShape& kv_cache_shape) {
   return impl_->allocate_kv_cache_with_transfer(kv_cache_shape);
 }
 #endif

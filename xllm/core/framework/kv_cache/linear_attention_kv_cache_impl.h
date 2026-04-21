@@ -23,9 +23,8 @@ class LinearAttentionKVCacheImpl final : public KVCacheImpl {
  public:
   explicit LinearAttentionKVCacheImpl(
       const LinearAttentionKVCacheTensors& tensors);
-  LinearAttentionKVCacheImpl(
-      const std::vector<std::vector<int64_t>>& kv_cache_shape,
-      const KVCacheCreateOptions& create_options);
+  LinearAttentionKVCacheImpl(const KVCacheShape& kv_cache_shape,
+                             const KVCacheCreateOptions& create_options);
 
   torch::Tensor get_conv_cache() const override;
   torch::Tensor get_ssm_cache() const override;
@@ -42,6 +41,8 @@ class LinearAttentionKVCacheImpl final : public KVCacheImpl {
  private:
   torch::Tensor conv_cache_;
   torch::Tensor ssm_cache_;
+  std::vector<int64_t> conv_cache_shape_;
+  std::vector<int64_t> ssm_cache_shape_;
 };
 
 }  // namespace xllm

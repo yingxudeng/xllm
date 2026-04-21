@@ -15,7 +15,7 @@ limitations under the License.
 
 #include "framework/kv_cache/quantized_kv_cache_impl.h"
 
-#include "util/tensor_helper.h"
+#include "framework/kv_cache/kv_cache_shape.h"
 
 namespace xllm {
 
@@ -26,7 +26,7 @@ QuantizedKVCacheImpl::QuantizedKVCacheImpl(
       value_cache_scale_(tensors.value_cache_scale) {}
 
 QuantizedKVCacheImpl::QuantizedKVCacheImpl(
-    const std::vector<std::vector<int64_t>>& kv_cache_shape,
+    const KVCacheShape& kv_cache_shape,
     const KVCacheCreateOptions& create_options)
     : QuantizedKVCacheImpl(
           create_quantized_kv_cache_tensors(kv_cache_shape, create_options)) {}

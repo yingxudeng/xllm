@@ -237,15 +237,16 @@ std::shared_ptr<KVCacheTransfer> KVCacheTransferFactory::create(
     uint16_t transfer_listen_port,
     InstanceRole instance_role,
     const Device& device,
-    const std::vector<std::vector<int64_t>>& kv_cache_shape,
+    const KVCacheShape& kv_cache_shape,
     torch::ScalarType dtype,
     std::vector<xllm::KVCache>& kv_caches,
     int64_t num_layers,
-    std::function<void(const std::vector<std::vector<int64_t>>&)>
-        allocate_kv_cache_func,
+    std::function<void(const KVCacheShape&)> allocate_kv_cache_func,
     bool enable_lighting_indexer,
     const std::string& model_type,
     const std::string& model_id) {
+  static_cast<void>(allocate_kv_cache_func);
+
   std::shared_ptr<KVCacheTransfer> transfer;
 
   int32_t device_id = device.index();
