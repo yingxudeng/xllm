@@ -1900,6 +1900,12 @@ inline void initialize_device_buffer_session(ReadContext& context,
     return;
   }
 
+#if defined(USE_CUDA)
+  if (device.type() != torch::kCUDA) {
+    return;
+  }
+#endif
+
   auto& session = *context.device_session;
   torch::Tensor host_input_buffer =
       torch::from_blob(const_cast<char*>(context.tensor_cursor),

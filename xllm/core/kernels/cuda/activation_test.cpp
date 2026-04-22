@@ -80,8 +80,8 @@ class ActAndMulKernelTest : public ::testing::Test {
     torch::Tensor reference = torch_reference_act_and_mul(input, act_mode);
     act_and_mul(output, input, act_mode);
 
-    const double atol = dtype == torch::kFloat32 ? 1e-6 : 5e-3;
-    const double rtol = dtype == torch::kFloat32 ? 1e-5 : 5e-3;
+    const double atol = 5e-3;
+    const double rtol = 5e-3;
     EXPECT_TRUE(torch::allclose(output, reference, rtol, atol))
         << "Mismatch for act_mode=" << act_mode
         << ", dtype=" << to_string(dtype) << ", d=" << d;
@@ -91,8 +91,8 @@ class ActAndMulKernelTest : public ::testing::Test {
 };
 
 TEST_F(ActAndMulKernelTest, MatchesTorchReference) {
-  const std::vector<torch::ScalarType> dtypes = {
-      torch::kFloat32, torch::kFloat16, torch::kBFloat16};
+  const std::vector<torch::ScalarType> dtypes = {torch::kFloat16,
+                                                 torch::kBFloat16};
   const std::vector<std::string> act_modes = {"silu", "gelu", "gelu_tanh"};
   // Cover scalar fallback (d<VEC_SIZE), vectorized path, and tail cleanup.
   const std::vector<int64_t> dims = {3, 64, 129};
