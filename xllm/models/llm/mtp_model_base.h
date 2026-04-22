@@ -172,7 +172,7 @@ class MtpModelImplBase : public torch::nn::Module {
       modified_input_params.attn_metadata =
           std::make_shared<layer::AttentionMetadata>(
               layer::AttentionMetadataBuilder::build(modified_input_params,
-                                                     model_args_));
+                                                     model_args_.enable_mla()));
     }
     auto& attn_metadata = *(modified_input_params.attn_metadata);
     torch::Tensor hidden_states = embed_tokens_(tokens);

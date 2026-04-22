@@ -122,7 +122,7 @@ class Qwen3MoeModelImpl : public LlmModelImplBase<layer::Qwen3MoeDecoderLayer> {
       modified_input_params.attn_metadata =
           std::make_shared<layer::AttentionMetadata>(
               layer::AttentionMetadataBuilder::build(modified_input_params,
-                                                     model_args_));
+                                                     model_args_.enable_mla()));
     }
     auto& attn_metadata = *(modified_input_params.attn_metadata);
     bool only_prefill =

@@ -74,22 +74,21 @@ class Qwen3_5MtpModelImpl : public Qwen3HybridModelImplBase {
  public:
   explicit Qwen3_5MtpModelImpl(const ModelContext& context)
       : Qwen3HybridModelImplBase(context) {
-    const auto& model_args = context.get_model_args();
     const auto& options = context.get_tensor_options();
     const int32_t n_layers =
-        std::max<int32_t>(static_cast<int32_t>(model_args.n_layers()), 1);
+        std::max<int32_t>(static_cast<int32_t>(model_args_.n_layers()), 1);
 
     pre_fc_norm_embedding_ = register_module(
         "pre_fc_norm_embedding",
         layer::Qwen3NextRMSNorm(
-            model_args.hidden_size(), model_args.rms_norm_eps(), options));
+            model_args_.hidden_size(), model_args_.rms_norm_eps(), options));
     pre_fc_norm_hidden_ = register_module(
         "pre_fc_norm_hidden",
         layer::Qwen3NextRMSNorm(
-            model_args.hidden_size(), model_args.rms_norm_eps(), options));
+            model_args_.hidden_size(), model_args_.rms_norm_eps(), options));
     fc_ = register_module("fc",
-                          layer::ReplicatedLinear(model_args.hidden_size() * 2,
-                                                  model_args.hidden_size(),
+                          layer::ReplicatedLinear(model_args_.hidden_size() * 2,
+                                                  model_args_.hidden_size(),
                                                   /*bias=*/false,
                                                   QuantArgs(),
                                                   options));
@@ -113,7 +112,9 @@ class Qwen3_5MtpModelImpl : public Qwen3HybridModelImplBase {
     }
 
     auto attn_metadata = layer::AttentionMetadataBuilder::build(
-        input_params, build_attention_mask(input_params));
+        input_params,
+        model_args_.enable_mla(),
+        build_attention_mask(input_params));
 
     torch::Tensor embedding = embed_tokens_(tokens);
     torch::Tensor hidden = input_params.input_embedding;

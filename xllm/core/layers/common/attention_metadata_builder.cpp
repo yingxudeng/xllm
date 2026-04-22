@@ -99,6 +99,8 @@ AttentionMetadata build_attention_metadata(
       params.batch_forward_type.is_mixed() ||
       params.batch_forward_type.is_chunked_prefill();
   attn_metadata.is_prefill = params.batch_forward_type.is_prefill();
+
+  // enable_mla is for DeepSeekv32 on mlu device
   if (!attn_metadata.is_prefill || enable_mla) {
     attn_metadata.block_table = params.block_tables;
 #if !defined(USE_NPU) && !defined(USE_CUDA)
@@ -200,33 +202,18 @@ AttentionMetadata build_attention_metadata(
 
 AttentionMetadata AttentionMetadataBuilder::build(
     const ModelInputParams& params,
-    const std::optional<torch::Tensor>& attn_mask) {
-  return AttentionMetadataBuilder::build(params, "float", attn_mask);
-}
-
-AttentionMetadata AttentionMetadataBuilder::build(
-    const ModelInputParams& params,
-    const ModelArgs& model_args,
+    bool enable_mla,
     const std::optional<torch::Tensor>& attn_mask) {
   return AttentionMetadataBuilder::build(
-      params, model_args, "float", attn_mask);
+      params, enable_mla, "float", attn_mask);
 }
 
 AttentionMetadata AttentionMetadataBuilder::build(
     const ModelInputParams& params,
+    bool enable_mla,
     const std::string& compute_dtype,
     const std::optional<torch::Tensor>& attn_mask) {
-  return build_attention_metadata(
-      params, params.enable_mla, compute_dtype, attn_mask);
-}
-
-AttentionMetadata AttentionMetadataBuilder::build(
-    const ModelInputParams& params,
-    const ModelArgs& model_args,
-    const std::string& compute_dtype,
-    const std::optional<torch::Tensor>& attn_mask) {
-  return build_attention_metadata(
-      params, model_args.enable_mla(), compute_dtype, attn_mask);
+  return build_attention_metadata(params, enable_mla, compute_dtype, attn_mask);
 }
 
 }  // namespace xllm::layer

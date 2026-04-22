@@ -164,7 +164,8 @@ class FakeAttnCausalLM final : public CausalLM {
     if (params.attn_metadata) {
       attn_meta = *params.attn_metadata;
     } else {
-      attn_meta = layer::AttentionMetadataBuilder::build(params);
+      attn_meta =
+          layer::AttentionMetadataBuilder::build(params, /*enable_mla=*/false);
     }
     CHECK(attn_meta.plan_info) << "attn_meta.plan_info must be set";
     attn_meta.plan_info->layer_id = 0;

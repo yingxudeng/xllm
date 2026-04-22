@@ -93,7 +93,9 @@ class Qwen3HybridModelImplBase : public Qwen3HybridModelModule {
 
     layer::AttentionMetadata attn_metadata =
         layer::AttentionMetadataBuilder::build(
-            input_params, model_args_, build_attention_mask(input_params));
+            input_params,
+            model_args_.enable_mla(),
+            build_attention_mask(input_params));
     torch::Tensor h = embed_tokens_(tokens);
 
     torch::Tensor mrope_cos_sin;

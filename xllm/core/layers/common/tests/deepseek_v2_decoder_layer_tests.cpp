@@ -1358,7 +1358,7 @@ TEST_F(DeepseekV2DecoderLayerTest, ForwardMixedDpMoEReturnsLocalSlice) {
   input_params = input_params.to(options_.device());
 
   auto attn_metadata =
-      AttentionMetadataBuilder::build(input_params, model_args_);
+      AttentionMetadataBuilder::build(input_params, /*enable_mla=*/true);
   auto k_cache = torch::zeros(
       {2048, 1, 1, model_args_.qk_rope_head_dim() + model_args_.kv_lora_rank()},
       options_);
@@ -1478,7 +1478,7 @@ TEST_P(DeepseekV2DecoderLayerParamTest,
       torch::TensorOptions().dtype(torch::kInt32).device(options_.device()));
   auto input_params = build_prefill_params(kBatchSize, kSeqLen);
   auto attn_metadata =
-      AttentionMetadataBuilder::build(input_params, model_args_);
+      AttentionMetadataBuilder::build(input_params, /*enable_mla=*/true);
   auto kv_cache = build_cache(block_num, /*block_size=*/1);
 
   std::optional<torch::Tensor> residual = std::nullopt;

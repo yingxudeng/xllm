@@ -253,7 +253,7 @@ std::optional<ModelInputParams> CudaGraphPersistentParam::update(
   // batch size in plan_info.
   std::shared_ptr<layer::AttentionMetadata> attn_metadata =
       std::make_shared<layer::AttentionMetadata>(
-          layer::AttentionMetadataBuilder::build(params, args_));
+          layer::AttentionMetadataBuilder::build(params, args_.enable_mla()));
   CHECK(attn_metadata) << "attn_metadata should not be null";
   attn_metadata->enable_cuda_graph = true;
   auto build_capture_params_if_needed =
