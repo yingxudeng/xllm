@@ -62,6 +62,44 @@ def _maybe_compile_tilelang_kernels(device: str) -> None:
     ]
     print("[INFO] compiling TileLang kernels via source-tree launcher")
     subprocess.check_call(cmd, cwd=base_dir, env=env)
+
+
+def _stage_triton_npu_runtime_binaries(base_dir: str, extdir: str, device: str) -> None:
+    if device != "npu":
+        return
+
+    source_dir = os.path.join(
+        base_dir,
+        "third_party",
+        "torch_npu_ops",
+        "triton_npu",
+        "binary",
+    )
+    if not os.path.isdir(source_dir):
+        raise RuntimeError(
+            f"Triton NPU binary directory does not exist: {source_dir}"
+        )
+
+    dest_dir = os.path.join(extdir, "triton_npu", "binary")
+    if os.path.isdir(dest_dir):
+        shutil.rmtree(dest_dir)
+    os.makedirs(dest_dir, exist_ok=True)
+
+    copied_count = 0
+    for item in sorted(os.listdir(source_dir)):
+        if not item.endswith((".npubin", ".json")):
+            continue
+        source_path = os.path.join(source_dir, item)
+        if not os.path.isfile(source_path):
+            continue
+        shutil.copy2(source_path, os.path.join(dest_dir, item))
+        copied_count += 1
+
+    if copied_count == 0:
+        raise RuntimeError(
+            f"No Triton NPU runtime binaries were found under: {source_dir}"
+        )
+    print(f"[INFO] staged {copied_count} Triton NPU runtime asset(s) into {dest_dir}")
         
 class CMakeExtension(Extension):
     def __init__(self, name: str, path: str, sourcedir: str = "") -> None:
@@ -237,6 +275,8 @@ class ExtBuild(build_ext):
             os.path.join(extdir, product),
             os.path.join(os.path.dirname(cmake_dir), "xllm/core/server/"),
         )
+
+        _stage_triton_npu_runtime_binaries(self.base_dir, extdir, self.device)
 
         if BUILD_EXPORT:
             # build export module
