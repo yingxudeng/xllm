@@ -424,8 +424,39 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
     std::tie(g, beta) = xllm::kernel::fused_gdn_gating(gdn_params);
   }
   auto [processed_q, processed_k, processed_v] = process_mixed_qkv(mixed_qkv);
+  auto pack_prefill_input =
+      [this, &attn_metadata](const torch::Tensor& padded_input) {
+        const int64_t batch_size_local = padded_input.size(0);
+        const int64_t max_query_len = padded_input.size(1);
+        int64_t feature_size = 1;
+        for (int64_t dim = 2; dim < padded_input.dim(); ++dim) {
+          feature_size *= padded_input.size(dim);
+        }
+        torch::Tensor packed_input = reshape_qkvz_unpad(
+            attn_metadata,
+            padded_input.contiguous().view(
+                {batch_size_local * max_query_len, feature_size}));
+        std::vector<int64_t> packed_shape = {1, packed_input.size(0)};
+        for (int64_t dim = 2; dim < padded_input.dim(); ++dim) {
+          packed_shape.push_back(padded_input.size(dim));
+        }
+        return packed_input.view(packed_shape).contiguous();
+      };
+  torch::Tensor z_for_norm = z;
   // Apply chunked or recurrent gated-delta attention and update caches.
   if (attn_metadata.is_prefill) {
+    CHECK(attn_metadata.q_cu_seq_lens.defined())
+        << "q_cu_seq_lens must be populated for prefill chunk_gated_delta_rule";
+    LOG_IF(INFO, batch_size > 1)
+        << "Packing prefill recurrent varlen inputs to B=1 before "
+           "chunk_gated_delta_rule. batch_size="
+        << batch_size << ", max_query_len=" << seq_len;
+    processed_q = pack_prefill_input(processed_q);
+    processed_k = pack_prefill_input(processed_k);
+    processed_v = pack_prefill_input(processed_v);
+    g = pack_prefill_input(g);
+    beta = pack_prefill_input(beta);
+    z_for_norm = pack_prefill_input(z);
     xllm::kernel::ChunkGatedDeltaRuleParams chunk_gated_delta_params;
     chunk_gated_delta_params.q = processed_q;
     chunk_gated_delta_params.k = processed_k;
@@ -474,18 +505,16 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
                         .contiguous();
   }
 
-  auto z_reshaped = z.view({-1, z.size(-1)});
+  auto z_reshaped = z_for_norm.view({-1, z_for_norm.size(-1)});
   auto core_attn_out_reshaped =
       core_attn_out.view({-1, core_attn_out.size(-1)});
   auto norm_out = norm_->forward(core_attn_out_reshaped, z_reshaped);
-  auto z_shape_og = z.sizes().vec();
+  auto z_shape_og = z_for_norm.sizes().vec();
   norm_out = norm_out.view(z_shape_og);
   norm_out = norm_out.view({-1, norm_out.size(2), norm_out.size(3)});
 
-  // Project the normalized attention output back to hidden size.
   auto rearranged_norm =
       norm_out.reshape({norm_out.size(0), norm_out.size(1) * norm_out.size(2)});
-  rearranged_norm = reshape_qkvz_unpad(attn_metadata, rearranged_norm);
   auto attn_output = o_proj_->forward(rearranged_norm);
   return attn_output;
 }
