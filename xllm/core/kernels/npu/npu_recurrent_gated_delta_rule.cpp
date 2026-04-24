@@ -119,9 +119,8 @@ torch::Tensor npu_recurrent_gated_delta_rule(
 
   void* workspace_addr = nullptr;
   if (workspace_size > 0) {
-    CHECK_ACL_SUCCESS(
-        aclrtMalloc(&workspace_addr, workspace_size, ACL_MEM_MALLOC_HUGE_FIRST),
-        "recurrent_gated_delta_rule: failed to allocate workspace");
+    workspace_addr =
+        get_reusable_workspace_buffer(workspace_size, query.device());
   }
 
   CHECK_ACL_SUCCESS(aclnnRecurrentGatedDeltaRule(
@@ -152,11 +151,6 @@ torch::Tensor npu_recurrent_gated_delta_rule(
   }
   if (gk_ids != nullptr) {
     aclDestroyTensor(gk_ids);
-  }
-
-  if (workspace_size > 0) {
-    CHECK_ACL_SUCCESS(aclrtFree(workspace_addr),
-                      "recurrent_gated_delta_rule: failed to free workspace");
   }
 
   return out_result;

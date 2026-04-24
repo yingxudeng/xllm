@@ -19,7 +19,9 @@ limitations under the License.
 #include <torch_npu/csrc/libs/init_npu.h>
 #include <torch_npu/torch_npu.h>
 
+#include <cstdint>
 #include <nlohmann/json.hpp>
+#include <unordered_map>
 #ifdef TORCH_HIGHER_THAN_PTA6
 #include <torch_npu/csrc/framework/OpCommand.h>
 #else
@@ -32,6 +34,26 @@ limitations under the License.
 #include "utils.h"
 
 namespace xllm::kernel::npu {
+
+namespace {
+
+struct WorkspaceBuffer {
+  uint64_t size = 0;
+  torch::Tensor tensor;
+};
+
+torch::Tensor create_workspace_tensor(uint64_t buffer_size,
+                                      const at::Device& device) {
+  return torch::empty({static_cast<int64_t>(buffer_size)},
+                      at::TensorOptions()
+                          .dtype(at::ScalarType::Byte)
+                          .layout(torch::kStrided)
+                          .requires_grad(false)
+                          .device(device));
+}
+
+}  // namespace
+
 aclDataType type_info::get_acl_type(const torch::ScalarType& dtype) {
   switch (dtype) {
     case torch::kInt64:
@@ -97,6 +119,27 @@ void check_tensor_shapes_equal(const torch::Tensor& a,
                << "a shape: " << a.sizes() << ", b shape: " << b.sizes();
     LOG(FATAL) << func_name << ": tensor shapes do not match";
   }
+}
+
+void* get_reusable_workspace_buffer(uint64_t buffer_size,
+                                    const at::Device& device) {
+  CHECK_GT(buffer_size, 0) << "workspace buffer size must be greater than 0";
+  const int32_t device_id = device.index();
+  thread_local std::unordered_map<int32_t, WorkspaceBuffer>
+      workspace_buffers_by_device;
+  WorkspaceBuffer& workspace = workspace_buffers_by_device[device_id];
+  if (!workspace.tensor.defined() || workspace.size < buffer_size) {
+    if (workspace.tensor.defined()) {
+      aclrtSynchronizeStream(c10_npu::getCurrentNPUStream(device_id).stream());
+      workspace.tensor.reset();
+    }
+    workspace.tensor = create_workspace_tensor(buffer_size, device);
+    if (!workspace.tensor.is_contiguous()) {
+      workspace.tensor = workspace.tensor.contiguous();
+    }
+    workspace.size = static_cast<uint64_t>(workspace.tensor.numel());
+  }
+  return workspace.tensor.data_ptr();
 }
 
 }  // namespace xllm::kernel::npu

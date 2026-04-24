@@ -48,6 +48,8 @@ limitations under the License.
 namespace xllm::npu {
 
 namespace {
+constexpr uint32_t kMinAclGraphCaptureTokens = 8;
+
 std::pair<torch::Tensor, torch::Tensor> find_attention_plan_kv_cache(
     const std::vector<KVCache>& kv_caches) {
   for (const auto& cache : kv_caches) {
@@ -1006,27 +1008,49 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
   // Only use acl graph in decode phase for performance optimization
   // Get actual num_tokens from tokens shape
   const uint32_t n_tokens = tokens_tensor.size(/*dim=*/0);
-  const uint32_t actual_batch_size = n_tokens / options_.num_decoding_tokens();
+  const uint32_t decode_graph_capacity =
+      static_cast<uint32_t>(get_decode_graph_capacity(options_));
   const uint32_t bucket_num_tokens = get_bucket_num_tokens(n_tokens);
 
   // Check if conditions are suitable for graph execution (replay or capture)
   const auto max_seq_len = args_.max_position_embeddings();
   const bool seq_len_supported = params_single.kv_max_seq_len <= max_seq_len;
+  const bool token_capacity_supported = n_tokens <= decode_graph_capacity;
+  const bool bucket_size_supported =
+      bucket_num_tokens >= kMinAclGraphCaptureTokens;
 
   // Combined condition for graph capture support
   // ACL graph executor only supports single tensor inputs (no micro-batching)
-  const bool capture_supported = seq_len_supported;
+  const bool capture_supported =
+      seq_len_supported && token_capacity_supported && bucket_size_supported;
 
   // Early return if conditions are not suitable for graph operations
   if (!capture_supported) {
-    LOG_FIRST_N(WARNING, 1)
-        << "Falling back to eager mode because kv_max_seq_len ("
-        << params_single.kv_max_seq_len << ") > max_seq_len (" << max_seq_len
-        << "). This message is logged only once. "
-        << "Monitor counter 'num_model_execution_total_eager' for frequency.";
+    if (!seq_len_supported) {
+      LOG_FIRST_N(WARNING, 1)
+          << "Falling back to eager mode because kv_max_seq_len ("
+          << params_single.kv_max_seq_len << ") > max_seq_len (" << max_seq_len
+          << "). This message is logged only once. "
+          << "Monitor counter 'num_model_execution_total_eager' for "
+             "frequency.";
+    } else if (!token_capacity_supported) {
+      LOG_FIRST_N(WARNING, 1)
+          << "Falling back to eager mode because n_tokens (" << n_tokens
+          << ") > decode_graph_capacity (" << decode_graph_capacity
+          << "). This message is logged only once. Monitor counter "
+             "'num_model_execution_total_eager' for frequency.";
+    } else {
+      LOG_FIRST_N(INFO, 1)
+          << "Falling back to eager mode for small ACL graph bucket "
+          << bucket_num_tokens << " (< " << kMinAclGraphCaptureTokens
+          << "). Tiny decode buckets have limited graph reuse benefit but "
+             "retain NPU graph memory. This message is logged only once.";
+    }
     COUNTER_INC(num_model_execution_total_eager);
     return model_->forward(tokens, positions, kv_caches, params);
   }
+
+  std::lock_guard<std::mutex> graph_execution_lock(graph_execution_mutex_);
 
   // Check if captured graph exists for this bucket num_tokens
   auto it = graphs_.find(bucket_num_tokens);
@@ -1111,21 +1135,25 @@ void AclGraph::print_graph_tensors() const {
 // bucket will be [1, 2, 4, 8, 16, 32, 48, 64, ..., max_seqs_per_batch]
 uint32_t AclGraphExecutorImpl::get_bucket_num_tokens(
     uint32_t num_tokens) const {
+  const uint32_t decode_graph_capacity =
+      static_cast<uint32_t>(get_decode_graph_capacity(options_));
   if (FLAGS_enable_graph_mode_decode_no_padding) {
-    return num_tokens;
+    return std::min(num_tokens, decode_graph_capacity);
   }
+  uint32_t bucket_num_tokens = 0;
   if (num_tokens <= 1) {
-    return 1;
+    bucket_num_tokens = 1;
   } else if (num_tokens <= 2) {
-    return 2;
+    bucket_num_tokens = 2;
   } else if (num_tokens <= 4) {
-    return 4;
+    bucket_num_tokens = 4;
   } else if (num_tokens <= 8) {
-    return 8;
+    bucket_num_tokens = 8;
   } else {
     // For num_tokens > 16, use multiples of 16
-    return ((num_tokens + 15) / 16) * 16;
+    bucket_num_tokens = ((num_tokens + 15) / 16) * 16;
   }
+  return std::min(bucket_num_tokens, decode_graph_capacity);
 }
 
 }  // namespace xllm::npu
