@@ -637,7 +637,7 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::reshape_qkvz_with_pad(
   int64_t max_len = attn_metadata.max_query_len;
   const auto& start_loc = attn_metadata.q_seq_lens;
   if (!attn_metadata.is_prefill) {
-    return qkvz.view({bs, -1, qkvz.size(-1)});
+    return qkvz.view({qkvz.size(0), -1, qkvz.size(-1)});
   }
   std::vector<torch::Tensor> batches;
   int64_t idx = 0;
