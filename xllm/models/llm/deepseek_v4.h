@@ -643,7 +643,7 @@ class DeepseekV4ModelImpl
         pick_max_seqlen(dsa.max_seqlen_kv, key_lens);
 
     xllm::kernel::QuantLightningIndexerMetadataParams qli_params;
-    qli_params.num_heads_q = index_num_heads;
+    qli_params.num_heads_q = global_index_num_heads;
     qli_params.num_heads_k = 1;
     qli_params.head_dim = index_head_dim;
     qli_params.query_quant_mode = 0;
