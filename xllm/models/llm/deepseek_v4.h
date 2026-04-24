@@ -210,6 +210,29 @@ class DeepseekV4ModelImpl
     const int32_t base_block_size = 128;  // default block size
 
     std::unordered_map<DSAGroupKey, int32_t, DSAGroupKeyHash> group_key_map;
+    auto register_group =
+        [&](DSACacheType type, int32_t ratio, int32_t block_size) -> int32_t {
+      DSAGroupKey key{ratio, type, block_size};
+      auto it = group_key_map.find(key);
+      if (it != group_key_map.end()) {
+        return it->second;
+      }
+      const int32_t gid = static_cast<int32_t>(group_infos_.size());
+      group_key_map.emplace(key, gid);
+      group_infos_.push_back({type, ratio, block_size});
+      return gid;
+    };
+
+    // Keep DSA group ids consistent with BlockManagerPool manager order:
+    // 1) sliding-window manager first
+    // 2) token managers in first-seen compress_ratio order
+    register_group(DSACacheType::SLIDING_WINDOW, 1, window_size);
+    for (const auto ratio : compress_ratios) {
+      if (ratio == 4 || ratio == 128) {
+        register_group(DSACacheType::TOKEN, ratio, base_block_size);
+      }
+    }
+
     caches_info_.resize(model_args.n_layers());
 
     for (int32_t layer_id = 0; layer_id < model_args.n_layers(); ++layer_id) {
@@ -252,16 +275,7 @@ class DeepseekV4ModelImpl
       }
 
       for (const auto& ce : layer_caches) {
-        DSAGroupKey gk{ce.ratio, ce.type, ce.block_size};
-        int32_t gid;
-        auto it = group_key_map.find(gk);
-        if (it == group_key_map.end()) {
-          gid = static_cast<int32_t>(group_infos_.size());
-          group_key_map[gk] = gid;
-          group_infos_.push_back({ce.type, ce.ratio, ce.block_size});
-        } else {
-          gid = it->second;
-        }
+        const int32_t gid = register_group(ce.type, ce.ratio, ce.block_size);
         caches_info_[layer_id].push_back(
             {gid, ce.type, ce.ratio, ce.block_size});
       }
@@ -528,8 +542,7 @@ class DeepseekV4ModelImpl
     c1_params.num_heads_kv = 1;
     c1_params.head_dim = head_dim_;
     c1_params.cu_seqlens_q = as_optional_tensor(dsa.actual_seq_lengths_query);
-    c1_params.cu_seqlens_ori_kv =
-        as_optional_tensor(dsa.actual_seq_lengths_query);
+    c1_params.cu_seqlens_ori_kv = c10::nullopt;
     c1_params.cu_seqlens_cmp_kv = c10::nullopt;
     c1_params.seqused_q = as_optional_tensor(dsa.seq_lens_q);
     c1_params.seqused_kv = as_optional_tensor(dsa.actual_seq_lengths_kv);
@@ -554,8 +567,7 @@ class DeepseekV4ModelImpl
     c4_params.num_heads_kv = 1;
     c4_params.head_dim = head_dim_;
     c4_params.cu_seqlens_q = as_optional_tensor(dsa.actual_seq_lengths_query);
-    c4_params.cu_seqlens_ori_kv =
-        as_optional_tensor(dsa.actual_seq_lengths_query);
+    c4_params.cu_seqlens_ori_kv = c10::nullopt;
     c4_params.cu_seqlens_cmp_kv = c10::nullopt;
     c4_params.seqused_q = as_optional_tensor(dsa.seq_lens_q);
     c4_params.seqused_kv = as_optional_tensor(dsa.actual_seq_lengths_kv);
@@ -580,8 +592,7 @@ class DeepseekV4ModelImpl
     c128_params.num_heads_kv = 1;
     c128_params.head_dim = head_dim_;
     c128_params.cu_seqlens_q = as_optional_tensor(dsa.actual_seq_lengths_query);
-    c128_params.cu_seqlens_ori_kv =
-        as_optional_tensor(dsa.actual_seq_lengths_query);
+    c128_params.cu_seqlens_ori_kv = c10::nullopt;
     c128_params.cu_seqlens_cmp_kv = c10::nullopt;
     c128_params.seqused_q = as_optional_tensor(dsa.seq_lens_q);
     c128_params.seqused_kv = as_optional_tensor(dsa.actual_seq_lengths_kv);

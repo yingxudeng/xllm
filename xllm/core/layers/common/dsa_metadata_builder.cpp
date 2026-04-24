@@ -77,11 +77,22 @@ void DSAMetadataBuilder::build_dsa_fields(
     DSAMetadata& dsa) {
   const int32_t batch_size =
       static_cast<int32_t>(params.kv_seq_lens_vec.size());
+  std::vector<int> q_lens_vec;
+  q_lens_vec.reserve(batch_size);
 
   dsa.input_positions = positions;
 
   // Build per-batch sequence length metadata.
   build_seq_lengths(params, batch_size, dsa);
+  if (static_cast<int32_t>(params.q_seq_lens_vec.size()) == batch_size) {
+    q_lens_vec.assign(params.q_seq_lens_vec.begin(),
+                      params.q_seq_lens_vec.end());
+  } else if (params.batch_forward_type.no_decode()) {
+    q_lens_vec.assign(params.kv_seq_lens_vec.begin(),
+                      params.kv_seq_lens_vec.end());
+  } else {
+    q_lens_vec.assign(batch_size, 1);
+  }
 
   // Keep base RoPE tables in metadata. Per-forward cos/sin slices are
   // calculated in DeepseekV4ModelImpl::forward to align with MindIE timing.
@@ -155,6 +166,7 @@ void DSAMetadataBuilder::build_dsa_fields(
                     mgr_slots[m],
                     group_infos[m],
                     ctx_lens,
+                    q_lens_vec,
                     batch_size,
                     total_tokens,
                     proc_bt[m],
@@ -251,6 +263,7 @@ void DSAMetadataBuilder::process_group(const torch::Tensor& raw_bt,
                                        const torch::Tensor& raw_slots,
                                        const DSAGroupInfo& gi,
                                        const std::vector<int>& ctx_lens,
+                                       const std::vector<int>& q_lens,
                                        int32_t batch_size,
                                        int64_t total_tokens,
                                        torch::Tensor& out_bt,
@@ -259,6 +272,8 @@ void DSAMetadataBuilder::process_group(const torch::Tensor& raw_bt,
     process_token_group(raw_bt,
                         raw_slots,
                         gi.ratio,
+                        ctx_lens,
+                        q_lens,
                         batch_size,
                         total_tokens,
                         out_bt,
@@ -281,21 +296,56 @@ void DSAMetadataBuilder::process_group(const torch::Tensor& raw_bt,
 void DSAMetadataBuilder::process_token_group(const torch::Tensor& raw_bt,
                                              const torch::Tensor& raw_slots,
                                              int32_t ratio,
+                                             const std::vector<int>& ctx_lens,
+                                             const std::vector<int>& q_lens,
                                              int32_t batch_size,
                                              int64_t total_tokens,
                                              torch::Tensor& out_bt,
                                              torch::Tensor& out_slots) {
-  int64_t op_need_length = std::min(
-      total_tokens / ratio + static_cast<int64_t>(batch_size), total_tokens);
-  auto sort_key = torch::where(raw_slots.eq(-1),
-                               torch::ones_like(raw_slots),
-                               torch::zeros_like(raw_slots));
-  auto sorted_idx =
-      sort_key.argsort(/*dim=*/0, /*descending=*/false, /*stable=*/true);
-  auto slots = raw_slots.index_select(0, sorted_idx)
-                   .slice(/*dim=*/0, /*start=*/0, /*end=*/op_need_length)
-                   .contiguous();
-  out_slots = torch::where(slots.eq(-1), torch::zeros_like(slots), slots);
+  CHECK_EQ(static_cast<int32_t>(ctx_lens.size()), batch_size)
+      << "process_token_group requires ctx_lens.size == batch_size, got "
+      << ctx_lens.size() << " vs " << batch_size;
+  CHECK_EQ(static_cast<int32_t>(q_lens.size()), batch_size)
+      << "process_token_group requires q_lens.size == batch_size, got "
+      << q_lens.size() << " vs " << batch_size;
+
+  int64_t query_total_tokens = 0;
+  for (const int q_len : q_lens) {
+    query_total_tokens += static_cast<int64_t>(q_len);
+  }
+  int64_t op_need_length =
+      std::min(query_total_tokens / ratio + static_cast<int64_t>(batch_size),
+               query_total_tokens);
+
+  // Token caches write only the compressed rows produced by the current
+  // forward step; trailing rows remain zero-padded as dummy slots.
+  auto out_slots_tensor = torch::zeros({op_need_length}, raw_slots.options());
+  auto out_slots_acc = out_slots_tensor.accessor<int32_t, 1>();
+  auto raw_slots_acc = raw_slots.accessor<int32_t, 1>();
+
+  int64_t start_idx = 0;
+  int64_t write_idx = 0;
+  for (int32_t seq = 0; seq < batch_size; ++seq) {
+    const int64_t ctx_len = static_cast<int64_t>(ctx_lens[seq]);
+    const int64_t q_len =
+        std::clamp<int64_t>(static_cast<int64_t>(q_lens[seq]), 0, ctx_len);
+    const int64_t prev_ctx_len = ctx_len - q_len;
+    const int64_t prev_committed = prev_ctx_len / ratio;
+    const int64_t committed = ctx_len / ratio;
+    const int64_t new_committed = committed - prev_committed;
+    for (int64_t i = 0; i < new_committed && write_idx < op_need_length; ++i) {
+      out_slots_acc[write_idx++] =
+          raw_slots_acc[start_idx + prev_committed + i];
+    }
+    start_idx += ctx_len;
+  }
+
+  CHECK_LE(write_idx, op_need_length)
+      << "process_token_group generated more committed slots than expected: "
+      << "write_idx=" << write_idx << ", op_need_length=" << op_need_length
+      << ", query_total_tokens=" << query_total_tokens << ", ratio=" << ratio
+      << ", batch_size=" << batch_size << ", total_tokens=" << total_tokens;
+  out_slots = out_slots_tensor;
   out_bt = raw_bt;  // keep original right-padded block_tables
 }
 
@@ -351,10 +401,9 @@ void DSAMetadataBuilder::build_seq_lengths(const ModelInputParams& params,
   if (static_cast<int32_t>(params.q_seq_lens_vec.size()) == batch_size) {
     // Prefer explicit per-sequence query lengths from ModelInputParams.
     // This is accurate for prefill/decode/chunked/mixed batches.
-    q_lens =
-        torch::tensor(std::vector<int32_t>(params.q_seq_lens_vec.begin(),
-                                           params.q_seq_lens_vec.end()),
-                      torch::kInt32);
+    q_lens = torch::tensor(std::vector<int32_t>(params.q_seq_lens_vec.begin(),
+                                                params.q_seq_lens_vec.end()),
+                           torch::kInt32);
   } else if (params.batch_forward_type.no_decode()) {
     // Pure prefill path fallback: query lengths follow KV context lengths.
     q_lens = kv_lens;

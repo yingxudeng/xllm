@@ -192,6 +192,24 @@ void scatter_by_slot(torch::Tensor& cache,
   auto slots_slice = slots.slice(/*dim=*/0, /*start=*/0, /*end=*/update_rows);
   auto value_slice =
       value_2d.slice(/*dim=*/0, /*start=*/0, /*end=*/update_rows);
+
+  const int64_t cache_rows = cache_2d.size(0);
+  CHECK_GT(cache_rows, 0) << "scatter_by_slot requires cache rows > 0, cache "
+                          << cache.sizes();
+  const int64_t min_slot = slots_slice.min().item<int64_t>();
+  const int64_t max_slot = slots_slice.max().item<int64_t>();
+  CHECK_GE(min_slot, 0) << "scatter_by_slot found negative slot index "
+                        << min_slot << ", cache_rows=" << cache_rows
+                        << ", slot_mapping_shape=" << slot_mapping.sizes()
+                        << ", value_shape=" << value.sizes()
+                        << ", cache_shape=" << cache.sizes();
+  CHECK_LT(max_slot, cache_rows)
+      << "scatter_by_slot slot index out of range: max_slot=" << max_slot
+      << ", cache_rows=" << cache_rows
+      << ", slot_mapping_shape=" << slot_mapping.sizes()
+      << ", value_shape=" << value.sizes()
+      << ", value_rows=" << value_2d.size(0) << ", update_rows=" << update_rows
+      << ", cache_shape=" << cache.sizes();
   cache_2d.index_copy_(/*dim=*/0, slots_slice, value_slice);
 }
 
@@ -618,7 +636,9 @@ DSAttentionImpl::forward(const DSAMetadata& attn_metadata,
       /*cmp_block_table=*/
       compress_ratio_i > 1 ? as_optional(cmp_block_table) : c10::nullopt,
       /*cu_seqlens_q=*/as_optional(attn_metadata.actual_seq_lengths_query),
-      /*cu_seqlens_ori_kv=*/as_optional(attn_metadata.actual_seq_lengths_query),
+      // DeepSeek V4 aligns with MindIE here: runtime uses query cu_seqlens and
+      // per-seq KV lengths, not ori/cmp KV cu_seqlens.
+      /*cu_seqlens_ori_kv=*/c10::nullopt,
       /*cu_seqlens_cmp_kv=*/c10::nullopt,
       /*seqused_q=*/c10::nullopt,
       /*seqused_kv=*/as_optional(attn_metadata.actual_seq_lengths_kv),

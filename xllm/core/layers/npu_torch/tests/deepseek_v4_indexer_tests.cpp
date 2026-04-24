@@ -16,7 +16,9 @@ limitations under the License.
 #include <gtest/gtest.h>
 #include <torch/torch.h>
 
+#include "framework/model/model_input_params.h"
 #include "framework/quant_args.h"
+#include "layers/common/dsa_metadata_builder.h"
 #include "layers/npu_torch/deepseek_v4_indexer.h"
 
 namespace xllm {
@@ -65,6 +67,43 @@ TEST_F(DeepseekV4IndexerTest, ConstructorAndMetadataWorks) {
 
   EXPECT_TRUE(indexer->wq_b());
   EXPECT_TRUE(indexer->weights_proj());
+}
+
+TEST_F(DeepseekV4IndexerTest, DsaTokenSlotsTrackCurrentDecodeStep) {
+  ModelInputParams params;
+  params.batch_forward_type = BatchForwardType::DECODE;
+  params.num_sequences = 2;
+  params.kv_seq_lens_vec = {5, 8};
+  params.q_seq_lens_vec = {1, 1};
+  params.new_cache_slots = torch::tensor({10, 20}, torch::kInt32);
+  params.multi_block_tables = {
+      torch::tensor({{0}, {1}}, torch::kInt32),
+      torch::tensor({{0}, {1}}, torch::kInt32),
+  };
+
+  const auto positions = torch::tensor({4, 7}, torch::kInt64);
+  const std::vector<DSAGroupInfo> group_infos = {
+      {DSACacheType::SLIDING_WINDOW, 1, 128},
+      {DSACacheType::TOKEN, 4, 128},
+  };
+  const std::vector<std::vector<DSACacheInfo>> caches_info = {{
+      {1, DSACacheType::TOKEN, 4, 128},
+      {0, DSACacheType::SLIDING_WINDOW, 1, 128},
+  }};
+
+  auto metadata = DSAMetadataBuilder::build(
+      params, positions, torch::Tensor(), caches_info, group_infos);
+
+  ASSERT_TRUE(metadata.dsa_metadata != nullptr);
+  const auto& dsa = *metadata.dsa_metadata;
+  ASSERT_EQ(dsa.slot_mappings.size(), 1);
+  ASSERT_EQ(dsa.slot_mappings[0].size(), 2);
+
+  const auto token_slots = dsa.slot_mappings[0][0];
+  const auto expected_slots = torch::tensor({129, 0}, torch::kInt32);
+  EXPECT_TRUE(torch::equal(token_slots, expected_slots))
+      << "token slots should include only current-step committed compressed "
+         "slots plus decode padding";
 }
 
 }  // namespace layer
