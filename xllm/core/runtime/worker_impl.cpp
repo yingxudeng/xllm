@@ -31,8 +31,10 @@ limitations under the License.
 #endif
 
 #include <algorithm>
+#include <map>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -181,6 +183,9 @@ bool WorkerImpl::allocate_kv_cache(
       << "simultaneously.";
 
   const int64_t num_layers = get_num_layers();
+  const bool is_dsv4 = (args.model_type() == "deepseek_v4") &&
+                       kv_cache_shape.size() >= 1 &&
+                       kv_cache_shape[0].size() >= 3;
 
   // Check if KV cache quantization is enabled
   // "auto" (default): cache dtype aligns with model dtype (no quantization)
@@ -206,7 +211,177 @@ bool WorkerImpl::allocate_kv_cache(
   // create a KVCache for each layer
   kv_caches_.reserve(num_layers);
 
-  if (FLAGS_enable_xtensor) {
+  if (is_dsv4) {
+    const int64_t swa_count = kv_cache_shape[0][0];
+    const int64_t c4_count = kv_cache_shape[0][1];
+    const int64_t c128_count = kv_cache_shape[0][2];
+    const int32_t block_size = 128;
+    const int32_t window_size = std::max(args.window_size(), 1);
+    const int64_t n_heads = 1;
+    const int64_t head_dim = args.head_dim();
+    const int32_t index_n_heads = 1;
+    const int32_t index_head_dim = std::max(args.index_head_dim(), 1);
+    const auto& compress_ratios = args.compress_ratios();
+
+    const auto cache_options = torch::dtype(dtype_).device(device_);
+    const auto index_options = torch::dtype(torch::kInt8).device(device_);
+    const auto state_options = torch::dtype(torch::kFloat32).device(device_);
+    const auto scale_options = torch::dtype(torch::kFloat16).device(device_);
+    auto shape_str = [](const torch::Tensor& tensor) -> std::string {
+      if (!tensor.defined()) {
+        return "undefined";
+      }
+      std::ostringstream oss;
+      oss << tensor.sizes();
+      return oss.str();
+    };
+    auto int_vec_str = [](const std::vector<int32_t>& values) -> std::string {
+      std::ostringstream oss;
+      oss << "[";
+      for (size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) {
+          oss << ",";
+        }
+        oss << values[i];
+      }
+      oss << "]";
+      return oss.str();
+    };
+    std::vector<int32_t> layer_crs;
+    layer_crs.reserve(static_cast<size_t>(num_layers));
+    std::map<int32_t, std::string> cr_shape_summaries;
+
+    for (int64_t i = 0; i < num_layers; ++i) {
+      const int32_t cr = (i < static_cast<int64_t>(compress_ratios.size()))
+                             ? compress_ratios[static_cast<size_t>(i)]
+                             : 1;
+      torch::Tensor key_cache, index_cache, indexer_cache_scale, swa_cache,
+          compress_kv_state, compress_score_state, compress_index_kv_state,
+          compress_index_score_state;
+
+      if (cr == 1) {
+        swa_cache = torch::empty({swa_count, window_size, n_heads, head_dim},
+                                 cache_options);
+      } else if (cr == 4) {
+        key_cache = torch::empty({c4_count, block_size, n_heads, head_dim},
+                                 cache_options);
+        index_cache =
+            torch::empty({c4_count, block_size, index_n_heads, index_head_dim},
+                         index_options);
+        indexer_cache_scale =
+            torch::empty({c4_count, block_size, 1}, scale_options);
+        swa_cache = torch::empty({swa_count, window_size, n_heads, head_dim},
+                                 cache_options);
+        compress_kv_state =
+            torch::empty({swa_count, block_size, 2 * head_dim}, state_options);
+        compress_score_state =
+            torch::empty({swa_count, block_size, 2 * head_dim}, state_options);
+        compress_index_kv_state = torch::empty(
+            {swa_count, block_size, 2 * index_head_dim}, state_options);
+        compress_index_score_state = torch::empty(
+            {swa_count, block_size, 2 * index_head_dim}, state_options);
+      } else if (cr == 128) {
+        key_cache = torch::empty({c128_count, block_size, n_heads, head_dim},
+                                 cache_options);
+        swa_cache = torch::empty({swa_count, window_size, n_heads, head_dim},
+                                 cache_options);
+        compress_kv_state =
+            torch::empty({swa_count, block_size, head_dim}, state_options);
+        compress_score_state =
+            torch::empty({swa_count, block_size, head_dim}, state_options);
+      } else {
+        swa_cache = torch::empty({swa_count, window_size, n_heads, head_dim},
+                                 cache_options);
+      }
+
+#if defined(USE_NPU)
+      constexpr aclFormat npu_format_type = ACL_FORMAT_ND;
+      if (key_cache.defined()) {
+        key_cache = at_npu::native::npu_format_cast(key_cache, npu_format_type);
+      }
+      if (index_cache.defined()) {
+        index_cache =
+            at_npu::native::npu_format_cast(index_cache, npu_format_type);
+      }
+      if (indexer_cache_scale.defined()) {
+        indexer_cache_scale = at_npu::native::npu_format_cast(
+            indexer_cache_scale, npu_format_type);
+      }
+      if (swa_cache.defined()) {
+        swa_cache = at_npu::native::npu_format_cast(swa_cache, npu_format_type);
+      }
+      if (compress_kv_state.defined()) {
+        compress_kv_state =
+            at_npu::native::npu_format_cast(compress_kv_state, npu_format_type);
+      }
+      if (compress_score_state.defined()) {
+        compress_score_state = at_npu::native::npu_format_cast(
+            compress_score_state, npu_format_type);
+      }
+      if (compress_index_kv_state.defined()) {
+        compress_index_kv_state = at_npu::native::npu_format_cast(
+            compress_index_kv_state, npu_format_type);
+      }
+      if (compress_index_score_state.defined()) {
+        compress_index_score_state = at_npu::native::npu_format_cast(
+            compress_index_score_state, npu_format_type);
+      }
+#endif
+
+      layer_crs.push_back(cr);
+      if (cr_shape_summaries.find(cr) == cr_shape_summaries.end()) {
+        std::ostringstream summary;
+        if (cr == 1) {
+          summary << "swa_cache=" << shape_str(swa_cache);
+        } else if (cr == 4) {
+          summary << "key_cache=" << shape_str(key_cache)
+                  << ", index_cache=" << shape_str(index_cache)
+                  << ", indexer_cache_scale=" << shape_str(indexer_cache_scale)
+                  << ", swa_cache=" << shape_str(swa_cache)
+                  << ", compress_kv_state=" << shape_str(compress_kv_state)
+                  << ", compress_score_state="
+                  << shape_str(compress_score_state)
+                  << ", compress_index_kv_state="
+                  << shape_str(compress_index_kv_state)
+                  << ", compress_index_score_state="
+                  << shape_str(compress_index_score_state);
+        } else if (cr == 128) {
+          summary << "key_cache=" << shape_str(key_cache)
+                  << ", swa_cache=" << shape_str(swa_cache)
+                  << ", compress_kv_state=" << shape_str(compress_kv_state)
+                  << ", compress_score_state="
+                  << shape_str(compress_score_state);
+        } else {
+          summary << "swa_cache=" << shape_str(swa_cache)
+                  << ", key_cache=" << shape_str(key_cache)
+                  << ", index_cache=" << shape_str(index_cache)
+                  << ", indexer_cache_scale=" << shape_str(indexer_cache_scale)
+                  << ", compress_kv_state=" << shape_str(compress_kv_state)
+                  << ", compress_score_state="
+                  << shape_str(compress_score_state)
+                  << ", compress_index_kv_state="
+                  << shape_str(compress_index_kv_state)
+                  << ", compress_index_score_state="
+                  << shape_str(compress_index_score_state);
+        }
+        cr_shape_summaries.emplace(cr, summary.str());
+      }
+
+      kv_caches_.emplace_back(key_cache,
+                              index_cache,
+                              indexer_cache_scale,
+                              swa_cache,
+                              compress_kv_state,
+                              compress_score_state,
+                              compress_index_kv_state,
+                              compress_index_score_state);
+    }
+    LOG(INFO) << "[DSV4][KVCacheInit] layer_crs: " << int_vec_str(layer_crs);
+    for (const auto& [summary_cr, summary_shapes] : cr_shape_summaries) {
+      LOG(INFO) << "[DSV4][KVCacheInit] cr_" << summary_cr
+                << " shapes: " << summary_shapes;
+    }
+  } else if (FLAGS_enable_xtensor) {
     // XTensor mode: create xtensor-backed KV cache tensors.
     // For hybrid models, we still create full KV cache for all layers
     // since xtensor has its own memory management

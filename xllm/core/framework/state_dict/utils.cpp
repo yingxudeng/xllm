@@ -16,9 +16,31 @@ limitations under the License.
 
 #include "utils.h"
 
+#include <glog/logging.h>
+
+#include <sstream>
+
 namespace xllm {
 
 namespace weight {
+
+namespace {
+std::string tensor_shape(const torch::Tensor& tensor) {
+  if (!tensor.defined()) {
+    return "undef";
+  }
+  std::ostringstream os;
+  os << "[";
+  for (int64_t i = 0; i < tensor.dim(); ++i) {
+    if (i > 0) {
+      os << ", ";
+    }
+    os << tensor.size(i);
+  }
+  os << "]";
+  return os.str();
+}
+}  // namespace
 
 void load_weight(const StateDict& state_dict,
                  const std::string& name,
@@ -266,6 +288,23 @@ void load_moe_fused_weight(const StateDict& state_dict,
       w13_vec[idx] = torch::cat({w1_tensors[idx], w3_tensors[idx]});
     }
     const auto merged_weight = torch::stack(w13_vec);
+    if (w13.sizes() != merged_weight.sizes()) {
+      std::ostringstream debug_msg;
+      debug_msg << "weight size mismatch for " << state_dict.prefix() << "["
+                << start_expert_id << ":"
+                << (start_expert_id + num_experts_per_rank) << "].{"
+                << prefixes[0] << ", " << prefixes[1] << "}." << name
+                << " | expected(w13)=" << tensor_shape(w13)
+                << ", merged=" << tensor_shape(merged_weight)
+                << ", rank/world=" << rank << "/" << world_size;
+      if (!w1_tensors.empty() && w1_tensors[0].defined()) {
+        debug_msg << ", first_w1=" << tensor_shape(w1_tensors[0]);
+      }
+      if (!w3_tensors.empty() && w3_tensors[0].defined()) {
+        debug_msg << ", first_w3=" << tensor_shape(w3_tensors[0]);
+      }
+      LOG(ERROR) << "[MOE_LOAD_DEBUG] " << debug_msg.str();
+    }
     CHECK_EQ(w13.sizes(), merged_weight.sizes())
         << "weight size mismatch for " << state_dict.prefix() << "["
         << start_expert_id << ":" << (start_expert_id + num_experts_per_rank)

@@ -18,6 +18,8 @@ limitations under the License.
 #include <glog/logging.h>
 
 #include <numeric>
+#include <sstream>
+#include <string>
 #include <vector>
 
 #include "framework/parallel_state/parallel_state.h"
@@ -56,6 +58,16 @@ torch::Tensor slice_expert_weights(const torch::Tensor& weight,
   return weight
       .slice(0, start_expert_id, start_expert_id + num_experts_per_rank)
       .contiguous();
+}
+
+std::string tensor_debug_info(const torch::Tensor& tensor) {
+  if (!tensor.defined()) {
+    return "undefined";
+  }
+  std::ostringstream os;
+  os << "dtype=" << c10::toString(tensor.scalar_type())
+     << ", shape=" << tensor.sizes() << ", device=" << tensor.device();
+  return os.str();
 }
 
 // Qwen3.5-MoE fused checkpoint fallback helpers.
@@ -138,6 +150,7 @@ FusedMoEImpl::FusedMoEImpl(const ModelArgs& model_args,
       hidden_size_(model_args.hidden_size()),
       n_shared_experts_(model_args.n_shared_experts()),
       is_gated_(moe_args.is_gated),
+      skip_gate_load_(moe_args.skip_gate_load),
       renormalize_(model_args.norm_topk_prob() ? 1 : 0),
       hidden_act_(model_args.hidden_act()),
       is_smoothquant_(false),
@@ -214,7 +227,25 @@ FusedMoEImpl::FusedMoEImpl(const ModelArgs& model_args,
 
   // create weight buffer
   const int64_t world_size = tp_pg_->world_size();
+  CHECK_GT(world_size, 0) << "invalid MoE tp world_size: " << world_size;
+  CHECK_GT(intermediate_size, 0)
+      << "invalid moe_intermediate_size: " << intermediate_size;
+  CHECK_EQ(intermediate_size % world_size, 0)
+      << "moe_intermediate_size(" << intermediate_size
+      << ") must be divisible by MoE tp world_size(" << world_size << ")";
   int64_t local_intermediate_size = intermediate_size / world_size;
+  LOG(INFO) << "[MOE_LOAD_DEBUG][FusedMoEInit] hidden_size=" << hidden_size_
+            << ", intermediate_size=" << intermediate_size
+            << ", local_intermediate_size=" << local_intermediate_size
+            << ", model_args.intermediate_size="
+            << model_args.intermediate_size()
+            << ", model_args.moe_intermediate_size="
+            << model_args.moe_intermediate_size()
+            << ", tp_group(rank/world)=" << tp_pg_->rank() << "/"
+            << tp_pg_->world_size() << ", ep_size=" << ep_size
+            << ", ep_rank=" << ep_rank
+            << ", num_experts_per_rank=" << num_experts_per_rank_
+            << ", start_expert_id=" << start_expert_id_;
   if (is_smoothquant_) {
     auto quant_option = options_.dtype(torch::kInt8);
     auto fp_option = options_.dtype(torch::kFloat32);
@@ -269,17 +300,38 @@ torch::Tensor FusedMoEImpl::select_experts(
     const torch::Tensor& hidden_states_2d,
     const torch::Tensor& router_logits_2d,
     SelectedExpertInfo& selected_expert_info) {
-  // prepare the parameters for select_experts
-  xllm::kernel::MoeFusedTopkParams moe_active_topk_params;
-  moe_active_topk_params.input = router_logits_2d;
-  moe_active_topk_params.finished = torch::Tensor();
-  moe_active_topk_params.topk = topk_;
-  moe_active_topk_params.scoring_func = "softmax";
-  auto [topk_weights, topk_ids] =
-      xllm::kernel::moe_active_topk(moe_active_topk_params);
-  topk_ids = topk_ids.to(torch::kInt32);
-  if (renormalize_) {
-    topk_weights = topk_weights / (topk_weights.sum(-1, true) + 1e-6);
+  torch::Tensor topk_weights;
+  torch::Tensor topk_ids;
+  std::optional<torch::Tensor> e_score_correction_bias = std::nullopt;
+  if (e_score_correction_bias_.defined()) {
+    e_score_correction_bias = e_score_correction_bias_;
+  }
+  if (preselected_experts_.has_value()) {
+    const auto& selected = preselected_experts_.value();
+    topk_weights = selected.first.reshape({-1, topk_});
+    topk_ids = selected.second.reshape({-1, topk_}).to(torch::kInt32);
+    CHECK_EQ(topk_weights.size(0), hidden_states_2d.size(0))
+        << "preselected topk_weights token count mismatch, expected "
+        << hidden_states_2d.size(0) << ", got " << topk_weights.size(0);
+    CHECK_EQ(topk_ids.size(0), hidden_states_2d.size(0))
+        << "preselected topk_ids token count mismatch, expected "
+        << hidden_states_2d.size(0) << ", got " << topk_ids.size(0);
+    topk_weights = topk_weights.to(hidden_states_2d.dtype());
+  } else {
+    // prepare the parameters for select_experts
+    xllm::kernel::MoeFusedTopkParams moe_active_topk_params;
+    moe_active_topk_params.input = router_logits_2d;
+    moe_active_topk_params.topk = topk_;
+    moe_active_topk_params.num_expert_group = num_expert_group_;
+    moe_active_topk_params.topk_group = topk_group_;
+    moe_active_topk_params.normalize = renormalize_;
+    moe_active_topk_params.normed_by = "topk_logit";
+    moe_active_topk_params.scoring_func = scoring_func_;
+    moe_active_topk_params.route_scale = route_scale_;
+    moe_active_topk_params.e_score_correction_bias = e_score_correction_bias;
+    std::tie(topk_weights, topk_ids) =
+        xllm::kernel::moe_active_topk(moe_active_topk_params);
+    topk_ids = topk_ids.to(torch::kInt32);
   }
 
   xllm::kernel::MoeInitRoutingV2Params moe_init_routing_params;
@@ -440,6 +492,72 @@ torch::Tensor FusedMoEImpl::forward(const torch::Tensor& hidden_states,
   return output;
 }
 
+torch::Tensor FusedMoEImpl::forward_with_selected_experts(
+    const torch::Tensor& hidden_states,
+    const torch::Tensor& topk_weights,
+    const torch::Tensor& topk_ids,
+    const ModelInputParams& input_params) {
+  auto input = hidden_states;
+  auto selected_topk_weights = topk_weights;
+  auto selected_topk_ids = topk_ids;
+  bool need_slice = false;
+  if (parallel_args_.dp_size() > 1 && parallel_args_.ep_size() > 1) {
+    input = parallel_state::gather(input,
+                                   parallel_args_.dp_local_process_group_,
+                                   input_params.dp_global_token_nums);
+    selected_topk_weights =
+        parallel_state::gather(selected_topk_weights,
+                               parallel_args_.dp_local_process_group_,
+                               input_params.dp_global_token_nums);
+    selected_topk_ids =
+        parallel_state::gather(selected_topk_ids,
+                               parallel_args_.dp_local_process_group_,
+                               input_params.dp_global_token_nums);
+    need_slice = true;
+  }
+
+  auto hidden_rows = input.reshape({-1, input.size(-1)}).size(0);
+  auto weights_2d = selected_topk_weights.reshape({-1, topk_});
+  auto ids_2d = selected_topk_ids.reshape({-1, topk_});
+  CHECK_EQ(weights_2d.size(0), hidden_rows)
+      << "topk_weights token count mismatch, expected " << hidden_rows
+      << ", got " << weights_2d.size(0);
+  CHECK_EQ(ids_2d.size(0), hidden_rows)
+      << "topk_ids token count mismatch, expected " << hidden_rows << ", got "
+      << ids_2d.size(0);
+
+  preselected_experts_ =
+      std::make_pair(weights_2d.to(input.dtype()), ids_2d.to(torch::kInt32));
+
+  std::optional<torch::Tensor> shared_output = std::nullopt;
+  if (n_shared_experts_ > 0) {
+    shared_output = shared_experts_(input);
+    if (shared_expert_gate_) {
+      auto gate = torch::sigmoid(shared_expert_gate_->forward(input));
+      if (shared_output.has_value()) {
+        torch::Tensor res = gate * shared_output.value();
+        shared_output = res;
+      }
+    }
+  }
+
+  auto router_shape = input.sizes().vec();
+  router_shape.back() = num_total_experts_;
+  auto router_logits = torch::empty(router_shape, input.options());
+  auto output = forward_expert(input, router_logits, shared_output);
+  preselected_experts_ = std::nullopt;
+
+  if (need_slice) {
+    const auto& dp_tokens = input_params.dp_global_token_nums;
+    const int64_t dp_rank = parallel_args_.dp_local_process_group_->rank();
+    auto start =
+        std::accumulate(dp_tokens.begin(), dp_tokens.begin() + dp_rank, 0);
+    auto end = start + dp_tokens[dp_rank];
+    output = output.slice(0, start, end);
+  }
+  return output;
+}
+
 void FusedMoEImpl::load_e_score_correction_bias(const StateDict& state_dict) {
   if (e_score_correction_bias_.defined() &&
       !e_score_correction_bias_is_loaded_) {
@@ -448,6 +566,12 @@ void FusedMoEImpl::load_e_score_correction_bias(const StateDict& state_dict) {
 }
 
 void FusedMoEImpl::load_experts(const StateDict& state_dict) {
+  LOG(INFO) << "[MOE_LOAD_DEBUG][FusedMoE.load_experts] prefix="
+            << state_dict.prefix() << ", expected_w13=" << w13_.sizes()
+            << ", expected_w2=" << w2_.sizes() << ", tp_group(rank/world)="
+            << tp_pg_->rank() << "/" << tp_pg_->world_size()
+            << ", start_expert_id=" << start_expert_id_
+            << ", num_experts_per_rank=" << num_experts_per_rank_;
   const int64_t rank = tp_pg_->rank();
   const int64_t world_size = tp_pg_->world_size();
   const int64_t start_expert_id = start_expert_id_;
@@ -455,14 +579,41 @@ void FusedMoEImpl::load_experts(const StateDict& state_dict) {
   std::vector<std::string> prefixes = {"gate_proj.", "up_proj."};
   if (is_smoothquant_) {
     LOAD_MOE_FUSED_WEIGHT("qweight", w1, w3, w13);
+    if (!w13_is_loaded_) {
+      prefixes = {"w1.", "w3."};
+      LOAD_MOE_FUSED_WEIGHT("qweight", w1, w3, w13);
+    }
     LOAD_MOE_FUSED_WEIGHT("per_channel_scale", w1_scale, w3_scale, w13_scale);
+    if (!w13_scale_is_loaded_) {
+      prefixes = {"w1.", "w3."};
+      LOAD_MOE_FUSED_WEIGHT("per_channel_scale", w1_scale, w3_scale, w13_scale);
+    }
     LOAD_MOE_WEIGHT("up_proj.", "smooth", input_smooth, -1);
+    if (!input_smooth_is_loaded_) {
+      LOAD_MOE_WEIGHT("w3.", "smooth", input_smooth, -1);
+    }
     LOAD_MOE_WEIGHT("down_proj.", "qweight", w2, 1);
+    if (!w2_is_loaded_) {
+      LOAD_MOE_WEIGHT("w2.", "qweight", w2, 1);
+    }
     LOAD_MOE_WEIGHT("down_proj.", "per_channel_scale", w2_scale, -1);
+    if (!w2_scale_is_loaded_) {
+      LOAD_MOE_WEIGHT("w2.", "per_channel_scale", w2_scale, -1);
+    }
     LOAD_MOE_WEIGHT("down_proj.", "smooth", act_smooth, 0);
+    if (!act_smooth_is_loaded_) {
+      LOAD_MOE_WEIGHT("w2.", "smooth", act_smooth, 0);
+    }
   } else {
     LOAD_MOE_FUSED_WEIGHT("weight", w1, w3, w13);
+    if (!w13_is_loaded_) {
+      prefixes = {"w1.", "w3."};
+      LOAD_MOE_FUSED_WEIGHT("weight", w1, w3, w13);
+    }
     LOAD_MOE_WEIGHT("down_proj.", "weight", w2, 1);
+    if (!w2_is_loaded_) {
+      LOAD_MOE_WEIGHT("w2.", "weight", w2, 1);
+    }
 
     // Some Qwen3.5-MoE checkpoints store expert weights in fused tensors
     // (gate_up_proj / down_proj). Fall back to this format when split
@@ -485,6 +636,34 @@ void FusedMoEImpl::load_experts(const StateDict& state_dict) {
                                                w2_);
     }
   }
+
+  LOG(INFO) << "[QUANT_DEBUG][FusedMoE.load_experts] prefix="
+            << state_dict.prefix()
+            << ", quant_method="
+            << (quant_args_.quant_method().empty() ? "<empty>"
+                                                   : quant_args_.quant_method())
+            << ", is_smoothquant=" << (is_smoothquant_ ? "true" : "false")
+            << ", w13_loaded=" << (w13_is_loaded_ ? "true" : "false")
+            << ", w2_loaded=" << (w2_is_loaded_ ? "true" : "false")
+            << ", w13={" << tensor_debug_info(w13_) << "}"
+            << ", w2={" << tensor_debug_info(w2_) << "}";
+
+  if (is_smoothquant_) {
+    LOG(INFO) << "[QUANT_DEBUG][FusedMoE.load_experts][SmoothQuant] prefix="
+              << state_dict.prefix()
+              << ", w13_scale_loaded="
+              << (w13_scale_is_loaded_ ? "true" : "false")
+              << ", input_smooth_loaded="
+              << (input_smooth_is_loaded_ ? "true" : "false")
+              << ", w2_scale_loaded="
+              << (w2_scale_is_loaded_ ? "true" : "false")
+              << ", act_smooth_loaded="
+              << (act_smooth_is_loaded_ ? "true" : "false")
+              << ", w13_scale={" << tensor_debug_info(w13_scale_) << "}"
+              << ", input_smooth={" << tensor_debug_info(input_smooth_) << "}"
+              << ", w2_scale={" << tensor_debug_info(w2_scale_) << "}"
+              << ", act_smooth={" << tensor_debug_info(act_smooth_) << "}";
+  }
 }
 
 void FusedMoEImpl::load_state_dict(const StateDict& state_dict) {
@@ -493,9 +672,24 @@ void FusedMoEImpl::load_state_dict(const StateDict& state_dict) {
   }
 
   if (n_shared_experts_ > 0) {
-    shared_experts_->load_state_dict(
-        state_dict.get_dict_with_prefix("shared_expert."));
+    auto shared_expert_state =
+        state_dict.get_dict_with_prefix("shared_expert.");
+    if (shared_expert_state.size() == 0) {
+      shared_expert_state = state_dict.get_dict_with_prefix("shared_experts.");
+    }
+    if (shared_expert_state.size() > 0) {
+      if (shared_expert_state.get_tensor("w1.weight").defined() ||
+          shared_expert_state.get_tensor("w1.qweight").defined()) {
+        shared_experts_->load_state_dict(
+            shared_expert_state, {"w1.", "w3."}, "w2.");
+      } else {
+        shared_experts_->load_state_dict(shared_expert_state);
+      }
+    }
     auto weight = state_dict.get_tensor("shared_expert_gate.weight");
+    if (!weight.defined()) {
+      weight = state_dict.get_tensor("shared_experts_gate.weight");
+    }
     if (weight.defined()) {
       weight = weight.reshape({weight.size(0), -1});
       DCHECK_EQ(shared_expert_gate_->weight.sizes(), weight.sizes())
@@ -504,8 +698,14 @@ void FusedMoEImpl::load_state_dict(const StateDict& state_dict) {
     }
   }
 
-  gate_->load_state_dict(state_dict.get_dict_with_prefix("gate."));
-  load_e_score_correction_bias(state_dict.get_dict_with_prefix("gate."));
+  // Skip internal gate loading when an external gate module (e.g.
+  // DeepseekV4Gate) already handles expert routing.  In that path the decoder
+  // layer calls forward_with_selected_experts(), so this internal gate_ is
+  // never executed and loading its weights would be redundant.
+  if (!skip_gate_load_) {
+    gate_->load_state_dict(state_dict.get_dict_with_prefix("gate."));
+    load_e_score_correction_bias(state_dict.get_dict_with_prefix("gate."));
+  }
   load_experts(state_dict.get_dict_with_prefix("experts."));
 }
 

@@ -339,6 +339,11 @@ struct ModelInputParams {
 
     params.new_cache_slots = safe_to(new_cache_slots, device, true);
     params.block_tables = safe_to(block_tables, device, true);
+    for (const auto& t : multi_block_tables) {
+      // Keep DSA multi-block tables on CPU for host-side metadata expansion.
+      params.multi_block_tables.push_back(
+          safe_to(t, t.options().device(torch::kCPU), true));
+    }
     params.kv_seq_lens_vec = kv_seq_lens_vec;
     params.q_seq_lens_vec = q_seq_lens_vec;
 
@@ -498,6 +503,10 @@ struct ModelInputParams {
 
   // IntTensor: [n_seq, max_n_blocks]
   torch::Tensor block_tables;
+
+  // multi block manager block_tables for DeepSeek V4
+  // vector of (batch_size, max_block_length_i) tensors, one per manager
+  std::vector<torch::Tensor> multi_block_tables;
 
   // the indptr of the paged kv-cache
   // used in flashinfer

@@ -232,6 +232,29 @@ bool LLMEngine::init_model(MasterStatus master_status) {
 
   LOG(INFO) << "Initializing model with " << args_;
   LOG(INFO) << "Initializing model with quant args: " << quant_args_;
+  const bool has_quant_method = !quant_args_.quant_method().empty();
+  const bool has_quantize_type = !quant_args_.quantize_type().empty();
+  const bool quant_enabled = has_quant_method || has_quantize_type;
+  std::string quant_route = "none";
+  if (has_quant_method && has_quantize_type) {
+    quant_route = "quant_method+quantize_type";
+  } else if (has_quant_method) {
+    quant_route = "quant_method";
+  } else if (has_quantize_type) {
+    quant_route = "quantize_type";
+  }
+  LOG(INFO) << "[QUANT_DEBUG][Init] enabled="
+            << (quant_enabled ? "true" : "false") << ", route=" << quant_route
+            << ", quant_method="
+            << (has_quant_method ? quant_args_.quant_method() : "<empty>")
+            << ", quantize_type="
+            << (has_quantize_type ? quant_args_.quantize_type() : "<empty>")
+            << ", torch_dtype=" << quant_args_.torch_dtype()
+            << ", bits=" << quant_args_.bits()
+            << ", moe_weight_bits=" << quant_args_.moe_weight_bits()
+            << ", group_size=" << quant_args_.group_size()
+            << ", activation_dynamic=" << quant_args_.activation_dynamic()
+            << ", fmt=" << quant_args_.fmt();
   LOG(INFO) << "Initializing model with tokenizer args: " << tokenizer_args_;
   LOG(INFO) << "Initializing model with random seed: " << FLAGS_random_seed;
 
@@ -519,25 +542,144 @@ Engine::KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
   }
 #endif
 
-  int64_t full_attention_interval = (args_.full_attention_interval() < 1)
-                                        ? 1
-                                        : args_.full_attention_interval();
-  int64_t num_full_attention_layers =
-      kv_cache_cap.n_layers / full_attention_interval;
-  int64_t num_linear_attention_layers =
-      kv_cache_cap.n_layers - num_full_attention_layers;
-  // compute kv cache n_blocks
-  const int32_t block_size = options_.block_size();
-  const int64_t full_cache_block_size_in_bytes =
-      block_size * (slot_size + index_slot_size + scale_slot_size);
-  const int64_t total_cache_block_size_in_bytes =
-      num_full_attention_layers * full_cache_block_size_in_bytes +
-      num_linear_attention_layers * linear_slot_size;
-  CHECK_GT(total_cache_block_size_in_bytes, 0)
-      << "invalid cache block size estimate";
-  kv_cache_cap.n_blocks =
-      kv_cache_cap.cache_size_in_bytes / total_cache_block_size_in_bytes;
-  CHECK_GT(kv_cache_cap.n_blocks, 0) << "no n_blocks for kv cache";
+  // DeepSeek V4: compute swa_count (from max_seqs_per_batch), then subtract
+  // all swa-related cache size from cache_size_in_bytes, then compute
+  // c4_count / c128_count (c4_count = 32 * c128_count).
+  // cache_size_in_bytes is already the full available device memory.
+  if (args_.model_type() == "deepseek_v4") {
+    const int64_t max_seqs =
+        static_cast<int64_t>(std::max(options_.max_seqs_per_batch(), 1));
+    kv_cache_cap.swa_count = 12 * max_seqs + 2;
+
+    const int32_t block_size = 128;
+    const int64_t head_dim = args_.head_dim();
+    const int32_t index_head_dim = std::max(args_.index_head_dim(), 1);
+    const int32_t window_size = std::max(args_.window_size(), 1);
+    const auto& compress_ratios = args_.compress_ratios();
+    const int64_t float32_size = 4;
+
+    int64_t n_c1_layers = 0;
+    int64_t n_c4_layers = 0;
+    int64_t n_c128_layers = 0;
+    for (int64_t i = 0; i < args_.n_layers(); ++i) {
+      const int32_t ratio = (i < static_cast<int64_t>(compress_ratios.size()))
+                                ? compress_ratios[static_cast<size_t>(i)]
+                                : 1;
+      if (ratio == 1) {
+        ++n_c1_layers;
+      } else if (ratio == 4) {
+        ++n_c4_layers;
+      } else if (ratio == 128) {
+        ++n_c128_layers;
+      }
+    }
+
+    // 1) Size of all caches that use swa_count (tied to max_seqs_per_batch).
+    // c1 layer: 1 cache — swa (swa_count, window_size, 1, head_dim)
+    // c4 layer: 5 caches use swa — swa_cache, compress_kv_state,
+    // compress_score_state,
+    //           compress_index_kv_state, compress_index_score_state (shapes
+    //           with 128, float32)
+    // c128 layer: 3 caches use swa — swa_cache, compress_kv_state,
+    // compress_score_state
+    const int64_t swa_bytes_per_c1_layer =
+        kv_cache_cap.swa_count * window_size * head_dim * dtype_size;
+    const int64_t swa_bytes_per_c4_layer =
+        kv_cache_cap.swa_count *
+        (window_size * head_dim * dtype_size +
+         block_size * (2 * head_dim * float32_size) *
+             2 +  // kv_state + score_state
+         block_size * (2 * index_head_dim * float32_size) *
+             2);  // index_kv + index_score
+    const int64_t swa_bytes_per_c128_layer =
+        kv_cache_cap.swa_count *
+        (window_size * head_dim * dtype_size +
+         block_size * head_dim * float32_size * 2);  // kv_state + score_state
+
+    const int64_t constant_swa_bytes = n_c1_layers * swa_bytes_per_c1_layer +
+                                       n_c4_layers * swa_bytes_per_c4_layer +
+                                       n_c128_layers * swa_bytes_per_c128_layer;
+
+    // 2) Remainder is for token pools (c4_count / c128_count).
+    const int64_t token_mem = std::max(
+        int64_t(0), kv_cache_cap.cache_size_in_bytes - constant_swa_bytes);
+
+    // 3) bytes per token block (per layer): c4 = key+index+scale; c128 = key
+    // only
+    const int64_t bytes_per_c4_block =
+        block_size *
+        (head_dim * dtype_size + index_head_dim * 1 + 2 * 2);  // scale float16
+    const int64_t bytes_per_c128_block = block_size * head_dim * dtype_size;
+
+    kv_cache_cap.c4_count = 0;
+    kv_cache_cap.c128_count = 0;
+    if (n_c4_layers > 0 && n_c128_layers > 0) {
+      // Coupled mode: keep C4/C128 token pools aligned with 32:1 ratio.
+      const int64_t denom = 32 * n_c4_layers * bytes_per_c4_block +
+                            n_c128_layers * bytes_per_c128_block;
+      if (denom > 0 && token_mem > 0) {
+        kv_cache_cap.c128_count = token_mem / denom;
+        kv_cache_cap.c4_count = 32 * kv_cache_cap.c128_count;
+      }
+    } else if (n_c4_layers > 0) {
+      // Only C4 layers exist.
+      const int64_t denom_c4 = n_c4_layers * bytes_per_c4_block;
+      if (denom_c4 > 0 && token_mem > 0) {
+        kv_cache_cap.c4_count = token_mem / denom_c4;
+      }
+    } else if (n_c128_layers > 0) {
+      // Only C128 layers exist.
+      const int64_t denom_c128 = n_c128_layers * bytes_per_c128_block;
+      if (denom_c128 > 0 && token_mem > 0) {
+        kv_cache_cap.c128_count = token_mem / denom_c128;
+      }
+    }
+    CHECK_GT(kv_cache_cap.swa_count, 0) << "DSV4 swa_count must be > 0";
+    if (n_c4_layers > 0) {
+      CHECK_GT(kv_cache_cap.c4_count, 0)
+          << "DSV4 c4_count must be > 0 when compress_ratio=4 layers exist";
+    }
+    if (n_c128_layers > 0) {
+      CHECK_GT(kv_cache_cap.c128_count, 0)
+          << "DSV4 c128_count must be > 0 when compress_ratio=128 layers "
+             "exist";
+    }
+
+    // Composite token managers derive their own pool sizes via:
+    //   num_blocks / ratio.
+    // Back-compute a valid common base num_blocks for ratio-4/128 pools.
+    int64_t manager_base_blocks = 0;
+    if (n_c4_layers > 0) {
+      manager_base_blocks =
+          std::max(manager_base_blocks, kv_cache_cap.c4_count * 4);
+    }
+    if (n_c128_layers > 0) {
+      manager_base_blocks =
+          std::max(manager_base_blocks, kv_cache_cap.c128_count * 128);
+    }
+    kv_cache_cap.n_blocks = std::max<int64_t>(manager_base_blocks, 1);
+
+  } else {
+    int64_t full_attention_interval = (args_.full_attention_interval() < 1)
+                                          ? 1
+                                          : args_.full_attention_interval();
+    int64_t num_full_attention_layers =
+        kv_cache_cap.n_layers / full_attention_interval;
+    int64_t num_linear_attention_layers =
+        kv_cache_cap.n_layers - num_full_attention_layers;
+    // compute kv cache n_blocks
+    const int32_t block_size = options_.block_size();
+    const int64_t full_cache_block_size_in_bytes =
+        block_size * (slot_size + index_slot_size + scale_slot_size);
+    const int64_t total_cache_block_size_in_bytes =
+        num_full_attention_layers * full_cache_block_size_in_bytes +
+        num_linear_attention_layers * linear_slot_size;
+    CHECK_GT(total_cache_block_size_in_bytes, 0)
+        << "invalid cache block size estimate";
+    kv_cache_cap.n_blocks =
+        kv_cache_cap.cache_size_in_bytes / total_cache_block_size_in_bytes;
+    CHECK_GT(kv_cache_cap.n_blocks, 0) << "no n_blocks for kv cache";
+  }
   return kv_cache_cap;
 }
 
@@ -557,7 +699,15 @@ bool LLMEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
   // init kv cache for each worker
   std::vector<std::vector<int64_t>> kv_cache_shape;
   kv_cache_shape.reserve(2);
-  if (options_.enable_mla()) {
+  if (args_.model_type() == "deepseek_v4") {
+    kv_cache_shape.emplace_back(std::vector<int64_t>{kv_cache_cap.swa_count,
+                                                     kv_cache_cap.c4_count,
+                                                     kv_cache_cap.c128_count});
+    LOG(INFO) << "Initializing DSV4 kv cache with shape: [swa_count="
+              << kv_cache_cap.swa_count
+              << ", c4_count=" << kv_cache_cap.c4_count
+              << ", c128_count=" << kv_cache_cap.c128_count << "]";
+  } else if (options_.enable_mla()) {
 #if defined(USE_NPU)
     if (args_.model_type() == "deepseek_v3" && FLAGS_enable_prefix_cache) {
       kv_cache_shape.emplace_back(
@@ -588,7 +738,7 @@ bool LLMEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
     kv_cache_shape.emplace_back(std::vector<int64_t>{
         kv_cache_cap.n_blocks, block_size, n_local_kv_heads_, head_dim_});
   }
-  if (enable_lighting_indexer) {
+  if (enable_lighting_indexer && args_.model_type() != "deepseek_v4") {
     kv_cache_shape.emplace_back(std::vector<int64_t>{
         kv_cache_cap.n_blocks, block_size, 1, args_.index_head_dim()});
   }
@@ -605,26 +755,31 @@ bool LLMEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
                              args_.linear_value_head_dim()});
   }
 #if defined(USE_MLU)
-  // transpose kv_cache layout for mlu
-  // default layout: [n_blocks, block_size, n_head, head_dim]
-  // => mlu layout: [n_blocks, n_head, block_size, head_dim]
-  for (auto& shape : kv_cache_shape) {
-    std::swap(shape[1], shape[2]);
-  }
-  if (options_.enable_mla()) {
-    kv_cache_shape[0][3] = args_.kv_lora_rank() + args_.qk_rope_head_dim();
-    kv_cache_shape[1] = std::vector<int64_t>{};
+  // transpose kv_cache layout for mlu (skip for DSV4: shape is 3D counts)
+  if (args_.model_type() != "deepseek_v4") {
+    for (auto& shape : kv_cache_shape) {
+      std::swap(shape[1], shape[2]);
+    }
+    if (options_.enable_mla()) {
+      kv_cache_shape[0][3] = args_.kv_lora_rank() + args_.qk_rope_head_dim();
+      kv_cache_shape[1] = std::vector<int64_t>{};
+    }
   }
 #endif
 
 #if defined(USE_ILU)
-  for (auto& shape : kv_cache_shape) {
-    std::swap(shape[1], shape[2]);
+  if (args_.model_type() != "deepseek_v4") {
+    for (auto& shape : kv_cache_shape) {
+      std::swap(shape[1], shape[2]);
+    }
   }
 #endif
   LOG(INFO) << "Initializing k cache with shape: [" << kv_cache_shape[0] << "]";
-  LOG(INFO) << "Initializing v cache with shape: [" << kv_cache_shape[1] << "]";
-  if (enable_lighting_indexer) {
+  if (kv_cache_shape.size() > 1) {
+    LOG(INFO) << "Initializing v cache with shape: [" << kv_cache_shape[1]
+              << "]";
+  }
+  if (enable_lighting_indexer && kv_cache_shape.size() > 2) {
     LOG(INFO) << "Initializing indexer cache with shape: [" << kv_cache_shape[2]
               << "]";
   }
@@ -650,6 +805,35 @@ bool LLMEngine::allocate_kv_cache(const Engine::KVCacheCapacity& kv_cache_cap) {
       .num_layers(args_.n_layers())
       .slot_size(kv_cache_cap.slot_size)
       .model_id(options_.model_id());
+  if (args_.model_type() == "deepseek_v4") {
+    constexpr uint32_t kManagerTypeBlockManagerImpl = 0;
+    constexpr uint32_t kManagerTypeSlidingWindowBlockManager = 1;
+
+    std::vector<uint32_t> manager_types{kManagerTypeSlidingWindowBlockManager};
+    std::vector<uint32_t> manager_compress_ratios{
+        0};  // unused for sliding window manager
+    std::vector<uint32_t> token_manager_ratios;
+    token_manager_ratios.reserve(2);
+    for (const auto ratio : args_.compress_ratios()) {
+      if (ratio == 4 || ratio == 128) {
+        const auto ratio_u32 = static_cast<uint32_t>(ratio);
+        if (std::find(token_manager_ratios.begin(),
+                      token_manager_ratios.end(),
+                      ratio_u32) == token_manager_ratios.end()) {
+          token_manager_ratios.push_back(ratio_u32);
+        }
+      }
+    }
+    for (const auto ratio : token_manager_ratios) {
+      manager_types.push_back(kManagerTypeBlockManagerImpl);
+      manager_compress_ratios.push_back(ratio);
+    }
+
+    options.window_size(std::max(args_.window_size(), 1))
+        .manager_types(std::move(manager_types))
+        .compress_ratios(std::move(manager_compress_ratios))
+        .max_seqs_per_batch(options_.max_seqs_per_batch());
+  }
 
   if (options_.host_blocks_factor() > 1.0 || options_.enable_kvcache_store()) {
     kv_cache_manager_ =

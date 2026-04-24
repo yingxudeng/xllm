@@ -172,6 +172,12 @@ message BlockTables {
   repeated int32 block_tables = 1;
 }
 
+// One block manager's block tables for all sequences in a batch.
+// Each element is a BlockTables for one sequence.
+message MultiBlockTables {
+  repeated BlockTables block_tables = 1;
+}
+
 message BlockPair {
   int32 device_block_id = 1;
   int32 host_block_id = 2;
@@ -292,6 +298,9 @@ message ForwardInput {
   repeated string request_ids = 44;
   repeated int32 mtp_shifted_token_ids = 45;
   DiTForwardInput dit_forward_input = 46;
+  // multi block manager support for DeepSeek V4
+  // [manager_num] x [batch_size] x [block_ids]
+  repeated MultiBlockTables multi_block_tables_vec = 47;
 }
 
  message BatchedForwardInputs {

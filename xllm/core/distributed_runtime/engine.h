@@ -182,6 +182,12 @@ class Engine {
     int64_t index_slot_size = 0;
     int64_t linear_slot_size = 0;
     int64_t n_layers = 0;
+    // DeepSeek V4: per-pool block counts (only used when model_type ==
+    // deepseek_v4)
+    int64_t swa_count = 0;  // SLIDING_WINDOW pool size, 12*max_seqs_per_batch+2
+    int64_t c4_count =
+        0;  // compress_ratio 4 token pool size, c4_count = 32*c128_count
+    int64_t c128_count = 0;  // compress_ratio 128 token pool size
   };
 
  protected:

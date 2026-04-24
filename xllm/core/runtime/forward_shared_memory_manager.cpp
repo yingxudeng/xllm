@@ -317,6 +317,11 @@ size_t calculate_raw_forward_input_size(const RawForwardInput& input) {
   total += get_vector_to_tensor_size(input.seq_lens);
   total += get_vector_to_tensor_size(input.new_token_slot_ids);
   total += get_2d_vector_to_tensor_size(input.block_tables_vec);
+  // multi block manager support
+  total += type_size<int32_t>;  // manager_num
+  for (const auto& mgr : input.multi_block_tables_vec) {
+    total += get_2d_vector_to_tensor_size(mgr);
+  }
   total += get_vector_to_tensor_size(input.paged_kv_indptr);
   total += get_vector_to_tensor_size(input.paged_kv_indices);
   total += get_vector_to_tensor_size(input.paged_kv_last_page_len);
@@ -1314,6 +1319,18 @@ inline void deserialize_raw_forward_input(const char*& buffer,
   read_tensor(buffer, input_params.new_cache_slots);
   read_tensor(buffer, input_params.block_tables);
 
+  // multi block manager support
+  {
+    int32_t manager_num = 0;
+    read_data(buffer, manager_num);
+    input_params.multi_block_tables.reserve(manager_num);
+    for (int32_t m = 0; m < manager_num; ++m) {
+      torch::Tensor mgr_table;
+      read_tensor(buffer, mgr_table);
+      input_params.multi_block_tables.push_back(std::move(mgr_table));
+    }
+  }
+
   // read dit input
   read_dit_forward_input(buffer, input_params.dit_forward_input);
 
@@ -1405,6 +1422,11 @@ inline void serialize_raw_forward_input(const RawForwardInput& input,
   // root cause is identified and the error is resolved.
   write_vector_to_tensor(buffer, input.new_token_slot_ids);
   write_2d_vector_to_tensor(buffer, input.block_tables_vec);
+  // multi block manager support
+  write_data(buffer, (int32_t)input.multi_block_tables_vec.size());
+  for (const auto& mgr : input.multi_block_tables_vec) {
+    write_2d_vector_to_tensor(buffer, mgr);
+  }
 
   // write dit input
   write_dit_forward_input(buffer, input.dit_forward_input);
@@ -1575,6 +1597,13 @@ void convert_raw_forward_input_to_forward_input(RawForwardInput& raw_input,
   util::pad_2d_vector(raw_input.block_tables_vec, 0);
   input_params.block_tables =
       create_2d_tensor(std::move(raw_input.block_tables_vec), torch::kInt);
+
+  // multi block manager support
+  for (auto& mgr_tables : raw_input.multi_block_tables_vec) {
+    util::pad_2d_vector(mgr_tables, /*pad_value=*/-1);
+    input_params.multi_block_tables.push_back(
+        create_2d_tensor(std::move(mgr_tables), torch::kInt));
+  }
 
   input_params.src_block_indices =
       torch::tensor(std::move(raw_input.src_block_indices), tensor_options);

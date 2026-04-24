@@ -106,6 +106,7 @@ class ColumnParallelLinearImpl : public torch::nn::Module {
 
   // FP8 quantization parameters
   DEFINE_FUSED_WEIGHT(weight_scale);  // FP8 weight scale
+  DEFINE_FUSED_WEIGHT(weight_offset);  // W8A8 dynamic weight offset
   DEFINE_FUSED_WEIGHT(
       input_scale);  // FP8 input (activation) scale for static quantization
 
@@ -164,6 +165,7 @@ class QKVParallelLinearImpl : public torch::nn::Module {
 
   // FP8 quantization parameters
   DEFINE_FUSED_WEIGHT(weight_scale);  // FP8 weight scale
+  DEFINE_FUSED_WEIGHT(weight_offset);  // W8A8 dynamic weight offset
   DEFINE_FUSED_WEIGHT(
       input_scale);  // FP8 input (activation) scale for static quantization
 
@@ -246,6 +248,7 @@ class RowParallelLinearImpl : public torch::nn::Module {
 
   // FP8 quantization parameters
   DEFINE_WEIGHT(weight_scale);  // FP8 weight scale
+  DEFINE_WEIGHT(weight_offset);  // W8A8 dynamic weight offset
   DEFINE_WEIGHT(
       input_scale);  // FP8 input (activation) scale for static quantization
 
@@ -293,7 +296,10 @@ class ReplicatedLinearImpl : public torch::nn::Module {
   // we allocate the transpose since linear performs XA^T.
   // A^T: [out_features, in_features]
   DEFINE_WEIGHT(weight);
+  DEFINE_WEIGHT(weight_scale);
+  DEFINE_WEIGHT(weight_offset);
   DEFINE_WEIGHT(bias);
+  QuantArgs quant_args_;
 };
 TORCH_MODULE(ReplicatedLinear);
 

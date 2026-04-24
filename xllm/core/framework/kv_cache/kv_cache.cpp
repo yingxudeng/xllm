@@ -47,6 +47,23 @@ KVCache::KVCache(torch::Tensor key_cache,
       conv_cache_(std::move(conv_cache)),
       ssm_cache_(std::move(ssm_cache)) {}
 
+KVCache::KVCache(torch::Tensor key_cache,
+                 torch::Tensor index_cache,
+                 torch::Tensor indexer_cache_scale,
+                 torch::Tensor swa_cache,
+                 torch::Tensor compress_kv_state,
+                 torch::Tensor compress_score_state,
+                 torch::Tensor compress_index_kv_state,
+                 torch::Tensor compress_index_score_state)
+    : key_cache_(std::move(key_cache)),
+      index_cache_(std::move(index_cache)),
+      indexer_cache_scale_(std::move(indexer_cache_scale)),
+      swa_cache_(std::move(swa_cache)),
+      compress_kv_state_(std::move(compress_kv_state)),
+      compress_score_state_(std::move(compress_score_state)),
+      compress_index_kv_state_(std::move(compress_index_kv_state)),
+      compress_index_score_state_(std::move(compress_index_score_state)) {}
+
 torch::Tensor KVCache::get_k_cache() const { return key_cache_; }
 torch::Tensor KVCache::get_v_cache() const { return value_cache_; }
 torch::Tensor KVCache::get_index_cache() const { return index_cache_; }
@@ -64,6 +81,28 @@ std::optional<torch::Tensor> KVCache::get_v_cache_scale() const {
     return std::nullopt;
   }
   return value_cache_scale_;
+}
+
+torch::Tensor KVCache::get_indexer_cache_scale() const {
+  return indexer_cache_scale_;
+}
+
+torch::Tensor KVCache::get_swa_cache() const { return swa_cache_; }
+
+torch::Tensor KVCache::get_compress_kv_state() const {
+  return compress_kv_state_;
+}
+
+torch::Tensor KVCache::get_compress_score_state() const {
+  return compress_score_state_;
+}
+
+torch::Tensor KVCache::get_compress_index_kv_state() const {
+  return compress_index_kv_state_;
+}
+
+torch::Tensor KVCache::get_compress_index_score_state() const {
+  return compress_index_score_state_;
 }
 
 std::vector<std::vector<int64_t>> KVCache::get_shapes() {

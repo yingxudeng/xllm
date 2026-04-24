@@ -19,6 +19,7 @@ limitations under the License.
 #include "mlu/mlu_ops_api.h"
 #elif defined(USE_NPU)
 #include "npu/npu_ops_api.h"
+#include "npu/xllm_ops/xllm_ops_api.h"
 #include "triton_npu/torch_api/triton_ops_api.h"
 #elif defined(USE_CUDA)
 #include "cuda/attention_runner.h"
@@ -774,6 +775,14 @@ moe_init_routing_v2(MoeInitRoutingV2Params& params) {
 #endif
 }
 
+torch::Tensor hc_post(HcPostParams& params) {
+#if defined(USE_NPU)
+  return npu::hc_post(params.x, params.residual, params.post, params.comb);
+#else
+  NOT_IMPLEMENTED();
+#endif
+}
+
 std::tuple<torch::Tensor, torch::Tensor> fp8_scaled_quantize(
     Fp8ScaledQuantizeParams& params) {
 #if defined(USE_CUDA)
@@ -797,6 +806,33 @@ std::pair<torch::Tensor, torch::Tensor> fused_gdn_gating(
 #endif
 }
 
+std::tuple<torch::Tensor, torch::Tensor> quant_lightning_indexer(
+    QuantLightningIndexerParams& params) {
+#if defined(USE_NPU)
+  return npu::quant_lightning_indexer(params.query,
+                                      params.key,
+                                      params.weights,
+                                      params.query_dequant_scale,
+                                      params.key_dequant_scale,
+                                      params.query_quant_mode,
+                                      params.key_quant_mode,
+                                      params.actual_seq_lengths_query,
+                                      params.actual_seq_lengths_key,
+                                      params.block_table,
+                                      params.metadata,
+                                      params.layout_query,
+                                      params.layout_key,
+                                      params.sparse_count,
+                                      params.sparse_mode,
+                                      params.pre_tokens,
+                                      params.next_tokens,
+                                      params.cmp_ratio,
+                                      params.return_value);
+#else
+  NOT_IMPLEMENTED();
+#endif
+}
+
 std::pair<torch::Tensor, torch::Tensor> fused_recurrent_gated_delta_rule(
     FusedRecurrentGatedDeltaRuleParams& params) {
 #if defined(USE_NPU)
@@ -813,6 +849,14 @@ std::pair<torch::Tensor, torch::Tensor> fused_recurrent_gated_delta_rule(
       params.ssm_state_indices,
       params.num_accepted_tokens,
       params.use_qk_l2norm_in_kernel);
+#else
+  NOT_IMPLEMENTED();
+#endif
+}
+
+torch::Tensor hc_pre_inv_rms(HcPreInvRmsParams& params) {
+#if defined(USE_NPU)
+  return npu::hc_pre_inv_rms(params.x, params.epsilon);
 #else
   NOT_IMPLEMENTED();
 #endif
@@ -930,6 +974,59 @@ torch::Tensor causal_conv1d_update(CausalConv1dUpdateParams& params) {
 #endif
 }
 
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> hc_pre_sinkhorn(
+    HcPreSinkhornParams& params) {
+#if defined(USE_NPU)
+  return npu::hc_pre_sinkhorn(params.mixes,
+                              params.rsqrt,
+                              params.hc_scale,
+                              params.hc_base,
+                              params.x,
+                              params.hc_mult,
+                              params.hc_sinkhorn_iters,
+                              params.hc_eps);
+#else
+  NOT_IMPLEMENTED();
+#endif
+}
+
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> hc_pre(
+    HcPreParams& params) {
+#if defined(USE_NPU)
+  return npu::hc_pre(params.x,
+                     params.hc_fn,
+                     params.hc_scale,
+                     params.hc_base,
+                     params.hc_mult,
+                     params.hc_sinkhorn_iters,
+                     params.norm_eps,
+                     params.hc_eps);
+#else
+  NOT_IMPLEMENTED();
+#endif
+}
+
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> moe_gating_top_k_hash(
+    MoeGatingTopKHashParams& params) {
+#if defined(USE_NPU)
+  return npu::moe_gating_top_k_hash(params.x,
+                                    params.k,
+                                    params.bias,
+                                    params.input_ids,
+                                    params.tid2eid,
+                                    params.k_group,
+                                    params.group_count,
+                                    params.routed_scaling_factor,
+                                    params.eps,
+                                    params.group_select_mode,
+                                    params.renorm,
+                                    params.norm_type,
+                                    params.out_flag);
+#else
+  NOT_IMPLEMENTED();
+#endif
+}
+
 torch::Tensor gated_layer_norm(GatedLayerNormParams& params) {
 #if defined(USE_NPU)
   return npu::layer_norm_fwd(params.x,
@@ -940,6 +1037,37 @@ torch::Tensor gated_layer_norm(GatedLayerNormParams& params) {
                              params.group_size,
                              params.norm_before_gate,
                              params.is_rms_norm);
+#else
+  NOT_IMPLEMENTED();
+#endif
+}
+
+std::tuple<torch::Tensor, torch::Tensor> sparse_attn_sharedkv(
+    SparseAttnSharedkvParams& params) {
+#if defined(USE_NPU)
+  return npu::sparse_attn_sharedkv(params.q,
+                                   params.ori_kv,
+                                   params.cmp_kv,
+                                   params.ori_sparse_indices,
+                                   params.cmp_sparse_indices,
+                                   params.ori_block_table,
+                                   params.cmp_block_table,
+                                   params.cu_seqlens_q,
+                                   params.cu_seqlens_ori_kv,
+                                   params.cu_seqlens_cmp_kv,
+                                   params.seqused_q,
+                                   params.seqused_kv,
+                                   params.sinks,
+                                   params.metadata,
+                                   params.softmax_scale,
+                                   params.cmp_ratio,
+                                   params.ori_mask_mode,
+                                   params.cmp_mask_mode,
+                                   params.ori_win_left,
+                                   params.ori_win_right,
+                                   params.layout_q,
+                                   params.layout_kv,
+                                   params.return_softmax_lse);
 #else
   NOT_IMPLEMENTED();
 #endif
@@ -959,4 +1087,126 @@ std::pair<torch::Tensor, torch::Tensor> partial_rotary_embedding(
   NOT_IMPLEMENTED();
 #endif
 }
+
+torch::Tensor sparse_flash_attention(SparseFlashAttentionParams& params) {
+#if defined(USE_NPU)
+  return npu::sparse_flash_attention(params.query,
+                                     params.key,
+                                     params.value,
+                                     params.sparse_indices,
+                                     params.block_table,
+                                     params.actual_seq_lengths_query,
+                                     params.actual_seq_lengths_kv,
+                                     params.query_rope,
+                                     params.key_rope,
+                                     params.scale_value,
+                                     params.sparse_block_size,
+                                     params.layout_query,
+                                     params.layout_kv,
+                                     params.sparse_mode);
+#else
+  NOT_IMPLEMENTED();
+#endif
+}
+
+std::tuple<torch::Tensor,
+           torch::Tensor,
+           torch::Tensor,
+           torch::Tensor,
+           torch::Tensor>
+compressor(CompressorParams& params) {
+#if defined(USE_NPU)
+  return npu::compressor(params.x,
+                         params.wkv,
+                         params.wgate,
+                         params.kv_state,
+                         params.score_state,
+                         params.ape,
+                         params.norm_weight,
+                         params.rope_sin,
+                         params.rope_cos,
+                         params.kv_block_table,
+                         params.score_block_table,
+                         params.cu_seqlens,
+                         params.seqused,
+                         params.start_pos,
+                         params.rope_head_dim,
+                         params.cmp_ratio,
+                         params.coff,
+                         params.norm_eps,
+                         params.rotary_mode,
+                         params.enable_grad);
+#else
+  NOT_IMPLEMENTED();
+#endif
+}
+
+torch::Tensor quant_lightning_indexer_metadata(
+    QuantLightningIndexerMetadataParams& params) {
+#if defined(USE_NPU)
+  return npu::quant_lightning_indexer_metadata(params.num_heads_q,
+                                               params.num_heads_k,
+                                               params.head_dim,
+                                               params.query_quant_mode,
+                                               params.key_quant_mode,
+                                               params.actual_seq_lengths_query,
+                                               params.actual_seq_lengths_key,
+                                               params.batch_size,
+                                               params.max_seqlen_q,
+                                               params.max_seqlen_k,
+                                               params.layout_query,
+                                               params.layout_key,
+                                               params.sparse_count,
+                                               params.sparse_mode,
+                                               params.pre_tokens,
+                                               params.next_tokens,
+                                               params.cmp_ratio,
+                                               params.device);
+#else
+  NOT_IMPLEMENTED();
+#endif
+}
+
+torch::Tensor sparse_attn_sharedkv_metadata(
+    SparseAttnSharedkvMetadataParams& params) {
+#if defined(USE_NPU)
+  return npu::sparse_attn_sharedkv_metadata(params.num_heads_q,
+                                            params.num_heads_kv,
+                                            params.head_dim,
+                                            params.cu_seqlens_q,
+                                            params.cu_seqlens_ori_kv,
+                                            params.cu_seqlens_cmp_kv,
+                                            params.seqused_q,
+                                            params.seqused_kv,
+                                            params.batch_size,
+                                            params.max_seqlen_q,
+                                            params.max_seqlen_kv,
+                                            params.ori_topk,
+                                            params.cmp_topk,
+                                            params.cmp_ratio,
+                                            params.ori_mask_mode,
+                                            params.cmp_mask_mode,
+                                            params.ori_win_left,
+                                            params.ori_win_right,
+                                            params.layout_q,
+                                            params.layout_kv,
+                                            params.has_ori_kv,
+                                            params.has_cmp_kv);
+#else
+  NOT_IMPLEMENTED();
+#endif
+}
+
+void npu_inplace_partial_rotary_mul(NpuInplacePartialRotaryMulParams& params) {
+#if defined(USE_NPU)
+  npu::npu_inplace_partial_rotary_mul(params.x,
+                                      params.r1,
+                                      params.r2,
+                                      params.rotary_mode,
+                                      at::IntArrayRef(params.partial_slice));
+#else
+  NOT_IMPLEMENTED();
+#endif
+}
+
 }  // namespace xllm::kernel
