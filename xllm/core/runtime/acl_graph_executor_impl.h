@@ -21,6 +21,7 @@ limitations under the License.
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 
 #include "core/common/macros.h"
@@ -330,6 +331,10 @@ class AclGraphExecutorImpl : public ExecutorImpl {
 
   // Persistent parameters shared across all AclGraph instances
   std::unique_ptr<GraphPersistentParam> persistent_param_;
+
+  // Graph replay/capture reuses shared persistent buffers and captured graph
+  // outputs, so graph execution must be serialized per executor instance.
+  mutable std::mutex graph_execution_mutex_;
 
   // Get bucket num_tokens for given num_tokens
   // For num_tokens < 8: use 1, 2, 4, 8

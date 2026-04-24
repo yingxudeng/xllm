@@ -293,6 +293,30 @@ class SimpleCausalLM : public CausalLM {
   torch::Tensor scalar_one_;
 };
 
+class CapacityCheckingCausalLM final : public SimpleCausalLM {
+ public:
+  CapacityCheckingCausalLM(const ModelArgs& args, const torch::Device& device)
+      : SimpleCausalLM(args, device) {}
+
+  ModelOutput forward(const torch::Tensor& tokens,
+                      const torch::Tensor& positions,
+                      std::vector<KVCache>& kv_caches,
+                      const ModelInputParams& parameters) override {
+    max_tokens_seen_ = std::max(max_tokens_seen_, tokens.size(0));
+    max_num_sequences_seen_ =
+        std::max(max_num_sequences_seen_,
+                 static_cast<int64_t>(parameters.num_sequences));
+    return SimpleCausalLM::forward(tokens, positions, kv_caches, parameters);
+  }
+
+  int64_t max_tokens_seen() const { return max_tokens_seen_; }
+  int64_t max_num_sequences_seen() const { return max_num_sequences_seen_; }
+
+ private:
+  int64_t max_tokens_seen_ = 0;
+  int64_t max_num_sequences_seen_ = 0;
+};
+
 class AclGraphExecutorTest : public ::testing::Test {
  protected:
   AclGraphExecutorTest() = default;
@@ -558,6 +582,53 @@ TEST_F(AclGraphExecutorTest, DifferentBatchSizes) {
     EXPECT_EQ(output.hidden_states.size(1), model_args_.hidden_size())
         << "Batch size: " << batch_size;
   }
+}
+
+TEST_F(AclGraphExecutorTest, GraphCaptureDoesNotExceedDecodeGraphCapacity) {
+  const bool old_decode_no_padding = FLAGS_enable_graph_mode_decode_no_padding;
+  FLAGS_enable_graph_mode_decode_no_padding = false;
+
+  options_.max_seqs_per_batch(30);
+  auto capacity_model =
+      std::make_unique<CapacityCheckingCausalLM>(model_args_, *device_);
+  auto graph_executor = std::make_unique<::xllm::npu::AclGraphExecutorImpl>(
+      capacity_model.get(), model_args_, *device_, options_);
+
+  sequences_.clear();
+  auto batch = std::make_unique<Batch>();
+  const uint32_t batch_size = 20;
+  for (uint32_t i = 0; i < batch_size; ++i) {
+    sequences_.emplace_back(i,
+                            std::vector<int32_t>{static_cast<int32_t>(1 + i),
+                                                 static_cast<int32_t>(3 + i),
+                                                 static_cast<int32_t>(5 + i),
+                                                 static_cast<int32_t>(7 + i)},
+                            input_embedding_,
+                            mm_data_,
+                            fake_decoder_,
+                            seq_params_);
+    auto& sequence = sequences_.back();
+    sequence.add_kv_blocks(block_manager_->allocate(2));
+    sequence.kv_state().incr_kv_cache_tokens_num(/*size=*/4);
+    sequence.append_token(100 + i);
+    batch->add(&sequence);
+  }
+
+  auto forward_input = batch->prepare_forward_input(
+      options_.num_decoding_tokens(), 0, model_args_);
+  forward_input = forward_input.to(*device_, torch::kFloat32);
+
+  auto output = graph_executor->run({forward_input.token_ids},
+                                    {forward_input.positions},
+                                    kv_caches_,
+                                    {forward_input.input_params});
+
+  FLAGS_enable_graph_mode_decode_no_padding = old_decode_no_padding;
+
+  EXPECT_EQ(output.hidden_states.size(0), batch_size);
+  EXPECT_LE(capacity_model->max_tokens_seen(), options_.max_seqs_per_batch());
+  EXPECT_LE(capacity_model->max_num_sequences_seen(),
+            options_.max_seqs_per_batch());
 }
 
 // Test ACL graph executor against original NPU executor implementation

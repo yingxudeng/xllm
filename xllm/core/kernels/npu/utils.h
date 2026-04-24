@@ -18,6 +18,7 @@ limitations under the License.
 #include <torch_npu/csrc/libs/init_npu.h>
 #include <torch_npu/torch_npu.h>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -36,4 +37,6 @@ void check_tensor(const torch::Tensor& t,
 void check_tensor_shapes_equal(const torch::Tensor& a,
                                const torch::Tensor& b,
                                const std::string& func_name = "");
+void* get_reusable_workspace_buffer(uint64_t buffer_size,
+                                    const at::Device& device);
 }  // namespace xllm::kernel::npu

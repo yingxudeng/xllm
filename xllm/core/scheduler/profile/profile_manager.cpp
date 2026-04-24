@@ -859,6 +859,11 @@ void ProfileManager::generate_random_decode_batch(
 }
 
 void ProfileManager::warmup_for_graph() {
+#if defined(USE_NPU)
+  LOG(INFO) << "Skipping ACL Graph prefill warmup; NPU prefill uses eager "
+               "execution and decode graphs are captured lazily.";
+  return;
+#else
   LOG(INFO) << "Starting ACL Graph/CUDA Graph warmup with prefill and decode "
                "requests...";
 
@@ -869,7 +874,6 @@ void ProfileManager::warmup_for_graph() {
   // Prefill: align max_tokens_per_batch to bucket
   int32_t prefill_tokens =
       std::min(FLAGS_max_tokens_per_batch, max_context_len);
-
   std::vector<int32_t> decode_seq_lens = {16};
 
   // Generate decode_batch_sizes aligned with bucket logic
@@ -913,6 +917,7 @@ void ProfileManager::warmup_for_graph() {
   // confict with async_schedule, so skip for now
 
   LOG(INFO) << "ACL Graph/CUDA Graph warmup completed";
+#endif
 }
 
 }  // namespace xllm

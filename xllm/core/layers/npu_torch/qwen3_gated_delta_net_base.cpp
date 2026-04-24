@@ -29,90 +29,6 @@ torch::Tensor l2norm(const torch::Tensor& x, int64_t dim, double eps = 1e-6) {
   return x / norm;
 }
 
-std::vector<int64_t> extract_sequence_lengths_from_cu(
-    const torch::Tensor& cu_seqlens) {
-  auto cu_cpu = cu_seqlens.to(torch::kCPU).contiguous();
-  std::vector<int64_t> lengths;
-  const int64_t num_sequences = cu_cpu.numel() - 1;
-  lengths.reserve(num_sequences);
-  if (cu_cpu.scalar_type() == torch::kInt32) {
-    auto* ptr = cu_cpu.data_ptr<int32_t>();
-    for (int64_t i = 0; i < num_sequences; ++i) {
-      lengths.push_back(static_cast<int64_t>(ptr[i + 1]) -
-                        static_cast<int64_t>(ptr[i]));
-    }
-  } else {
-    auto* ptr = cu_cpu.data_ptr<int64_t>();
-    for (int64_t i = 0; i < num_sequences; ++i) {
-      lengths.push_back(ptr[i + 1] - ptr[i]);
-    }
-  }
-  return lengths;
-}
-
-torch::Tensor pack_batch_major_varlen_tensor(
-    const torch::Tensor& tensor,
-    const std::vector<int64_t>& seq_lens,
-    const char* tensor_name) {
-  CHECK(tensor.dim() >= 2) << tensor_name
-                           << " must have rank >= 2 for varlen packing";
-  const int64_t batch_size = tensor.size(0);
-  const int64_t padded_seq_len = tensor.size(1);
-  CHECK_EQ(static_cast<int64_t>(seq_lens.size()), batch_size)
-      << tensor_name << " pack expects one sequence per batch item";
-
-  int64_t total_tokens = 0;
-  std::vector<torch::Tensor> slices;
-  slices.reserve(seq_lens.size());
-  for (int64_t batch_idx = 0; batch_idx < batch_size; ++batch_idx) {
-    const int64_t seq_len = seq_lens[batch_idx];
-    CHECK_GE(seq_len, 0);
-    CHECK_LE(seq_len, padded_seq_len);
-    total_tokens += seq_len;
-    if (seq_len == 0) {
-      continue;
-    }
-    slices.push_back(tensor.select(0, batch_idx).narrow(0, 0, seq_len));
-  }
-
-  std::vector<int64_t> packed_shape = tensor.sizes().vec();
-  packed_shape[0] = 1;
-  packed_shape[1] = total_tokens;
-  if (total_tokens == 0) {
-    return torch::empty(packed_shape, tensor.options());
-  }
-  return torch::cat(slices, 0).unsqueeze(0).contiguous();
-}
-
-torch::Tensor unpack_packed_varlen_tensor(const torch::Tensor& packed_tensor,
-                                          const std::vector<int64_t>& seq_lens,
-                                          int64_t batch_size,
-                                          int64_t padded_seq_len) {
-  CHECK(packed_tensor.dim() >= 2)
-      << "packed output must have rank >= 2 for varlen unpack";
-  CHECK_EQ(packed_tensor.size(0), 1)
-      << "packed output must have leading packed batch dimension 1";
-
-  std::vector<int64_t> unpacked_shape = packed_tensor.sizes().vec();
-  unpacked_shape[0] = batch_size;
-  unpacked_shape[1] = padded_seq_len;
-  auto unpacked = torch::zeros(unpacked_shape, packed_tensor.options());
-
-  auto packed_tokens = packed_tensor.select(0, 0);
-  int64_t token_offset = 0;
-  for (int64_t batch_idx = 0; batch_idx < batch_size; ++batch_idx) {
-    const int64_t seq_len = seq_lens[batch_idx];
-    if (seq_len == 0) {
-      continue;
-    }
-    unpacked.select(0, batch_idx)
-        .narrow(0, 0, seq_len)
-        .copy_(packed_tokens.narrow(0, token_offset, seq_len));
-    token_offset += seq_len;
-  }
-  return unpacked.contiguous();
-}
-
 std::tuple<torch::Tensor, torch::Tensor> torch_recurrent_gated_delta_rule(
     torch::Tensor query,
     torch::Tensor key,
@@ -509,53 +425,85 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
     std::tie(g, beta) = xllm::kernel::fused_gdn_gating(gdn_params);
   }
   auto [processed_q, processed_k, processed_v] = process_mixed_qkv(mixed_qkv);
+  torch::Tensor z_for_norm = z;
   // Apply chunked or recurrent gated-delta attention and update caches.
   if (attn_metadata.is_prefill) {
-    xllm::kernel::ChunkGatedDeltaRuleParams chunk_gated_delta_params;
-    auto packed_q = processed_q;
-    auto packed_k = processed_k;
-    auto packed_v = processed_v;
-    auto packed_g = g;
-    auto packed_beta = beta;
-    std::optional<std::vector<int64_t>> packed_seq_lens = std::nullopt;
-    if (attn_metadata.q_cu_seq_lens.defined() && batch_size > 1) {
-      const int64_t num_sequences = attn_metadata.q_cu_seq_lens.numel() - 1;
-      CHECK_EQ(num_sequences, batch_size)
-          << "chunk_gated_delta_rule layer pack expects one sequence per batch";
-      auto seq_lens =
-          extract_sequence_lengths_from_cu(attn_metadata.q_cu_seq_lens);
-      packed_q = pack_batch_major_varlen_tensor(processed_q, seq_lens, "q");
-      packed_k = pack_batch_major_varlen_tensor(processed_k, seq_lens, "k");
-      packed_v = pack_batch_major_varlen_tensor(processed_v, seq_lens, "v");
-      packed_g = pack_batch_major_varlen_tensor(g, seq_lens, "g");
-      packed_beta = pack_batch_major_varlen_tensor(beta, seq_lens, "beta");
-      packed_seq_lens = std::move(seq_lens);
+    LOG_IF(INFO, batch_size > 1)
+        << "Running recurrent prefill chunk_gated_delta_rule per sequence "
+           "to bound workspace. batch_size="
+        << batch_size << ", max_query_len=" << seq_len;
+    torch::Tensor q_seq_lens_cpu =
+        attn_metadata.q_seq_lens.to(torch::kCPU).contiguous();
+    std::vector<torch::Tensor> core_attn_out_batches;
+    std::vector<torch::Tensor> z_for_norm_batches;
+    core_attn_out_batches.reserve(batch_size);
+    z_for_norm_batches.reserve(batch_size);
+    auto get_q_seq_len = [&q_seq_lens_cpu](int64_t seq_index) {
+      if (q_seq_lens_cpu.scalar_type() == torch::kInt32) {
+        return static_cast<int64_t>(
+            q_seq_lens_cpu.data_ptr<int32_t>()[seq_index]);
+      }
+      return q_seq_lens_cpu.data_ptr<int64_t>()[seq_index];
+    };
+    auto select_prefill_sequence = [](const torch::Tensor& padded_input,
+                                      int64_t seq_index,
+                                      int64_t q_len) {
+      return padded_input
+          .slice(/*dim=*/0, /*start=*/seq_index, /*end=*/seq_index + 1)
+          .slice(/*dim=*/1, /*start=*/0, /*end=*/q_len)
+          .contiguous();
+    };
+    for (int64_t seq_index = 0; seq_index < batch_size; ++seq_index) {
+      const int64_t q_len = get_q_seq_len(seq_index);
+      CHECK_GT(q_len, 0) << "prefill recurrent sequence should have positive "
+                         << "q_len. seq_index=" << seq_index;
+      const int32_t q_len_int = static_cast<int32_t>(q_len);
+      CHECK_EQ(q_len, static_cast<int64_t>(q_len_int))
+          << "prefill recurrent sequence length exceeds int32 range. q_len="
+          << q_len;
+      torch::Tensor seq_processed_q =
+          select_prefill_sequence(processed_q, seq_index, q_len);
+      torch::Tensor seq_processed_k =
+          select_prefill_sequence(processed_k, seq_index, q_len);
+      torch::Tensor seq_processed_v =
+          select_prefill_sequence(processed_v, seq_index, q_len);
+      torch::Tensor seq_g = select_prefill_sequence(g, seq_index, q_len);
+      torch::Tensor seq_beta = select_prefill_sequence(beta, seq_index, q_len);
+      torch::Tensor seq_z_for_norm =
+          select_prefill_sequence(z, seq_index, q_len);
+      torch::Tensor seq_linear_state_indices =
+          linear_state_indices
+              .slice(/*dim=*/0, /*start=*/seq_index, /*end=*/seq_index + 1)
+              .contiguous();
+      torch::Tensor seq_initial_state_tensor =
+          torch::index_select(ssm_cache, /*dim=*/0, seq_linear_state_indices);
+      // Todo: chunked-prefill/prefix-cache use initial_state
+      seq_initial_state_tensor.fill_(0.0);
+      xllm::kernel::ChunkGatedDeltaRuleParams chunk_gated_delta_params;
+      chunk_gated_delta_params.q = seq_processed_q;
+      chunk_gated_delta_params.k = seq_processed_k;
+      chunk_gated_delta_params.v = seq_processed_v;
+      chunk_gated_delta_params.g = seq_g;
+      chunk_gated_delta_params.beta = seq_beta;
+      chunk_gated_delta_params.initial_state = seq_initial_state_tensor;
+      chunk_gated_delta_params.output_final_state = true;
+      chunk_gated_delta_params.cu_seqlens = torch::tensor(
+          std::vector<int32_t>{0, q_len_int},
+          torch::TensorOptions().dtype(torch::kInt32).device(device));
+      chunk_gated_delta_params.head_first = false;
+      chunk_gated_delta_params.use_qk_l2norm_in_kernel = true;
+      torch::Tensor seq_core_attn_out;
+      torch::Tensor seq_last_recurrent_state;
+      std::tie(seq_core_attn_out, seq_last_recurrent_state) =
+          xllm::kernel::chunk_gated_delta_rule(chunk_gated_delta_params);
+      core_attn_out_batches.emplace_back(seq_core_attn_out);
+      z_for_norm_batches.emplace_back(seq_z_for_norm);
+      ssm_cache.index_put_(
+          {seq_linear_state_indices},
+          seq_last_recurrent_state.transpose(-1, -2).to(ssm_cache.dtype()));
     }
-    chunk_gated_delta_params.q = packed_q;
-    chunk_gated_delta_params.k = packed_k;
-    chunk_gated_delta_params.v = packed_v;
-    chunk_gated_delta_params.g = packed_g;
-    chunk_gated_delta_params.beta = packed_beta;
-    // Get initial state from ssm_cache for sequences with previous state
-    // Shape: [batch_size, num_heads, head_k_dim, head_v_dim]
-    torch::Tensor initial_state_tensor =
-        torch::index_select(ssm_cache, 0, linear_state_indices);
-    // Todo: chunked-prefill/prefix-cache use initial_state
-    initial_state_tensor.fill_(0.0);
-    chunk_gated_delta_params.initial_state = initial_state_tensor;
-    chunk_gated_delta_params.output_final_state = true;
-    chunk_gated_delta_params.cu_seqlens = attn_metadata.q_cu_seq_lens;
-    chunk_gated_delta_params.head_first = false;
-    chunk_gated_delta_params.use_qk_l2norm_in_kernel = true;
-    std::tie(core_attn_out, last_recurrent_state) =
-        xllm::kernel::chunk_gated_delta_rule(chunk_gated_delta_params);
-    if (packed_seq_lens.has_value()) {
-      core_attn_out = unpack_packed_varlen_tensor(
-          core_attn_out, packed_seq_lens.value(), batch_size, seq_len);
-    }
-    ssm_cache.index_put_(
-        {linear_state_indices},
-        last_recurrent_state.transpose(-1, -2).to(ssm_cache.dtype()));
+    core_attn_out = torch::cat(core_attn_out_batches, /*dim=*/1).contiguous();
+    z_for_norm = torch::cat(z_for_norm_batches, /*dim=*/1).contiguous();
   } else {
     processed_q = xllm::kernel::l2_norm(processed_q, 1e-6);
     processed_k = xllm::kernel::l2_norm(processed_k, 1e-6);
@@ -582,18 +530,16 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
                         .contiguous();
   }
 
-  auto z_reshaped = z.view({-1, z.size(-1)});
+  auto z_reshaped = z_for_norm.view({-1, z_for_norm.size(-1)});
   auto core_attn_out_reshaped =
       core_attn_out.view({-1, core_attn_out.size(-1)});
   auto norm_out = norm_->forward(core_attn_out_reshaped, z_reshaped);
-  auto z_shape_og = z.sizes().vec();
+  auto z_shape_og = z_for_norm.sizes().vec();
   norm_out = norm_out.view(z_shape_og);
   norm_out = norm_out.view({-1, norm_out.size(2), norm_out.size(3)});
 
-  // Project the normalized attention output back to hidden size.
   auto rearranged_norm =
       norm_out.reshape({norm_out.size(0), norm_out.size(1) * norm_out.size(2)});
-  rearranged_norm = reshape_qkvz_unpad(attn_metadata, rearranged_norm);
   auto attn_output = o_proj_->forward(rearranged_norm);
   return attn_output;
 }
