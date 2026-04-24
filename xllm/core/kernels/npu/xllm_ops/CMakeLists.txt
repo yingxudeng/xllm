@@ -21,6 +21,10 @@ cc_library(
     moe_gating_top_k_hash.cpp
     sparse_attn_sharedkv.cpp
     sparse_flash_attention.cpp
+    quant_matmul.cpp
+    quantize.cpp
+    quant_dynamic.cpp
+    dequant_swiglu_quant.cpp
     mla_preprocess.cpp
     ../utils.cpp
     beam_search.cpp

@@ -21,6 +21,18 @@ limitations under the License.
 #include <vector>
 
 namespace xllm::kernel::npu {
+namespace op_infer {
+    const int N = 32;
+    // npu tensor max size
+    const int SIZE = 8;
+    const int INT4_NUMS_IN_INT32_SPACE = 8;
+    const int NPU_NSA_COMPRESS_INPUT_DIM_SECOND = 1;
+    const int NPU_NSA_COMPRESS_INPUT_DIM_THIRD = 2;
+    const int DIM_0 = 0;
+    const int DIM_1 = 1;
+    const int DIM_2 = 2;
+    const int DIM_3 = 3;
+}
 
 void beam_search(const torch::Tensor& logprobs,
                  const torch::Tensor& top_tokens,
@@ -157,6 +169,38 @@ at::Tensor sparse_flash_attention(
     c10::string_view layout_query,
     c10::string_view layout_kv,
     int64_t sparse_mode);
+
+at::Tensor quant_matmul(const at::Tensor& x1,
+                        const at::Tensor& x2,
+                        const bool transpose2,
+                        const at::Tensor& scale,
+                        const c10::optional<at::Tensor>& offset,
+                        const c10::optional<at::Tensor>& pertoken_scale,
+                        const c10::optional<at::Tensor>& bias,
+                        c10::optional<at::ScalarType> output_dtype);
+
+at::Tensor quantize_per_tensor(const at::Tensor& self,
+                               const at::Tensor& scales,
+                               const at::Tensor& zero_points,
+                               at::ScalarType dtype,
+                               int64_t axis);
+
+std::tuple<at::Tensor, c10::optional<at::Tensor>> dynamic_quant(
+    const at::Tensor& input,
+    const c10::optional<at::Tensor>& smooth_scales,
+    const c10::optional<at::Tensor>& group_index,
+    c10::optional<at::ScalarType> dst_type);
+
+std::tuple<at::Tensor, at::Tensor> dequant_swiglu_quant(
+    const at::Tensor& x,
+    const c10::optional<at::Tensor>& weight_scale,
+    const c10::optional<at::Tensor>& activation_scale,
+    const c10::optional<at::Tensor>& bias,
+    const c10::optional<at::Tensor>& quant_scale,
+    const c10::optional<at::Tensor>& quant_offset,
+    const c10::optional<at::Tensor>& group_index,
+    bool activate_left,
+    int64_t quant_mode);
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> mla_preprocess(
     const at::Tensor& input,

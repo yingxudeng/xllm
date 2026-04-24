@@ -86,7 +86,7 @@ class FusedMoEImpl : public torch::nn::Module {
   int64_t renormalize_;
   std::string hidden_act_;
   std::string scoring_func_;
-  bool is_smoothquant_;
+  std::optional<std::string> resolved_moe_quant_method_;
   std::optional<std::pair<torch::Tensor, torch::Tensor>> preselected_experts_;
 
   int64_t num_experts_per_rank_;
@@ -114,6 +114,9 @@ class FusedMoEImpl : public torch::nn::Module {
 
   void load_e_score_correction_bias(const StateDict& state_dict);
   void load_experts(const StateDict& state_dict);
+  void resolve_quant_method_from_state_dict(const StateDict& state_dict);
+  void validate_resolved_quant_method() const;
+  void ensure_quant_weight_layout();
 };
 TORCH_MODULE(FusedMoE);
 

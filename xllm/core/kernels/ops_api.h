@@ -44,7 +44,18 @@ void fused_layernorm(FusedLayerNormParams& params);
 
 torch::Tensor matmul(MatmulParams& params);
 
+torch::Tensor quant_matmul(QuantMatmulParams& params);
+
+torch::Tensor quantize(
+    NpuQuantizeParams& params);
+
+std::tuple<torch::Tensor, std::optional<torch::Tensor>> dynamic_quant(
+    NpuQuantizeParams& params);
+
 torch::Tensor group_gemm(GroupGemmParams& params);
+
+std::tuple<torch::Tensor, torch::Tensor> dequant_swiglu_quant(
+    DequantSwigluQuantParams& params);
 
 std::tuple<torch::Tensor, torch::Tensor> moe_active_topk(
     MoeFusedTopkParams& params);

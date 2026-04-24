@@ -17,6 +17,8 @@ limitations under the License.
 
 #include <glog/logging.h>
 
+#include <algorithm>
+#include <cctype>
 #include <numeric>
 #include <sstream>
 #include <string>
@@ -30,19 +32,6 @@ namespace layer {
 
 namespace {
 // Generic local tensor helpers.
-torch::Tensor create_group_gemm_output(
-    const torch::Tensor& a,
-    const torch::Tensor& b,
-    const torch::Tensor& group_list,
-    torch::ScalarType dtype = torch::ScalarType::BFloat16) {
-  torch::TensorOptions target_options = a.options().dtype(dtype);
-  if (b.dim() != 2) {
-    return torch::empty({a.size(0), b.size(1)}, target_options);
-  }
-  return torch::empty({group_list.size(0), a.size(0), b.size(0)},
-                      target_options);
-}
-
 torch::Tensor get_tensor_with_weight_suffix(const StateDict& state_dict,
                                             const std::string& tensor_name) {
   auto tensor = state_dict.get_tensor(tensor_name);
@@ -68,6 +57,35 @@ std::string tensor_debug_info(const torch::Tensor& tensor) {
   os << "dtype=" << c10::toString(tensor.scalar_type())
      << ", shape=" << tensor.sizes() << ", device=" << tensor.device();
   return os.str();
+}
+
+std::optional<std::string> resolve_moe_quant_method(
+    const QuantArgs& quant_args,
+    const StateDict& state_dict) {
+  // resolve quant type by first expert.
+  static const std::vector<std::vector<std::string>> kExpertPrefixGroups = {
+      {"experts.0.gate_proj", "experts.0.up_proj", "experts.0.down_proj"},
+      {"experts.0.w1", "experts.0.w3", "experts.0.w2"}};
+  std::optional<std::string> first_quant;
+  for (const auto& local_prefix_group : kExpertPrefixGroups) {
+    if (auto quant = quant_args.get_quant_method_from_prefixes(
+            state_dict, local_prefix_group);
+        quant.has_value()) {
+      if (!first_quant.has_value()) {
+        first_quant = quant;
+      } else {
+        CHECK_EQ(first_quant.value(), quant.value())
+            << "Experts have different quant type in same layer: "
+            << first_quant.value() << " vs " << quant.value();
+      }
+    }
+  }
+  return first_quant;
+}
+
+bool is_w8a8_dynamic_quant_method(
+    const std::optional<std::string>& quant_method) {
+  return quant_method.has_value() && quant_method.value() == "w8a8_dynamic";
 }
 
 // Qwen3.5-MoE fused checkpoint fallback helpers.
@@ -138,6 +156,75 @@ bool load_fused_down_fallback(const StateDict& state_dict,
   return true;
 }
 
+bool load_fused_up_scale_fallback(const StateDict& state_dict,
+                                  int64_t rank,
+                                  int64_t world_size,
+                                  int64_t start_expert_id,
+                                  int64_t num_experts_per_rank,
+                                  torch::Tensor& w13_scale) {
+  auto fused_gate_up_scale = state_dict.get_tensor("gate_up_proj.weight_scale");
+  if (!fused_gate_up_scale.defined()) {
+    return false;
+  }
+
+  if (world_size > 1) {
+    CHECK_GE(fused_gate_up_scale.dim(), 2)
+        << "gate_up_proj.weight_scale dim must be >= 2, got "
+        << fused_gate_up_scale.dim();
+    CHECK_EQ(fused_gate_up_scale.size(1) % 2, 0)
+        << "gate_up_proj.weight_scale dim1 must be even, got "
+        << fused_gate_up_scale.size(1);
+    const int64_t full_intermediate = fused_gate_up_scale.size(1) / 2;
+    CHECK_EQ(full_intermediate % world_size, 0)
+        << "gate_up_proj.weight_scale intermediate dim is not divisible by "
+           "world_size";
+    const int64_t inter_shard = full_intermediate / world_size;
+
+    auto gate_full = fused_gate_up_scale.slice(1, 0, full_intermediate);
+    auto up_full =
+        fused_gate_up_scale.slice(1, full_intermediate, full_intermediate * 2);
+    auto gate_shard =
+        gate_full.slice(1, rank * inter_shard, (rank + 1) * inter_shard);
+    auto up_shard =
+        up_full.slice(1, rank * inter_shard, (rank + 1) * inter_shard);
+    fused_gate_up_scale = torch::cat({gate_shard, up_shard}, 1);
+  }
+
+  auto gate_up_scale_slice = slice_expert_weights(
+      fused_gate_up_scale, start_expert_id, num_experts_per_rank);
+  if (gate_up_scale_slice.sizes() != w13_scale.sizes() &&
+      gate_up_scale_slice.numel() == w13_scale.numel()) {
+    gate_up_scale_slice = gate_up_scale_slice.reshape(w13_scale.sizes());
+  }
+  CHECK_EQ(w13_scale.sizes(), gate_up_scale_slice.sizes())
+      << "weight size mismatch for " << state_dict.prefix()
+      << "experts.gate_up_proj.weight_scale";
+  w13_scale.copy_(gate_up_scale_slice);
+  return true;
+}
+
+bool load_fused_down_scale_fallback(const StateDict& state_dict,
+                                    int64_t start_expert_id,
+                                    int64_t num_experts_per_rank,
+                                    torch::Tensor& w2_scale) {
+  auto fused_down_scale = state_dict.get_tensor("down_proj.weight_scale");
+  if (!fused_down_scale.defined()) {
+    return false;
+  }
+
+  auto down_scale_slice = slice_expert_weights(
+      fused_down_scale, start_expert_id, num_experts_per_rank);
+  if (down_scale_slice.sizes() != w2_scale.sizes() &&
+      down_scale_slice.numel() == w2_scale.numel()) {
+    down_scale_slice = down_scale_slice.reshape(w2_scale.sizes());
+  }
+  CHECK_EQ(w2_scale.sizes(), down_scale_slice.sizes())
+      << "weight size mismatch for " << state_dict.prefix()
+      << "experts.down_proj.weight_scale";
+  w2_scale.copy_(down_scale_slice);
+  return true;
+}
+
 }  // namespace
 
 FusedMoEImpl::FusedMoEImpl(const ModelArgs& model_args,
@@ -147,13 +234,16 @@ FusedMoEImpl::FusedMoEImpl(const ModelArgs& model_args,
                            const torch::TensorOptions& options)
     : num_total_experts_(model_args.n_routed_experts()),
       topk_(model_args.num_experts_per_tok()),
+      num_expert_group_(model_args.n_group()),
+      topk_group_(model_args.topk_group()),
+      route_scale_(model_args.routed_scaling_factor()),
       hidden_size_(model_args.hidden_size()),
       n_shared_experts_(model_args.n_shared_experts()),
       is_gated_(moe_args.is_gated),
       skip_gate_load_(moe_args.skip_gate_load),
       renormalize_(model_args.norm_topk_prob() ? 1 : 0),
       hidden_act_(model_args.hidden_act()),
-      is_smoothquant_(false),
+      scoring_func_(model_args.scoring_func()),
       quant_args_(quant_args),
       parallel_args_(parallel_args),
       options_(options),
@@ -167,23 +257,6 @@ FusedMoEImpl::FusedMoEImpl(const ModelArgs& model_args,
   if (ep_size > 1) {
     ep_rank = parallel_args.moe_ep_group_->rank();
     tp_pg_ = parallel_args.moe_tp_group_;
-  }
-
-  // smoothquant check: If quant_method is not empty, only w8a8 smoothquant is
-  // supported
-  if (!quant_args.quant_method().empty()) {
-    if (quant_args.quant_method() != "smoothquant" || quant_args.bits() != 8 ||
-        !quant_args.activation_dynamic()) {
-      LOG(FATAL) << "FusedMoE only supports w8a8 smoothquant quantization when "
-                    "quant_method is set. "
-                 << "Got quant_method=" << quant_args.quant_method()
-                 << ", bits=" << quant_args.bits()
-                 << ", activation_dynamic=" << quant_args.activation_dynamic();
-    }
-    // If confirmed as smoothquant w8a8, set is_smoothquant_ to true
-    is_smoothquant_ = true;
-  } else {
-    is_smoothquant_ = false;
   }
 
   // calculate the number of experts per rank
@@ -246,53 +319,90 @@ FusedMoEImpl::FusedMoEImpl(const ModelArgs& model_args,
             << ", ep_rank=" << ep_rank
             << ", num_experts_per_rank=" << num_experts_per_rank_
             << ", start_expert_id=" << start_expert_id_;
-  if (is_smoothquant_) {
-    auto quant_option = options_.dtype(torch::kInt8);
-    auto fp_option = options_.dtype(torch::kFloat32);
-    w13_ = register_parameter(
-        "w13",
-        torch::empty(
-            {num_experts_per_rank_, local_intermediate_size * 2, hidden_size_},
-            quant_option),
-        false);
-    w13_scale_ = register_parameter(
-        "w13_scale",
-        torch::empty({num_experts_per_rank_, local_intermediate_size * 2},
-                     fp_option),
-        false);
-    input_smooth_ = register_parameter(
-        "input_smooth",
-        torch::empty({num_experts_per_rank_, hidden_size_}, fp_option),
-        false);
-    w2_ = register_parameter(
-        "w2",
-        torch::empty(
-            {num_experts_per_rank_, hidden_size_, local_intermediate_size},
-            quant_option),
-        false);
-    w2_scale_ = register_parameter(
-        "w2_scale",
-        torch::empty({num_experts_per_rank_, hidden_size_}, fp_option),
-        false);
-    act_smooth_ = register_parameter(
-        "act_smooth",
-        torch::empty({num_experts_per_rank_, local_intermediate_size},
-                     fp_option),
-        false);
+  w13_ = register_parameter(
+      "w13",
+      torch::empty(
+          {num_experts_per_rank_, local_intermediate_size * 2, hidden_size_},
+          options_),
+      false);
+  w2_ = register_parameter(
+      "w2",
+      torch::empty(
+          {num_experts_per_rank_, hidden_size_, local_intermediate_size},
+          options_),
+      false);
+}
 
+void FusedMoEImpl::validate_resolved_quant_method() const {
+  if (!resolved_moe_quant_method_.has_value()) {
+    return;
+  }
+  if (resolved_moe_quant_method_.value() == "w8a8_dynamic") {
+    if (!is_gated_ || (hidden_act_ != "silu" && hidden_act_ != "swiglu")) {
+      LOG(WARNING) << "W8A8_DYNAMIC FusedMoE currently uses dequant+swiglu "
+                      "path, but got is_gated="
+                   << (is_gated_ ? "true" : "false")
+                   << ", hidden_act=" << hidden_act_
+                   << ". This may cause activation behavior mismatch.";
+    }
   } else {
-    w13_ = register_parameter(
-        "w13",
-        torch::empty(
-            {num_experts_per_rank_, local_intermediate_size * 2, hidden_size_},
-            options_),
-        false);
-    w2_ = register_parameter(
-        "w2",
-        torch::empty(
-            {num_experts_per_rank_, hidden_size_, local_intermediate_size},
-            options_),
-        false);
+    LOG(FATAL) << "Unsupported MoE quant_method for NPU FusedMoE: "
+               << resolved_moe_quant_method_.value();
+  }
+}
+
+void FusedMoEImpl::ensure_quant_weight_layout() {
+  std::vector<weight::LazyParameterSpec> specs;
+  specs.reserve(4);
+  auto push = [&](torch::Tensor& tensor,
+                  bool& tensor_is_loaded,
+                  const char* name,
+                  std::vector<int64_t> sizes,
+                  const torch::TensorOptions& tensor_options) {
+    specs.push_back(weight::LazyParameterSpec{
+        &tensor, &tensor_is_loaded, name, std::move(sizes), tensor_options});
+  };
+
+  push(w13_,
+       w13_is_loaded_,
+       "w13",
+       w13_.sizes().vec(),
+       options_.dtype(torch::kInt8));
+  push(w2_,
+       w2_is_loaded_,
+       "w2",
+       w2_.sizes().vec(),
+       options_.dtype(torch::kInt8));
+
+  auto w13_scale_options = options_.dtype(torch::kFloat32);
+  auto w2_scale_options = options_.dtype() == torch::kBFloat16
+                              ? options_.dtype(torch::kBFloat16)
+                              : options_.dtype(torch::kFloat32);
+  push(w13_scale_,
+       w13_scale_is_loaded_,
+       "w13_scale",
+       {w13_.size(0), w13_.size(1)},
+       w13_scale_options);
+  push(w2_scale_,
+       w2_scale_is_loaded_,
+       "w2_scale",
+       {w2_.size(0), w2_.size(1)},
+       w2_scale_options);
+
+  weight::ensure_parameter_storage(this, specs);
+}
+
+void FusedMoEImpl::resolve_quant_method_from_state_dict(
+    const StateDict& state_dict) {
+  resolved_moe_quant_method_ =
+      resolve_moe_quant_method(quant_args_, state_dict);
+  LOG(INFO) << "[QUANT_DEBUG][FusedMoELoad] prefix=" << state_dict.prefix()
+            << ", resolved_moe_quant_method="
+            << resolved_moe_quant_method_.value_or("<none>")
+            << ", quant_desc_count=" << quant_args_.quant_descs().size();
+  if (is_w8a8_dynamic_quant_method(resolved_moe_quant_method_)) {
+    validate_resolved_quant_method();
+    ensure_quant_weight_layout();
   }
 }
 
@@ -322,13 +432,13 @@ torch::Tensor FusedMoEImpl::select_experts(
     xllm::kernel::MoeFusedTopkParams moe_active_topk_params;
     moe_active_topk_params.input = router_logits_2d;
     moe_active_topk_params.topk = topk_;
-    moe_active_topk_params.num_expert_group = num_expert_group_;
-    moe_active_topk_params.topk_group = topk_group_;
-    moe_active_topk_params.normalize = renormalize_;
-    moe_active_topk_params.normed_by = "topk_logit";
+    // moe_active_topk_params.num_expert_group = num_expert_group_;
+    // moe_active_topk_params.topk_group = topk_group_;
+    moe_active_topk_params.normalize = static_cast<bool>(renormalize_);
+    // moe_active_topk_params.normed_by = "topk_logit";
     moe_active_topk_params.scoring_func = scoring_func_;
-    moe_active_topk_params.route_scale = route_scale_;
-    moe_active_topk_params.e_score_correction_bias = e_score_correction_bias;
+    // moe_active_topk_params.route_scale = route_scale_;
+    // moe_active_topk_params.e_score_correction_bias = e_score_correction_bias;
     std::tie(topk_weights, topk_ids) =
         xllm::kernel::moe_active_topk(moe_active_topk_params);
     topk_ids = topk_ids.to(torch::kInt32);
@@ -359,7 +469,7 @@ torch::Tensor FusedMoEImpl::select_experts(
   // collect the selected tensor
   selected_expert_info.reduce_weight = topk_weights;
   selected_expert_info.combine_idx = expand_row_ids;
-  selected_expert_info.token_count_slice = group_list;
+  selected_expert_info.token_count_slice = group_list.to(torch::kInt64);
   selected_expert_info.cusum_token_count = group_list;
   return expand_hidden_states;
 }
@@ -381,59 +491,126 @@ torch::Tensor FusedMoEImpl::forward_expert(
   torch::Tensor expand_hidden_states =
       select_experts(hidden_states_2d, router_logits_2d, selected_expert_info);
 
-  // Step 4: group gemm 1
-  torch::Tensor gemm1_out =
-      create_group_gemm_output(expand_hidden_states,
-                               w13_,
-                               selected_expert_info.token_count_slice,
-                               hidden_states_dtype);
+  torch::Tensor gemm1_out;
+  torch::Tensor gemm2_out;
+  if (is_w8a8_dynamic_quant_method(resolved_moe_quant_method_)) {
+    CHECK(w13_scale_is_loaded_ && w13_scale_.defined())
+        << "w13_scale is required for W8A8 fused MoE.";
+    CHECK(w2_scale_is_loaded_ && w2_scale_.defined())
+        << "w2_scale is required for W8A8 fused MoE.";
 
-  {
-    xllm::kernel::GroupGemmParams group_gemm_params;
-    group_gemm_params.a = expand_hidden_states;
-    if (w13_.size(1) != expand_hidden_states.size(1)) {
+    // Step 4: dynamic quant on expanded inputs.
+    xllm::kernel::NpuQuantizeParams quant_params;
+    quant_params.input = expand_hidden_states;
+    torch::Tensor quantized_expand_hidden_states;
+    std::optional<torch::Tensor> pertoken_scale;
+    std::tie(quantized_expand_hidden_states, pertoken_scale) =
+        xllm::kernel::dynamic_quant(quant_params);
+    CHECK(pertoken_scale.has_value() && pertoken_scale->defined())
+        << "dynamic_quant must return per-token scale for W8A8 fused MoE.";
+
+    // Step 5: first grouped matmul (int32 output expected for dequant+swiglu).
+    if (w13_.size(1) != quantized_expand_hidden_states.size(1)) {
       w13_ = w13_.transpose(1, 2);
     }
-    group_gemm_params.b = w13_;
-    group_gemm_params.group_list = selected_expert_info.token_count_slice;
-    group_gemm_params.split_item = 2;
-    group_gemm_params.group_type = 0;
-    group_gemm_params.group_list_type = 1;
-    gemm1_out = xllm::kernel::group_gemm(group_gemm_params);
-  }
 
-  // Step 5: activation
-  torch::Tensor act_out;
+    {
+      std::vector<torch::Tensor> x_list = {quantized_expand_hidden_states};
+      std::vector<torch::Tensor> weight_list = {w13_};
+      xllm::kernel::GroupGemmParams group_gemm_params;
+      group_gemm_params.x_list = torch::TensorList(x_list);
+      group_gemm_params.weight_list = torch::TensorList(weight_list);
+      group_gemm_params.group_list = selected_expert_info.token_count_slice;
+      group_gemm_params.split_item = 2;
+      group_gemm_params.group_type = 0;
+      group_gemm_params.group_list_type = 1;
+      group_gemm_params.output_dtype = torch::kInt32;
+      gemm1_out = xllm::kernel::group_gemm(group_gemm_params);
+    }
 
-  xllm::kernel::ActivationParams activation_params;
-  activation_params.input = gemm1_out;
-  activation_params.output = act_out;
-  activation_params.act_mode = hidden_act_;
-  activation_params.is_gated = is_gated_;
-  xllm::kernel::active(activation_params);
-  act_out = activation_params.output;
-  // Step 6: group gemm 2
-  torch::Tensor gemm2_out =
-      create_group_gemm_output(act_out,
-                               w2_,
-                               selected_expert_info.token_count_slice,
-                               hidden_states_dtype);
+    // Step 6: fused dequant + swiglu + quant.
+    torch::Tensor act_quantized;
+    torch::Tensor act_scale;
+    {
+      xllm::kernel::DequantSwigluQuantParams params;
+      params.x = gemm1_out;
+      params.weight_scale = w13_scale_;
+      params.activation_scale = pertoken_scale.value();
+      params.group_index = selected_expert_info.token_count_slice;
+      params.activate_left = true;
+      params.quant_mode = 1;
+      std::tie(act_quantized, act_scale) =
+          xllm::kernel::dequant_swiglu_quant(params);
+    }
 
-  {
-    xllm::kernel::GroupGemmParams group_gemm_params;
-    group_gemm_params.a = act_out;
-    if (w2_.size(1) != act_out.size(1)) {
+    // Step 7: second grouped matmul (dequant to hidden dtype).
+    if (w2_.size(1) != act_quantized.size(1)) {
       w2_ = w2_.transpose(1, 2);
     }
-    group_gemm_params.b = w2_;
-    group_gemm_params.group_list = selected_expert_info.token_count_slice;
-    group_gemm_params.split_item = 2;
-    group_gemm_params.group_type = 0;
-    group_gemm_params.group_list_type = 1;
-    gemm2_out = xllm::kernel::group_gemm(group_gemm_params);
+    {
+      std::vector<torch::Tensor> x_list = {act_quantized};
+      std::vector<torch::Tensor> weight_list = {w2_};
+      std::vector<torch::Tensor> scale_list = {w2_scale_};
+      std::vector<torch::Tensor> per_token_scale_list = {act_scale};
+      xllm::kernel::GroupGemmParams group_gemm_params;
+      group_gemm_params.x_list = torch::TensorList(x_list);
+      group_gemm_params.weight_list = torch::TensorList(weight_list);
+      group_gemm_params.scale_list = torch::TensorList(scale_list);
+      group_gemm_params.per_token_scale_list =
+          torch::TensorList(per_token_scale_list);
+      group_gemm_params.group_list = selected_expert_info.token_count_slice;
+      group_gemm_params.split_item = 2;
+      group_gemm_params.group_type = 0;
+      group_gemm_params.group_list_type = 1;
+      group_gemm_params.output_dtype = hidden_states_dtype;
+      gemm2_out = xllm::kernel::group_gemm(group_gemm_params);
+    }
+  } else {
+    // Step 4: group gemm 1
+    {
+      xllm::kernel::GroupGemmParams group_gemm_params;
+      group_gemm_params.a = expand_hidden_states;
+      if (w13_.size(1) != expand_hidden_states.size(1)) {
+        w13_ = w13_.transpose(1, 2);
+      }
+      group_gemm_params.b = w13_;
+      group_gemm_params.group_list =
+          selected_expert_info.token_count_slice.to(torch::kInt64);
+      group_gemm_params.split_item = 2;
+      group_gemm_params.group_type = 0;
+      group_gemm_params.group_list_type = 1;
+      gemm1_out = xllm::kernel::group_gemm(group_gemm_params);
+    }
+
+    // Step 5: activation
+    torch::Tensor act_out;
+
+    xllm::kernel::ActivationParams activation_params;
+    activation_params.input = gemm1_out;
+    activation_params.output = act_out;
+    activation_params.act_mode = hidden_act_;
+    activation_params.is_gated = is_gated_;
+    xllm::kernel::active(activation_params);
+    act_out = activation_params.output;
+
+    // Step 6: group gemm 2
+    {
+      xllm::kernel::GroupGemmParams group_gemm_params;
+      group_gemm_params.a = act_out;
+      if (w2_.size(1) != act_out.size(1)) {
+        w2_ = w2_.transpose(1, 2);
+      }
+      group_gemm_params.b = w2_;
+      group_gemm_params.group_list =
+          selected_expert_info.token_count_slice.to(torch::kInt64);
+      group_gemm_params.split_item = 2;
+      group_gemm_params.group_type = 0;
+      group_gemm_params.group_list_type = 1;
+      gemm2_out = xllm::kernel::group_gemm(group_gemm_params);
+    }
   }
 
-  // Step 7: combine the intermediate results and get the final hidden states
+  // Step 8: combine the intermediate results and get the final hidden states
   torch::Tensor final_hidden_states;
   xllm::kernel::MoeCombineResultParams moe_combine_params;
   moe_combine_params.input = gemm2_out;
@@ -568,101 +745,93 @@ void FusedMoEImpl::load_e_score_correction_bias(const StateDict& state_dict) {
 void FusedMoEImpl::load_experts(const StateDict& state_dict) {
   LOG(INFO) << "[MOE_LOAD_DEBUG][FusedMoE.load_experts] prefix="
             << state_dict.prefix() << ", expected_w13=" << w13_.sizes()
-            << ", expected_w2=" << w2_.sizes() << ", tp_group(rank/world)="
-            << tp_pg_->rank() << "/" << tp_pg_->world_size()
-            << ", start_expert_id=" << start_expert_id_
+            << ", expected_w2=" << w2_.sizes()
+            << ", tp_group(rank/world)=" << tp_pg_->rank() << "/"
+            << tp_pg_->world_size() << ", start_expert_id=" << start_expert_id_
             << ", num_experts_per_rank=" << num_experts_per_rank_;
   const int64_t rank = tp_pg_->rank();
   const int64_t world_size = tp_pg_->world_size();
   const int64_t start_expert_id = start_expert_id_;
   const int64_t num_experts_per_rank = num_experts_per_rank_;
   std::vector<std::string> prefixes = {"gate_proj.", "up_proj."};
-  if (is_smoothquant_) {
-    LOAD_MOE_FUSED_WEIGHT("qweight", w1, w3, w13);
-    if (!w13_is_loaded_) {
-      prefixes = {"w1.", "w3."};
-      LOAD_MOE_FUSED_WEIGHT("qweight", w1, w3, w13);
-    }
-    LOAD_MOE_FUSED_WEIGHT("per_channel_scale", w1_scale, w3_scale, w13_scale);
+  LOAD_MOE_FUSED_WEIGHT("weight", w1, w3, w13);
+  if (!w13_is_loaded_) {
+    prefixes = {"w1.", "w3."};
+    LOAD_MOE_FUSED_WEIGHT("weight", w1, w3, w13);
+  }
+  LOAD_MOE_WEIGHT("down_proj.", "weight", w2, 1);
+  if (!w2_is_loaded_) {
+    LOAD_MOE_WEIGHT("w2.", "weight", w2, 1);
+  }
+
+  // Some Qwen3.5-MoE checkpoints store expert weights in fused tensors
+  // (gate_up_proj / down_proj). Fall back to this format when split
+  // gate_proj/up_proj tensors are absent.
+  if (!w13_is_loaded_) {
+    w13_is_loaded_ = load_fused_gate_up_fallback(state_dict,
+                                                 rank,
+                                                 world_size,
+                                                 start_expert_id,
+                                                 num_experts_per_rank,
+                                                 w13_);
+  }
+  if (!w2_is_loaded_) {
+    w2_is_loaded_ = load_fused_down_fallback(state_dict,
+                                             rank,
+                                             world_size,
+                                             start_expert_id,
+                                             num_experts_per_rank,
+                                             w2_);
+  }
+
+  if (is_w8a8_dynamic_quant_method(resolved_moe_quant_method_)) {
+    prefixes = {"gate_proj.", "up_proj."};
+    LOAD_MOE_FUSED_WEIGHT("weight_scale", w1_scale, w3_scale, w13_scale);
     if (!w13_scale_is_loaded_) {
       prefixes = {"w1.", "w3."};
-      LOAD_MOE_FUSED_WEIGHT("per_channel_scale", w1_scale, w3_scale, w13_scale);
+      LOAD_MOE_FUSED_WEIGHT("weight_scale", w1_scale, w3_scale, w13_scale);
     }
-    LOAD_MOE_WEIGHT("up_proj.", "smooth", input_smooth, -1);
-    if (!input_smooth_is_loaded_) {
-      LOAD_MOE_WEIGHT("w3.", "smooth", input_smooth, -1);
-    }
-    LOAD_MOE_WEIGHT("down_proj.", "qweight", w2, 1);
-    if (!w2_is_loaded_) {
-      LOAD_MOE_WEIGHT("w2.", "qweight", w2, 1);
-    }
-    LOAD_MOE_WEIGHT("down_proj.", "per_channel_scale", w2_scale, -1);
+    LOAD_MOE_WEIGHT("down_proj.", "weight_scale", w2_scale, -1);
     if (!w2_scale_is_loaded_) {
-      LOAD_MOE_WEIGHT("w2.", "per_channel_scale", w2_scale, -1);
+      LOAD_MOE_WEIGHT("w2.", "weight_scale", w2_scale, -1);
     }
-    LOAD_MOE_WEIGHT("down_proj.", "smooth", act_smooth, 0);
-    if (!act_smooth_is_loaded_) {
-      LOAD_MOE_WEIGHT("w2.", "smooth", act_smooth, 0);
+    if (!w13_scale_is_loaded_) {
+      w13_scale_is_loaded_ = load_fused_up_scale_fallback(state_dict,
+                                                          rank,
+                                                          world_size,
+                                                          start_expert_id,
+                                                          num_experts_per_rank,
+                                                          w13_scale_);
     }
-  } else {
-    LOAD_MOE_FUSED_WEIGHT("weight", w1, w3, w13);
-    if (!w13_is_loaded_) {
-      prefixes = {"w1.", "w3."};
-      LOAD_MOE_FUSED_WEIGHT("weight", w1, w3, w13);
-    }
-    LOAD_MOE_WEIGHT("down_proj.", "weight", w2, 1);
-    if (!w2_is_loaded_) {
-      LOAD_MOE_WEIGHT("w2.", "weight", w2, 1);
-    }
-
-    // Some Qwen3.5-MoE checkpoints store expert weights in fused tensors
-    // (gate_up_proj / down_proj). Fall back to this format when split
-    // gate_proj/up_proj tensors are absent.
-    if (!w13_is_loaded_) {
-      w13_is_loaded_ = load_fused_gate_up_fallback(state_dict,
-                                                   rank,
-                                                   world_size,
-                                                   start_expert_id,
-                                                   num_experts_per_rank,
-                                                   w13_);
-    }
-
-    if (!w2_is_loaded_) {
-      w2_is_loaded_ = load_fused_down_fallback(state_dict,
-                                               rank,
-                                               world_size,
-                                               start_expert_id,
-                                               num_experts_per_rank,
-                                               w2_);
+    if (!w2_scale_is_loaded_) {
+      w2_scale_is_loaded_ = load_fused_down_scale_fallback(
+          state_dict, start_expert_id, num_experts_per_rank, w2_scale_);
     }
   }
 
   LOG(INFO) << "[QUANT_DEBUG][FusedMoE.load_experts] prefix="
-            << state_dict.prefix()
-            << ", quant_method="
+            << state_dict.prefix() << ", quant_method="
             << (quant_args_.quant_method().empty() ? "<empty>"
                                                    : quant_args_.quant_method())
-            << ", is_smoothquant=" << (is_smoothquant_ ? "true" : "false")
+            << ", resolved_moe_quant_method="
+            << resolved_moe_quant_method_.value_or("<none>")
+            << ", is_w8a8_dynamic="
+            << (is_w8a8_dynamic_quant_method(resolved_moe_quant_method_)
+                    ? "true"
+                    : "false")
             << ", w13_loaded=" << (w13_is_loaded_ ? "true" : "false")
-            << ", w2_loaded=" << (w2_is_loaded_ ? "true" : "false")
-            << ", w13={" << tensor_debug_info(w13_) << "}"
+            << ", w2_loaded=" << (w2_is_loaded_ ? "true" : "false") << ", w13={"
+            << tensor_debug_info(w13_) << "}"
             << ", w2={" << tensor_debug_info(w2_) << "}";
 
-  if (is_smoothquant_) {
-    LOG(INFO) << "[QUANT_DEBUG][FusedMoE.load_experts][SmoothQuant] prefix="
-              << state_dict.prefix()
-              << ", w13_scale_loaded="
+  if (is_w8a8_dynamic_quant_method(resolved_moe_quant_method_)) {
+    LOG(INFO) << "[QUANT_DEBUG][FusedMoE.load_experts][W8A8Dynamic] prefix="
+              << state_dict.prefix() << ", w13_scale_loaded="
               << (w13_scale_is_loaded_ ? "true" : "false")
-              << ", input_smooth_loaded="
-              << (input_smooth_is_loaded_ ? "true" : "false")
               << ", w2_scale_loaded="
-              << (w2_scale_is_loaded_ ? "true" : "false")
-              << ", act_smooth_loaded="
-              << (act_smooth_is_loaded_ ? "true" : "false")
-              << ", w13_scale={" << tensor_debug_info(w13_scale_) << "}"
-              << ", input_smooth={" << tensor_debug_info(input_smooth_) << "}"
-              << ", w2_scale={" << tensor_debug_info(w2_scale_) << "}"
-              << ", act_smooth={" << tensor_debug_info(act_smooth_) << "}";
+              << (w2_scale_is_loaded_ ? "true" : "false") << ", w13_scale={"
+              << tensor_debug_info(w13_scale_) << "}"
+              << ", w2_scale={" << tensor_debug_info(w2_scale_) << "}";
   }
 }
 
@@ -670,6 +839,7 @@ void FusedMoEImpl::load_state_dict(const StateDict& state_dict) {
   if (state_dict.size() == 0) {
     return;
   }
+  resolve_quant_method_from_state_dict(state_dict);
 
   if (n_shared_experts_ > 0) {
     auto shared_expert_state =
