@@ -327,15 +327,22 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
     const AttentionMetadata& attn_metadata,
     KVCache& kv_cache,
     const ModelInputParams& input_params) {
-  auto [qkvz_padded, ba_padded] =
-      project_padded_inputs(hidden_states, attn_metadata);
-  int64_t batch_size = qkvz_padded.size(0);
-  int64_t seq_len = qkvz_padded.size(1);
-
-  torch::Tensor qkvz_flat =
-      qkvz_padded.view({batch_size * seq_len, qkvz_padded.size(-1)});
-  torch::Tensor ba_flat =
-      ba_padded.view({batch_size * seq_len, ba_padded.size(-1)});
+  torch::Tensor qkvz_flat;
+  torch::Tensor ba_flat;
+  int64_t batch_size = 0;
+  int64_t seq_len = 0;
+  if (attn_metadata.is_prefill) {
+    std::tie(qkvz_flat, ba_flat) = project_flat_inputs(hidden_states);
+    batch_size = 1;
+    seq_len = qkvz_flat.size(0);
+  } else {
+    auto [qkvz_padded, ba_padded] =
+        project_padded_inputs(hidden_states, attn_metadata);
+    batch_size = qkvz_padded.size(0);
+    seq_len = qkvz_padded.size(1);
+    qkvz_flat = qkvz_padded.view({batch_size * seq_len, qkvz_padded.size(-1)});
+    ba_flat = ba_padded.view({batch_size * seq_len, ba_padded.size(-1)});
+  }
   xllm::kernel::FusedQkvzbaSplitReshapeParams fused_params;
   fused_params.mixed_qkvz = qkvz_flat;
   fused_params.mixed_ba = ba_flat;
@@ -348,7 +355,9 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
   std::tie(mixed_qkv, z, b, a) =
       xllm::kernel::fused_qkvzba_split_reshape_cat(fused_params);
 
-  mixed_qkv = mixed_qkv.view({batch_size, seq_len, mixed_qkv.size(-1)});
+  if (!attn_metadata.is_prefill) {
+    mixed_qkv = mixed_qkv.view({batch_size, seq_len, mixed_qkv.size(-1)});
+  }
   z = z.view({batch_size, seq_len, num_v_heads_ / tp_size_, head_v_dim_});
   b = b.view({batch_size, seq_len, num_v_heads_ / tp_size_});
   a = a.view({batch_size, seq_len, num_v_heads_ / tp_size_});
@@ -430,8 +439,14 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
     // Shape: [batch_size, num_heads, head_k_dim, head_v_dim]
     torch::Tensor initial_state_tensor =
         torch::index_select(ssm_cache, 0, linear_state_indices);
-    // Todo: chunked-prefill/prefix-cache use initial_state
-    initial_state_tensor.fill_(0.0);
+    CHECK_EQ(input_params.has_initial_state.size(),
+             input_params.linear_state_ids.size())
+        << "has_initial_state must be sequence-scoped.";
+    for (size_t i = 0; i < input_params.has_initial_state.size(); ++i) {
+      if (input_params.has_initial_state[i] == 0) {
+        initial_state_tensor.select(0, static_cast<int64_t>(i)).fill_(0.0);
+      }
+    }
     chunk_gated_delta_params.initial_state = initial_state_tensor;
     chunk_gated_delta_params.output_final_state = true;
     chunk_gated_delta_params.cu_seqlens = attn_metadata.q_cu_seq_lens;
@@ -479,7 +494,9 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
   // Project the normalized attention output back to hidden size.
   auto rearranged_norm =
       norm_out.reshape({norm_out.size(0), norm_out.size(1) * norm_out.size(2)});
-  rearranged_norm = reshape_qkvz_unpad(attn_metadata, rearranged_norm);
+  if (!attn_metadata.is_prefill) {
+    rearranged_norm = reshape_qkvz_unpad(attn_metadata, rearranged_norm);
+  }
   auto attn_output = o_proj_->forward(rearranged_norm);
   return attn_output;
 }

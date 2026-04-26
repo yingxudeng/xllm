@@ -48,6 +48,9 @@ limitations under the License.
 namespace xllm::npu {
 
 namespace {
+constexpr int32_t kPaddingSeqLen = 0;
+constexpr int32_t kPaddingLinearStateId = 0;
+
 std::pair<torch::Tensor, torch::Tensor> find_attention_plan_kv_cache(
     const std::vector<KVCache>& kv_caches) {
   for (const auto& cache : kv_caches) {
@@ -227,10 +230,29 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
       .copy_(params.q_seq_lens, /*non_blocking=*/true);
   kv_seq_lens_.slice(/*dim=*/0, /*start=*/0, /*end=*/actual_batch_size)
       .copy_(params.kv_seq_lens, /*non_blocking=*/true);
+  if (padded_num_tokens > actual_batch_size) {
+    q_seq_lens_
+        .slice(/*dim=*/0,
+               /*start=*/actual_batch_size,
+               /*end=*/padded_num_tokens)
+        .fill_(kPaddingSeqLen);
+    kv_seq_lens_
+        .slice(/*dim=*/0,
+               /*start=*/actual_batch_size,
+               /*end=*/padded_num_tokens)
+        .fill_(kPaddingSeqLen);
+  }
 
   persistent_new_cache_slots_
       .slice(/*dim=*/0, /*start=*/0, /*end=*/actual_num_tokens)
       .copy_(params.new_cache_slots, /*non_blocking=*/true);
+  if (padded_num_tokens > actual_num_tokens) {
+    persistent_new_cache_slots_
+        .slice(/*dim=*/0,
+               /*start=*/actual_num_tokens,
+               /*end=*/padded_num_tokens)
+        .zero_();
+  }
   if (!params.linear_state_ids.empty()) {
     if (params.linear_state_indices.defined()) {
       persistent_linear_state_indices_
@@ -243,6 +265,13 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
               torch::tensor(params.linear_state_ids, torch::kInt).to(device_),
               /*non_blocking=*/true);
     }
+    if (padded_num_tokens > actual_batch_size) {
+      persistent_linear_state_indices_
+          .slice(/*dim=*/0,
+                 /*start=*/actual_batch_size,
+                 /*end=*/padded_num_tokens)
+          .fill_(kPaddingLinearStateId);
+    }
   }
 
   // Copy block table data
@@ -253,6 +282,13 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
           .slice(/*dim=*/1, /*start=*/0, /*end=*/actual_block_table_len);
   slice_persistent_block_tables.copy_(params.block_tables,
                                       /*non_blocking=*/true);
+  if (padded_num_tokens > actual_batch_size) {
+    persistent_block_tables_
+        .slice(/*dim=*/0,
+               /*start=*/actual_batch_size,
+               /*end=*/padded_num_tokens)
+        .zero_();
+  }
 
   // Update persistent embedding from input_embedding if available
   const auto& embedding = params.input_embedding;
@@ -318,8 +354,8 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
     }
     // Fill padded positions with default values
     for (int i = actual_batch_size; i < padded_num_tokens; i++) {
-      params_for_capture->kv_seq_lens_vec[i] = 1;
-      params_for_capture->q_seq_lens_vec[i] = 1;
+      params_for_capture->kv_seq_lens_vec[i] = kPaddingSeqLen;
+      params_for_capture->q_seq_lens_vec[i] = kPaddingSeqLen;
     }
     params_for_capture->num_sequences = padded_num_tokens;
     params_for_capture->batch_forward_type = BatchForwardType::DECODE;
@@ -329,9 +365,8 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
         persistent_block_tables(padded_num_tokens);
     if (!params.linear_state_ids.empty()) {
       params_for_capture->linear_state_ids = params.linear_state_ids;
-      const int32_t padding_linear_state_id = 0;
       params_for_capture->linear_state_ids.resize(padded_num_tokens,
-                                                  padding_linear_state_id);
+                                                  kPaddingLinearStateId);
       params_for_capture->linear_state_indices =
           persistent_linear_state_indices(padded_num_tokens);
     }
