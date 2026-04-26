@@ -24,6 +24,30 @@ limitations under the License.
 #include "util/utils.h"
 
 namespace xllm {
+namespace {
+
+size_t align_chunked_prefill_tokens(size_t total_tokens,
+                                    size_t kv_cache_tokens_num,
+                                    size_t token_budget,
+                                    size_t block_size) {
+  size_t handle_tokens =
+      std::min(total_tokens - kv_cache_tokens_num, token_budget);
+  if (kv_cache_tokens_num + handle_tokens == total_tokens) {
+    return handle_tokens;
+  }
+
+  const size_t last_cache_position = total_tokens - total_tokens % block_size;
+  const size_t tokens_after_schedule = kv_cache_tokens_num + handle_tokens;
+  if (tokens_after_schedule < last_cache_position) {
+    handle_tokens = handle_tokens / block_size * block_size;
+  } else if (kv_cache_tokens_num < last_cache_position &&
+             last_cache_position < tokens_after_schedule) {
+    handle_tokens = last_cache_position - kv_cache_tokens_num;
+  }
+  return handle_tokens;
+}
+
+}  // namespace
 
 ChunkedPrefillScheduler::ChunkedPrefillScheduler(Engine* engine,
                                                  const Options& options)
@@ -92,10 +116,18 @@ void ChunkedPrefillScheduler::handle_running_queue_requests(
       // actually handled by current sequence in the prefill stage and the
       // decode stage. Now Partially use `num_tokens_to_handle` to replace
       // `current_step_handle_tokens`.
-      size_t num_tokens_to_handle =
-          sequence->is_chunked_prefill_stage()
-              ? std::min(assume_max_tokens, num_tokens - kv_cache_tokens_num)
-              : 1 + min_speculative_tokens_required_;
+      size_t num_tokens_to_handle = 1 + min_speculative_tokens_required_;
+      if (sequence->is_chunked_prefill_stage()) {
+        num_tokens_to_handle =
+            align_chunked_prefill_tokens(num_tokens,
+                                         kv_cache_tokens_num,
+                                         assume_max_tokens,
+                                         kv_cache_manager_->block_size());
+        if (num_tokens_to_handle == 0) {
+          has_enough_budget = false;
+          break;
+        }
+      }
 
       if (allocated_seqs + 1 > remaining_seq_budget ||
           allocated_tokens + num_tokens_to_handle > remaining_token_budget) {
@@ -121,10 +153,13 @@ void ChunkedPrefillScheduler::handle_running_queue_requests(
       // actual tokens be handled,
       // decode: 1 + num_speculative_tokens
       // prefill: std::min(seq.num_tokens(), min_tokens_per_iter_for_prefill)
+      const size_t token_budget = sequence->is_chunked_prefill_stage()
+                                      ? num_tokens_to_handle
+                                      : assume_max_tokens;
       size_t current_step_handle_tokens = 0;
       // no budget left
       if (!allocate_blocks_for(
-              sequence.get(), assume_max_tokens, &current_step_handle_tokens)) {
+              sequence.get(), token_budget, &current_step_handle_tokens)) {
         has_enough_blocks = false;
         break;
       }
@@ -290,13 +325,23 @@ void ChunkedPrefillScheduler::handle_prefill_requests(
         continue;
       }
 
-      size_t num_tokens = prefill_sequence->num_tokens();
       // The max tokens current sequence can handle.
       const size_t assume_max_tokens =
           std::min(max_tokens_per_chunk_for_prefill,
                    remaining_token_budget - allocated_tokens);
 
-      num_tokens = std::min(assume_max_tokens, num_tokens);
+      const size_t kv_cache_tokens_num =
+          prefill_sequence->kv_state().kv_cache_tokens_num();
+      const size_t num_tokens =
+          align_chunked_prefill_tokens(prefill_sequence->num_tokens(),
+                                       kv_cache_tokens_num,
+                                       assume_max_tokens,
+                                       kv_cache_manager_->block_size());
+      if (num_tokens == 0) {
+        can_schedule = false;
+        budget_exhausted = true;
+        break;
+      }
 
       if (remaining_token_budget < allocated_tokens + num_tokens ||
           remaining_seq_budget < allocated_seqs + 1) {
@@ -309,8 +354,6 @@ void ChunkedPrefillScheduler::handle_prefill_requests(
       // after prefix cache match
       size_t seq_estimate_latency = 0;
       if (options_.enable_latency_aware_schedule()) {
-        size_t kv_cache_tokens_num =
-            prefill_sequence->kv_state().kv_cache_tokens_num();
         seq_estimate_latency = profile_manager_->predict_step_time(
             num_tokens + kv_cache_tokens_num, kv_cache_tokens_num, false);
         if (estimate_latency + allocated_estimate_latency +
@@ -467,10 +510,37 @@ void ChunkedPrefillScheduler::handle_remaining_budget(
       estimate_latency += cur_estimate_seq_latency;
     }
 
+    const size_t kv_cache_tokens_num =
+        sequence->kv_state().kv_cache_tokens_num();
+    const size_t remaining_sequence_tokens =
+        sequence->num_tokens() - kv_cache_tokens_num;
+    if (remaining_sequence_tokens <= token_budget) {
+      remaining_token_budget -= token_budget;
+      continue;
+    }
+
+    size_t token_budget_for_allocate = remaining_token_budget;
+    if (sequence->is_chunked_prefill_stage()) {
+      token_budget_for_allocate =
+          align_chunked_prefill_tokens(sequence->num_tokens(),
+                                       kv_cache_tokens_num,
+                                       remaining_token_budget,
+                                       kv_cache_manager_->block_size());
+      if (token_budget_for_allocate == 0) {
+        break;
+      }
+    }
+    token_budget_for_allocate =
+        std::min(token_budget_for_allocate, remaining_sequence_tokens);
+    if (token_budget_for_allocate <= token_budget) {
+      remaining_token_budget -= token_budget;
+      continue;
+    }
+
     size_t current_step_handle_tokens = 0;
     // no memory left
     if (!allocate_blocks_for(
-            sequence, remaining_token_budget, &current_step_handle_tokens)) {
+            sequence, token_budget_for_allocate, &current_step_handle_tokens)) {
       blocks_exhausted = true;
       break;
     }
@@ -602,16 +672,19 @@ std::vector<Batch> ChunkedPrefillScheduler::prepare_batch() {
   //  split sequences requiring Prefill into chunks and
   //  add them to the batch.
   //
-  handle_running_queue_requests(max_tokens_per_chunk_for_prefill,
-                                latency_budget,
-                                estimate_latency,
-                                remaining_token_budget,
-                                remaining_seq_budget,
-                                num_preempted_requests,
-                                prefill_stage_sequences,
-                                running_queue_,
-                                budget_exhausted,
-                                blocks_exhausted);
+  const bool has_waiting_prefill = !waiting_priority_queue_.empty();
+  if (!has_waiting_prefill) {
+    handle_running_queue_requests(max_tokens_per_chunk_for_prefill,
+                                  latency_budget,
+                                  estimate_latency,
+                                  remaining_token_budget,
+                                  remaining_seq_budget,
+                                  num_preempted_requests,
+                                  prefill_stage_sequences,
+                                  running_queue_,
+                                  budget_exhausted,
+                                  blocks_exhausted);
+  }
 
   // step-2. handle new prefill request
   // new prefill request can not preempt any running requests.
