@@ -40,6 +40,7 @@ limitations under the License.
 #include "runtime/worker.h"
 #include "util/env_var.h"
 #include "util/pretty_print.h"
+#include "util/tensor_helper.h"
 #include "util/utils.h"
 namespace xllm {
 
@@ -248,15 +249,64 @@ KVCacheCapacity VLMEngine::estimate_kv_cache_capacity() {
   } else {
     slot_size = 2 * dtype_size * head_dim_ * n_local_kv_heads_;
   }
+
+  int64_t linear_slot_size = 0;
+  if (args_.linear_num_value_heads() > 0) {
+    const int64_t local_linear_k_heads =
+        std::max<int64_t>(1, args_.linear_num_key_heads() / dp_local_tp_size_);
+    const int64_t local_linear_v_heads = std::max<int64_t>(
+        1, args_.linear_num_value_heads() / dp_local_tp_size_);
+    const int64_t head_k_dim = args_.linear_key_head_dim();
+    const int64_t head_v_dim = args_.linear_value_head_dim();
+    const int64_t ssm_dtype_size =
+        resolve_ssm_dtype_size(args_.mamba_ssm_dtype(), dtype_size);
+    const int64_t linear_ssm_slot_size =
+        ssm_dtype_size * local_linear_v_heads * head_k_dim * head_v_dim;
+    const int64_t linear_conv_slot_size =
+        dtype_size *
+        (head_k_dim * local_linear_k_heads * 2 +
+         head_v_dim * local_linear_v_heads) *
+        (args_.linear_conv_kernel_dim() - 1);
+    linear_slot_size = linear_ssm_slot_size + linear_conv_slot_size;
+  }
+
   kv_cache_cap.slot_size() = slot_size;
+  kv_cache_cap.linear_slot_size() = linear_slot_size;
   kv_cache_cap.n_layers() = args_.n_layers();
   kv_cache_cap.block_size() = options_.block_size();
+
+  kv_cache_cap.num_linear_state_blocks() = options_.max_seqs_per_batch() + 2;
+  for (int64_t layer_id = 0; layer_id < kv_cache_cap.n_layers(); ++layer_id) {
+    if (is_full_attention_layer(args_, layer_id)) {
+      ++kv_cache_cap.num_full_attention_layers();
+    } else {
+      ++kv_cache_cap.num_linear_attention_layers();
+    }
+  }
 
   // compute kv cache n_blocks
   const int64_t block_size = kv_cache_cap.block_size();
   const int64_t block_size_in_bytes = block_size * slot_size;
-  kv_cache_cap.n_blocks() = kv_cache_cap.cache_size_in_bytes() /
-                            (args_.n_layers() * block_size_in_bytes);
+  kv_cache_cap.linear_cache_size_in_bytes() =
+      kv_cache_cap.num_linear_attention_layers() *
+      kv_cache_cap.num_linear_state_blocks() * kv_cache_cap.linear_slot_size();
+  const int64_t available_full_cache_size_in_bytes =
+      kv_cache_cap.cache_size_in_bytes() -
+      kv_cache_cap.linear_cache_size_in_bytes();
+  if (kv_cache_cap.linear_slot_size() > 0) {
+    CHECK_GT(kv_cache_cap.cache_size_in_bytes(),
+             kv_cache_cap.linear_cache_size_in_bytes())
+        << "failed to reserve linear state cache for VLM linear-attention "
+        << "layers: max_seqs_per_batch (" << options_.max_seqs_per_batch()
+        << ") is too large.";
+  }
+  CHECK_GT(available_full_cache_size_in_bytes, 0)
+      << "no memory left for full-attention kv cache after reserving linear "
+         "state cache";
+  const int64_t full_attention_layers =
+      std::max<int64_t>(kv_cache_cap.num_full_attention_layers(), 1);
+  kv_cache_cap.n_blocks() = available_full_cache_size_in_bytes /
+                            (full_attention_layers * block_size_in_bytes);
   CHECK_GT(kv_cache_cap.n_blocks(), 0) << "no n_blocks for kv cache";
 
   return kv_cache_cap;
@@ -266,7 +316,11 @@ bool VLMEngine::allocate_kv_cache(const KVCacheCapacity& kv_cache_cap) {
   LOG(INFO) << "kv cache capacity: "
             << "bytes: " << kv_cache_cap.cache_size_in_bytes()
             << ", blocks: " << kv_cache_cap.n_blocks()
-            << ", slot_size: " << kv_cache_cap.slot_size();
+            << ", slot_size: " << kv_cache_cap.slot_size()
+            << ", linear_slot_size: " << kv_cache_cap.linear_slot_size()
+            << ", linear_blocks: " << kv_cache_cap.num_linear_state_blocks()
+            << ", reserved_linear_bytes: "
+            << readable_size(kv_cache_cap.linear_cache_size_in_bytes());
 
   const int32_t block_size = static_cast<int32_t>(kv_cache_cap.block_size());
   const KVCacheShape kv_cache_shape(kv_cache_cap, args_, dp_local_tp_size_);
@@ -278,6 +332,7 @@ bool VLMEngine::allocate_kv_cache(const KVCacheCapacity& kv_cache_cap) {
   options.num_blocks(kv_cache_cap.n_blocks())
       .host_num_blocks(0)  // no host cache for vlm engine currently.
       .block_size(block_size)
+      .enable_linear_state(has_linear_attention_layers(args_))
       .enable_prefix_cache(options_.enable_prefix_cache())
       .enable_disagg_pd(options_.enable_disagg_pd())
       .enable_cache_upload(options_.enable_cache_upload());

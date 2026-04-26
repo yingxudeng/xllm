@@ -17,12 +17,37 @@ limitations under the License.
 
 #include <gtest/gtest.h>
 
+#include <filesystem>
+
 #include "core/platform/device.h"
+#include "core/util/model_config_utils.h"
 #if defined(USE_NPU)
 #include "models/model_registry.h"
 #endif
 
 namespace xllm {
+
+TEST(HFModelLoaderTest, Qwen35BackendAwareModelTypeSelection) {
+  JsonReader reader;
+  ASSERT_TRUE(reader.parse_text(R"json(
+    {
+      "architectures": ["Qwen3_5ForConditionalGeneration"],
+      "model_type": "qwen3_5",
+      "text_config": {
+        "model_type": "qwen3_5_text"
+      },
+      "vision_config": {
+        "model_type": "qwen3_5"
+      }
+    }
+  )json"));
+
+  const std::filesystem::path fake_model_path("/tmp/Qwen3.5-9B");
+  EXPECT_EQ(util::get_model_type(reader, fake_model_path), "qwen3_5_text");
+  EXPECT_EQ(util::get_model_type(reader, fake_model_path, "llm"),
+            "qwen3_5_text");
+  EXPECT_EQ(util::get_model_type(reader, fake_model_path, "vlm"), "qwen3_5_vl");
+}
 
 TEST(HFModelLoaderTest, LoadCompressedTensorsFp8StaticConfig) {
   JsonReader reader;
