@@ -529,6 +529,7 @@ ForwardInput BatchInputBuilder::state_to_forward_input() {
   input_params.kv_seq_lens = torch::tensor(state_.seq_lens, torch::kInt);
   input_params.kv_cache_tokens_nums =
       torch::tensor(state_.kv_cache_tokens_nums, torch::kInt);
+  input_params.kv_cache_tokens_nums_host = state_.kv_cache_tokens_nums;
   input_params.q_seq_lens = torch::tensor(state_.q_seq_lens, torch::kInt);
   input_params.kv_seq_lens_vec = std::move(state_.seq_lens);
   input_params.q_seq_lens_vec = std::move(state_.q_seq_lens);
