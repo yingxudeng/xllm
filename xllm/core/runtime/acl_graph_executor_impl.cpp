@@ -69,6 +69,31 @@ int64_t get_decode_graph_capacity(const runtime::Options& options) {
   }
   return options.max_seqs_per_batch() * options.num_decoding_tokens();
 }
+
+uint32_t get_decode_graph_bucket_num_tokens(uint32_t num_tokens) {
+  if (FLAGS_enable_graph_mode_decode_no_padding) {
+    return num_tokens;
+  }
+  if (num_tokens <= 1) {
+    return 1;
+  } else if (num_tokens <= 2) {
+    return 2;
+  } else if (num_tokens <= 4) {
+    return 4;
+  } else if (num_tokens <= 8) {
+    return 8;
+  } else {
+    return ((num_tokens + 15) / 16) * 16;
+  }
+}
+
+int64_t get_decode_graph_buffer_capacity(const runtime::Options& options) {
+  const int64_t max_decode_tokens = get_decode_graph_capacity(options);
+  CHECK_GT(max_decode_tokens, 0)
+      << "max_decode_tokens must be > 0 for graph buffer capacity";
+  return static_cast<int64_t>(get_decode_graph_bucket_num_tokens(
+      static_cast<uint32_t>(max_decode_tokens)));
+}
 }  // namespace
 
 // GraphPersistentParam implementation
@@ -94,8 +119,8 @@ GraphPersistentParam::GraphPersistentParam(const ModelArgs& args,
   // Use max_tokens_per_batch for first dimension size
   // num_decode_tokens
   const int64_t max_tokens_per_batch = FLAGS_max_tokens_per_batch;
-  // num_sequences
-  const int64_t max_seqs_per_batch = get_decode_graph_capacity(options);
+  const int64_t max_decode_graph_tokens =
+      get_decode_graph_buffer_capacity(options);
   auto tensor_options = torch::TensorOptions().device(device);
 
   const int64_t max_seq_len = args_.max_position_embeddings();
@@ -114,12 +139,12 @@ GraphPersistentParam::GraphPersistentParam(const ModelArgs& args,
   persistent_new_cache_slots_ = torch::zeros(
       {max_tokens_per_batch}, torch::dtype(torch::kInt).device(device));
   persistent_linear_state_indices_ = torch::zeros(
-      {max_seqs_per_batch}, torch::dtype(torch::kInt).device(device));
+      {max_decode_graph_tokens}, torch::dtype(torch::kInt).device(device));
 
-  // Sequence length tensors with max_seqs_per_batch
-  q_seq_lens_ = torch::zeros({max_seqs_per_batch},
+  // Sequence-scoped tensors must cover the largest rounded decode graph bucket.
+  q_seq_lens_ = torch::zeros({max_decode_graph_tokens},
                              torch::dtype(torch::kInt).device(device));
-  kv_seq_lens_ = torch::zeros({max_seqs_per_batch},
+  kv_seq_lens_ = torch::zeros({max_decode_graph_tokens},
                               torch::dtype(torch::kInt).device(device));
 
   // Block table tensors with maximum possible size
@@ -127,7 +152,7 @@ GraphPersistentParam::GraphPersistentParam(const ModelArgs& args,
   const int64_t max_block_table_len =
       (max_seq_len + block_size - 1) / block_size + 1;
   persistent_block_tables_ =
-      torch::zeros({max_seqs_per_batch, max_block_table_len},
+      torch::zeros({max_decode_graph_tokens, max_block_table_len},
                    torch::dtype(torch::kInt).device(device));
 
   // Output tensor for hidden states
@@ -312,8 +337,9 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
   if (params.q_cu_seq_lens.defined()) {
     // Lazy initialization: if q_cu_seq_lens_ is not initialized, initialize it
     if (q_cu_seq_lens_.numel() == 0) {
-      const int64_t max_seqs_per_batch = get_decode_graph_capacity(options_);
-      q_cu_seq_lens_ = torch::zeros({max_seqs_per_batch + 1},
+      const int64_t max_decode_graph_tokens =
+          get_decode_graph_buffer_capacity(options_);
+      q_cu_seq_lens_ = torch::zeros({max_decode_graph_tokens + 1},
                                     torch::dtype(torch::kInt).device(device_));
     }
     // Copy data
@@ -1142,24 +1168,10 @@ void AclGraph::print_graph_tensors() const {
       << "graph hidden_states_: " << persistent_param_.hidden_states();
 }
 
-// bucket will be [1, 2, 4, 8, 16, 32, 48, 64, ..., max_seqs_per_batch]
+// bucket will be [1, 2, 4, 8, 16, 32, 48, 64, ...]
 uint32_t AclGraphExecutorImpl::get_bucket_num_tokens(
     uint32_t num_tokens) const {
-  if (FLAGS_enable_graph_mode_decode_no_padding) {
-    return num_tokens;
-  }
-  if (num_tokens <= 1) {
-    return 1;
-  } else if (num_tokens <= 2) {
-    return 2;
-  } else if (num_tokens <= 4) {
-    return 4;
-  } else if (num_tokens <= 8) {
-    return 8;
-  } else {
-    // For num_tokens > 16, use multiples of 16
-    return ((num_tokens + 15) / 16) * 16;
-  }
+  return get_decode_graph_bucket_num_tokens(num_tokens);
 }
 
 }  // namespace xllm::npu
