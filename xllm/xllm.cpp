@@ -212,7 +212,7 @@ int run() {
 #endif
   std::string model_type = "";
   if (FLAGS_backend != "dit") {
-    model_type = xllm::util::get_model_type(model_path);
+    model_type = xllm::util::get_model_type(model_path, FLAGS_backend);
     FLAGS_tool_call_parser = function_call::FunctionCallParser::get_parser_auto(
         FLAGS_tool_call_parser, model_type);
     FLAGS_reasoning_parser =
