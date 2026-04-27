@@ -17,12 +17,16 @@ limitations under the License.
 
 #include <arpa/inet.h>
 #include <glog/logging.h>
+#include <ifaddrs.h>
 #include <netdb.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
 #include <algorithm>
+#include <cstring>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <unordered_set>
 
 namespace xllm {
@@ -30,6 +34,66 @@ namespace net {
 
 static std::mutex g_port_mutex;
 static std::unordered_set<int> g_allocated_port_map;
+
+namespace {
+
+constexpr char kIpv4Any[] = "0.0.0.0";
+constexpr char kIpv6Any[] = "::";
+constexpr char kIpv4Loopback[] = "127.0.0.1";
+constexpr char kIpv6Loopback[] = "::1";
+constexpr char kLocalhost[] = "localhost";
+
+std::string extract_ip_for_local_check(const std::string& input) {
+  if (input.empty()) {
+    return "";
+  }
+
+  if (input.front() == '[') {
+    size_t bracket_pos = input.find(']');
+    if (bracket_pos != std::string::npos) {
+      return input.substr(1, bracket_pos - 1);
+    }
+  }
+
+  if (input.find(':') != input.rfind(':')) {
+    return input;
+  }
+
+  return extract_ip(input);
+}
+
+bool is_wildcard_ip(const std::string& ip) {
+  return ip == kIpv4Any || ip == kIpv6Any;
+}
+
+bool is_loopback_ip(const std::string& ip) {
+  return ip == kIpv4Loopback || ip == kIpv6Loopback || ip == kLocalhost;
+}
+
+bool sockaddr_matches_ip(const sockaddr* addr, const std::string& ip) {
+  if (addr == nullptr) {
+    return false;
+  }
+
+  char host[INET6_ADDRSTRLEN]{'\0'};
+  if (addr->sa_family == AF_INET) {
+    const sockaddr_in* addr_in = reinterpret_cast<const sockaddr_in*>(addr);
+    const char* result =
+        inet_ntop(AF_INET, &addr_in->sin_addr, host, sizeof(host));
+    return result != nullptr && ip == host;
+  }
+
+  if (addr->sa_family == AF_INET6) {
+    const sockaddr_in6* addr_in6 = reinterpret_cast<const sockaddr_in6*>(addr);
+    const char* result =
+        inet_ntop(AF_INET6, &addr_in6->sin6_addr, host, sizeof(host));
+    return result != nullptr && ip == host;
+  }
+
+  return false;
+}
+
+}  // namespace
 
 // TODO: return private ip
 std::string get_local_ip_addr() {
@@ -134,6 +198,53 @@ std::string extract_port(const std::string& input) {
   std::getline(stream, port, ':');
 
   return port;
+}
+
+bool is_local_ip(const std::string& ip) {
+  if (ip.empty() || is_wildcard_ip(ip)) {
+    return false;
+  }
+
+  if (is_loopback_ip(ip)) {
+    return true;
+  }
+
+  ifaddrs* ifaddr = nullptr;
+  int ret = getifaddrs(&ifaddr);
+  if (ret != 0) {
+    LOG(WARNING) << "getifaddrs failed, fallback to hostname ip check";
+    return ip == get_local_ip_addr();
+  }
+
+  auto guard =
+      std::unique_ptr<ifaddrs, decltype(&freeifaddrs)>(ifaddr, freeifaddrs);
+  for (ifaddrs* ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+    if (sockaddr_matches_ip(ifa->ifa_addr, ip)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool is_local_peer_addr(const std::string& bind_addr,
+                        const std::string& peer_addr) {
+  const std::string bind_ip = extract_ip_for_local_check(bind_addr);
+  const std::string peer_ip = extract_ip_for_local_check(peer_addr);
+
+  if (bind_ip.empty() || peer_ip.empty()) {
+    return false;
+  }
+
+  if (bind_ip == peer_ip) {
+    return true;
+  }
+
+  if (is_wildcard_ip(bind_ip)) {
+    return is_local_ip(peer_ip);
+  }
+
+  return false;
 }
 
 void parse_host_port_from_addr(const std::string& addr,

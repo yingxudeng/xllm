@@ -185,11 +185,8 @@ int run() {
   }
 
   bool is_local = false;
-  if (FLAGS_host != "" &&
-      net::extract_ip(FLAGS_master_node_addr) == FLAGS_host) {
-    is_local = true;
-  } else {
-    is_local = false;
+  if (!FLAGS_host.empty()) {
+    is_local = net::is_local_peer_addr(FLAGS_master_node_addr, FLAGS_host);
   }
 
   LOG(INFO) << "set worker role to "

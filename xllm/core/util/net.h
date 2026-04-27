@@ -31,5 +31,8 @@ void parse_host_port_from_addr(const std::string& addr,
 
 std::string extract_ip(const std::string& input);
 std::string extract_port(const std::string& input);
+bool is_local_ip(const std::string& ip);
+bool is_local_peer_addr(const std::string& bind_addr,
+                        const std::string& peer_addr);
 }  // namespace net
 }  // namespace xllm

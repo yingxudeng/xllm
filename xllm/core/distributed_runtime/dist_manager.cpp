@@ -69,9 +69,9 @@ std::unique_ptr<CommChannel> create_channel(const std::string& worker_addrs,
                                             const runtime::Options& options) {
   std::unique_ptr<CommChannel> channel;
 
-  if (net::extract_ip(options.master_node_addr().value_or("")) ==
-          net::extract_ip(worker_addrs) &&
-      options.enable_shm()) {
+  if (options.enable_shm() &&
+      net::is_local_peer_addr(options.master_node_addr().value_or(""),
+                              worker_addrs)) {
     // create shared memory manager for local rank
     bool is_driver = false;
     int dp_group = r / dp_local_tp_size;
