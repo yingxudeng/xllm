@@ -34,6 +34,12 @@ You will see the following files in /usr/local/xllm directory:
 ### How to compile c_api examples
 ```
 cd xllm/c_api/examples
-g++ simple_llm_chat_completions.cpp -o simple_llm_chat_completions -I/usr/local/xllm/include -L/usr/local/xllm/lib -lxllm -Wl,-rpath=/usr/local/xllm/lib
+g++ test_press_rec_multimodal_completions.cpp -o test_press_rec_multimodal_completions -I/usr/local/xllm/include -L/usr/local/xllm/lib -lxllm -Wl,-rpath=/usr/local/xllm/lib
+
+```
+
+### Use -h to get press script parameters
+```
+./test_press_rec_multimodal_completions -h 
 
 ```

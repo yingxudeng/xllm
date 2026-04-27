@@ -76,7 +76,8 @@ BlockManagerPool::BlockManagerPool(const Options& options, int32_t dp_size)
         /*resource_name=*/"single block",
         /*exhaustion_message=*/"No more single-block ids available"));
   }
-  reset_transfer_infos();
+  swap_block_transfer_infos_.clear();
+  swap_block_transfer_infos_.resize(block_managers_.size());
 }
 
 int32_t BlockManagerPool::get_manager_with_max_free_blocks() const {
@@ -165,11 +166,6 @@ void BlockManagerPool::deallocate(Sequence* sequence) {
 std::vector<std::vector<BlockTransferInfo>>*
 BlockManagerPool::get_swap_block_transfer_infos() {
   return &swap_block_transfer_infos_;
-}
-
-void BlockManagerPool::reset_transfer_infos() {
-  swap_block_transfer_infos_.clear();
-  swap_block_transfer_infos_.resize(block_managers_.size());
 }
 
 bool BlockManagerPool::allocate(Sequence* sequence) {
