@@ -113,6 +113,10 @@ struct DSAGroupKeyHash {
   }
 };
 
+inline int32_t deepseek_v4_normalize_compress_ratio(int32_t ratio) {
+  return ratio <= 1 ? 1 : ratio;
+}
+
 class DeepseekV4ModelImpl
     : public LlmModelImplBase<layer::DeepseekV4DecoderLayer> {
  public:
@@ -171,6 +175,8 @@ class DeepseekV4ModelImpl
           model_args.rope_scaling_original_max_position_embeddings() > 0
               ? model_args.rope_scaling_original_max_position_embeddings()
               : max_pos;
+      // DeepSeek V4 DSA rotary only uses YaRN to derive inv_freq.  Keep the
+      // generic cache builder's extrapolation/mscale inputs at unit values.
       dsa_rotary_embedding_ =
           std::make_shared<layer::DeepseekV4RotaryEmbedding>(
               /*rotary_dim=*/rope_head_dim,
@@ -179,12 +185,12 @@ class DeepseekV4ModelImpl
               /*rope_theta=*/model_args.rope_theta(),
               /*compress_rope_theta=*/model_args.compress_rope_theta(),
               /*scaling_factor=*/model_args.factor(),
-              /*extrapolation_factor=*/model_args.rope_extrapolation_factor(),
+              /*extrapolation_factor=*/1.0f,
               /*beta_fast=*/model_args.beta_fast(),
               /*beta_slow=*/model_args.beta_slow(),
               /*attn_factor=*/model_args.rope_scaling_attn_factor(),
-              /*mscale=*/model_args.rope_scaling_mscale(),
-              /*mscale_all_dim=*/model_args.rope_scaling_mscale_all_dim(),
+              /*mscale=*/1.0f,
+              /*mscale_all_dim=*/1.0f,
               /*original_max_position_embeddings=*/original_max_pos,
               options);
       dsa_cos_sin_ = dsa_rotary_embedding_->get_cos_sin_cache("default");
@@ -228,8 +234,9 @@ class DeepseekV4ModelImpl
     // 2) token managers in first-seen compress_ratio order
     register_group(DSACacheType::SLIDING_WINDOW, 1, window_size);
     for (const auto ratio : compress_ratios) {
-      if (ratio == 4 || ratio == 128) {
-        register_group(DSACacheType::TOKEN, ratio, base_block_size);
+      const int32_t cr = deepseek_v4_normalize_compress_ratio(ratio);
+      if (cr == 4 || cr == 128) {
+        register_group(DSACacheType::TOKEN, cr, base_block_size);
       }
     }
 
@@ -239,6 +246,7 @@ class DeepseekV4ModelImpl
       int32_t cr = (layer_id < static_cast<int32_t>(compress_ratios.size()))
                        ? compress_ratios[layer_id]
                        : 1;
+      cr = deepseek_v4_normalize_compress_ratio(cr);
       // Build per-layer cache specs based on compress_ratio
       struct CacheEntry {
         DSACacheType type;
@@ -898,7 +906,7 @@ inline DeepseekV4ArgsPolicy build_deepseek_v4_args_policy(
   DeepseekV4ArgsPolicy policy;
   switch (preset) {
     case DeepseekV4PolicyPreset::kDefault:
-      policy.supported_compress_ratios = {1, 4, 128};
+      policy.supported_compress_ratios = {0, 1, 4, 128};
       policy.supported_score_funcs = {"softmax", "sigmoid", "sqrtsoftplus"};
       policy.default_compress_ratio = 1;
       return policy;
@@ -922,6 +930,18 @@ inline void process_deepseek_v4_args(ModelArgs* args,
   SET_ARG(stop_token_ids, std::unordered_set<int32_t>({args->eos_token_id()}));
 }
 
+inline void normalize_deepseek_v4_args(ModelArgs* args) {
+  // Align with vLLM branch semantics: only ratios > 1 use compressed path.
+  // Treat non-positive/one ratios as non-compressed (ratio=1).
+  if (args->n_layers() > 0) {
+    auto& ratios = args->compress_ratios();
+    for (int64_t i = 0; i < args->n_layers(); ++i) {
+      ratios[static_cast<size_t>(i)] =
+          deepseek_v4_normalize_compress_ratio(ratios[static_cast<size_t>(i)]);
+    }
+  }
+}
+
 inline void validate_deepseek_v4_args(const ModelArgs& args,
                                       const DeepseekV4ArgsPolicy& policy) {
   CHECK(!policy.supported_compress_ratios.empty())
@@ -936,7 +956,7 @@ inline void validate_deepseek_v4_args(const ModelArgs& args,
       << args.n_layers();
   CHECK_GE(static_cast<int64_t>(args.compress_ratios().size()), args.n_layers())
       << "deepseek_v4 config compress_ratios size must be >= n_layers after "
-         "normalization, got "
+         "processing, got "
       << args.compress_ratios().size() << " vs " << args.n_layers();
   for (int64_t i = 0; i < args.n_layers(); ++i) {
     const int32_t ratio = args.compress_ratios()[static_cast<size_t>(i)];
@@ -1017,6 +1037,7 @@ REGISTER_MODEL_ARGS(deepseek_v4, [&] {
   load_deepseek_v4_model_args(json, args);
   process_deepseek_v4_args(args, args_policy);
   validate_deepseek_v4_args(*args, args_policy);
+  normalize_deepseek_v4_args(args);
 });
 
 }  // namespace xllm
