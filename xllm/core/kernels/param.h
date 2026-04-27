@@ -335,7 +335,8 @@ struct NpuQuantizeParams {
   // Zero-point for non-symmetric quantization. Optional.
   std::optional<torch::Tensor> zero_point;
   // Quantization target dtype. Currently qint8 path maps to int8 tensor output.
-  // support at::ScalarType::QInt8 /at::ScalarType::QUInt8 / at::ScalarType::QInt32
+  // support at::ScalarType::QInt8 /at::ScalarType::QUInt8 /
+  // at::ScalarType::QInt32
   at::ScalarType output_dtype = at::ScalarType::QInt8;
   int64_t axis = 1;
 
@@ -458,6 +459,22 @@ struct DequantSwigluQuantParams {
   bool activate_left = true;
   // Quantization mode: 0 static quant, 1 dynamic quant.
   int64_t quant_mode = 1;
+};
+
+// Ascend W4A8_DYNAMIC MoE weight post-load processing for version 1.0.0.
+// Mirrors vllm-ascend's Python path: transpose/NZ-convert int4 weights, pack
+// them to int32, and fold first-level + second-level scales into the int64
+// dtype/layout consumed by npu_grouped_matmul.
+struct W4A8DynamicMoePreprocessParams {
+  torch::Tensor w13_weight;
+  torch::Tensor w2_weight;
+  torch::Tensor w13_weight_scale;
+  torch::Tensor w2_weight_scale;
+  std::optional<torch::Tensor> w13_weight_scale_second;
+  std::optional<torch::Tensor> w2_weight_scale_second;
+  std::optional<torch::Tensor> w13_scale_bias;
+  std::optional<torch::Tensor> w2_scale_bias;
+  int64_t group_size = 256;
 };
 
 struct MoeFusedTopkParams {

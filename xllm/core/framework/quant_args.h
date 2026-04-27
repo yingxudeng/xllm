@@ -34,6 +34,8 @@ namespace xllm {
 // Quantization method identifiers
 static const std::string kQuantMethodFp8 = "fp8";
 static const std::string kQuantMethodSmoothquant = "smoothquant";
+static const std::string kQuantMethodAscendInt4 = "ascend_int4";
+static const std::string kQuantMethodAscendInt8 = "ascend_int8";
 
 struct QuantArgs {
   using QuantDescs = std::unordered_map<std::string, std::string>;
@@ -64,6 +66,11 @@ struct QuantArgs {
 
   // weight block size
   PROPERTY(std::vector<int64_t>, weight_block_size) = {};
+
+  // Optional quantization format version from Ascend
+  // quant_model_description.json. For example, W4A8_DYNAMIC version "1.0.0"
+  // stores two int4 values packed into int8 before the runtime int32 pack.
+  PROPERTY(std::string, quant_version) = "";
 
   // Optional per-weight quant type map loaded from quant_model_description.json
   // key: full tensor name, e.g. "layers.0.attn.wq_a.weight"
@@ -242,6 +249,7 @@ inline std::ostream& operator<<(std::ostream& os, const QuantArgs& args) {
   os << ", is_sym: " << args.is_sym();
   os << ", activation_dynamic: " << args.activation_dynamic();
   os << ", fmt: " << args.fmt();
+  os << ", quant_version: " << args.quant_version();
   os << ", quant_desc_count: " << args.quant_descs().size();
   os << "]";
   return os;
