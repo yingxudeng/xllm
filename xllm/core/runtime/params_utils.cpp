@@ -66,6 +66,13 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
   std::vector<int32_t> flatten_positions_vec =
       std::vector<int32_t>(pb_forward_input->flatten_positions_vec().begin(),
                            pb_forward_input->flatten_positions_vec().end());
+  std::vector<std::vector<int32_t>> m_positions_vec;
+  m_positions_vec.reserve(pb_forward_input->m_positions_vec().size());
+  for (size_t i = 0; i < pb_forward_input->m_positions_vec().size(); ++i) {
+    m_positions_vec.emplace_back(std::vector<int32_t>(
+        pb_forward_input->m_positions_vec()[i].positions().begin(),
+        pb_forward_input->m_positions_vec()[i].positions().end()));
+  }
   std::vector<float> acc_logprob_vec =
       std::vector<float>(pb_forward_input->acc_logprob_vec().begin(),
                          pb_forward_input->acc_logprob_vec().end());
@@ -210,8 +217,12 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
                             .device(torch::kCPU)
                             .pinned_memory(true);
   forward_inputs.token_ids = torch::tensor(flatten_tokens_vec, tensor_options);
-  forward_inputs.positions =
-      torch::tensor(flatten_positions_vec, tensor_options);
+  if (!flatten_positions_vec.empty()) {
+    forward_inputs.positions =
+        torch::tensor(flatten_positions_vec, tensor_options);
+  } else {
+    forward_inputs.positions = create_2d_tensor(m_positions_vec, torch::kInt);
+  }
   forward_inputs.acc_logprob = torch::tensor(
       acc_logprob_vec,
       torch::dtype(torch::kFloat32).device(torch::kCPU).pinned_memory(true));
@@ -399,6 +410,14 @@ void forward_input_to_proto(const RawForwardInput& inputs,
                       inputs.flatten_tokens_vec);
   ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_flatten_positions_vec(),
                       inputs.flatten_positions_vec);
+  pb_forward_input->mutable_m_positions_vec()->Reserve(
+      inputs.m_positions_vec.size());
+  for (const auto& positions : inputs.m_positions_vec) {
+    proto::MPositions pb_positions;
+    ADD_VECTOR_TO_PROTO(pb_positions.mutable_positions(), positions);
+    *pb_forward_input->mutable_m_positions_vec()->Add() =
+        std::move(pb_positions);
+  }
   ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_acc_logprob_vec(),
                       inputs.acc_logprob_vec);
   std::vector<proto::RequestSamplingParam> pb_sampling_params;

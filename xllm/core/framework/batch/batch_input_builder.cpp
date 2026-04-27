@@ -32,7 +32,6 @@ limitations under the License.
 #include "framework/sampling/sampling_params.h"
 #include "runtime/params_utils.h"
 #include "util/blocking_counter.h"
-#include "util/slice.h"
 #include "util/tensor_helper.h"
 #include "util/threadpool.h"
 #include "util/utils.h"
@@ -598,12 +597,20 @@ RawForwardInput BatchInputBuilder::state_to_raw_forward_input() {
     raw_forward_input.flatten_positions_vec =
         std::move(state_.flatten_positions_vec);
   } else {
-    auto m_positions = torch::cat(state_.mrope_positions_vec, 1);
+    CHECK(!state_.mrope_positions_vec.empty())
+        << "mRoPE positions must not be empty when tokens are present.";
+    torch::Tensor m_positions =
+        torch::cat(state_.mrope_positions_vec, 1).contiguous();
+    CHECK_EQ(m_positions.dim(), 2) << "mRoPE positions must be a 2D tensor.";
+    CHECK_EQ(m_positions.size(1),
+             static_cast<int64_t>(raw_forward_input.flatten_tokens_vec.size()))
+        << "mRoPE positions token count must match flattened tokens.";
+    raw_forward_input.m_positions_vec.reserve(m_positions.size(0));
     for (int64_t idx = 0; idx < m_positions.size(0); ++idx) {
-      torch::Tensor position = m_positions[idx];
-      Slice<int32_t> position_slice = {position.data_ptr<int32_t>(),
-                                       static_cast<size_t>(position.size(0))};
-      raw_forward_input.m_positions_vec.push_back(position_slice);
+      torch::Tensor position = m_positions[idx].contiguous();
+      const int32_t* position_data = position.data_ptr<int32_t>();
+      raw_forward_input.m_positions_vec.emplace_back(
+          position_data, position_data + position.numel());
     }
   }
 

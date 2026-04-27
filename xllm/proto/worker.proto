@@ -172,6 +172,10 @@ message BlockTables {
   repeated int32 block_tables = 1;
 }
 
+message MPositions {
+  repeated int32 positions = 1;
+}
+
 message BlockPair {
   int32 device_block_id = 1;
   int32 host_block_id = 2;
@@ -292,6 +296,7 @@ message ForwardInput {
   repeated string request_ids = 44;
   DiTForwardInput dit_forward_input = 45;
   repeated int32 linear_state_ids = 46;
+  repeated MPositions m_positions_vec = 47;
 }
 
  message BatchedForwardInputs {
