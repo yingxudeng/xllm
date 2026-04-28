@@ -404,38 +404,48 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
   mixed_qkv = mixed_qkv.view({batch_size, -1, mixed_qkv.size(-1)}).contiguous();
   mixed_qkv = mixed_qkv.transpose(1, 2);
   // Compute gated delta net decay and beta terms.
-  if (attn_metadata.is_prefill) {
+  auto run_fused_gdn_gating = [this](const torch::Tensor& a_input,
+                                     const torch::Tensor& b_input) {
     xllm::kernel::FusedGdnGatingParams gdn_params;
     gdn_params.A_log = A_log_;
-    gdn_params.a = a.contiguous().view({-1, a.size(-1)});
-    gdn_params.b = b.contiguous().view({-1, b.size(-1)});
+    gdn_params.a = a_input.contiguous().view({-1, a_input.size(-1)});
+    gdn_params.b = b_input.contiguous().view({-1, b_input.size(-1)});
     gdn_params.dt_bias = dt_bias_;
     gdn_params.beta = 1.0f;
     gdn_params.threshold = 20.0f;
-    std::tie(g, beta) = xllm::kernel::fused_gdn_gating(gdn_params);
+    return xllm::kernel::fused_gdn_gating(gdn_params);
+  };
+  if (attn_metadata.is_prefill) {
+    if (input_params.q_seq_lens_vec.size() > 1) {
+      std::vector<torch::Tensor> seq_g;
+      std::vector<torch::Tensor> seq_beta;
+      seq_g.reserve(input_params.q_seq_lens_vec.size());
+      seq_beta.reserve(input_params.q_seq_lens_vec.size());
+      int64_t start = 0;
+      for (size_t i = 0; i < input_params.q_seq_lens_vec.size(); ++i) {
+        const int64_t end =
+            start + static_cast<int64_t>(input_params.q_seq_lens_vec[i]);
+        auto [seq_g_out, seq_beta_out] = run_fused_gdn_gating(
+            a.slice(/*dim=*/1, start, end), b.slice(/*dim=*/1, start, end));
+        seq_g.emplace_back(seq_g_out);
+        seq_beta.emplace_back(seq_beta_out);
+        start = end;
+      }
+      CHECK_EQ(start, seq_len)
+          << "q_seq_lens_vec must cover all prefill tokens.";
+      g = torch::cat(seq_g, /*dim=*/1);
+      beta = torch::cat(seq_beta, /*dim=*/1);
+    } else {
+      std::tie(g, beta) = run_fused_gdn_gating(a, b);
+    }
     g = g.squeeze(0).contiguous().view({batch_size, seq_len, a.size(-1)});
     beta = beta.squeeze(0).contiguous().view({batch_size, seq_len, b.size(-1)});
   } else {
-    xllm::kernel::FusedGdnGatingParams gdn_params;
-    gdn_params.A_log = A_log_;
-    gdn_params.a = a.view({-1, a.size(-1)});
-    gdn_params.b = b.view({-1, b.size(-1)});
-    gdn_params.dt_bias = dt_bias_;
-    gdn_params.beta = 1.0f;
-    gdn_params.threshold = 20.0f;
-    std::tie(g, beta) = xllm::kernel::fused_gdn_gating(gdn_params);
+    std::tie(g, beta) = run_fused_gdn_gating(a, b);
   }
   auto [processed_q, processed_k, processed_v] = process_mixed_qkv(mixed_qkv);
   // Apply chunked or recurrent gated-delta attention and update caches.
   if (attn_metadata.is_prefill) {
-    xllm::kernel::ChunkGatedDeltaRuleParams chunk_gated_delta_params;
-    chunk_gated_delta_params.q = processed_q;
-    chunk_gated_delta_params.k = processed_k;
-    chunk_gated_delta_params.v = processed_v;
-    chunk_gated_delta_params.g = g;
-    chunk_gated_delta_params.beta = beta;
-    // Get initial state from ssm_cache for sequences with previous state
-    // Shape: [batch_size, num_heads, head_k_dim, head_v_dim]
     torch::Tensor initial_state_tensor =
         torch::index_select(ssm_cache, 0, linear_state_indices);
     CHECK_EQ(input_params.has_initial_state.size(),
@@ -446,6 +456,12 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
         initial_state_tensor.select(0, static_cast<int64_t>(i)).fill_(0.0);
       }
     }
+    xllm::kernel::ChunkGatedDeltaRuleParams chunk_gated_delta_params;
+    chunk_gated_delta_params.q = processed_q;
+    chunk_gated_delta_params.k = processed_k;
+    chunk_gated_delta_params.v = processed_v;
+    chunk_gated_delta_params.g = g;
+    chunk_gated_delta_params.beta = beta;
     chunk_gated_delta_params.initial_state = initial_state_tensor;
     chunk_gated_delta_params.output_final_state = true;
     chunk_gated_delta_params.cu_seqlens = attn_metadata.q_cu_seq_lens;
