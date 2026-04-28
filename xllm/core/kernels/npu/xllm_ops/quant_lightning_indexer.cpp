@@ -63,13 +63,13 @@ construct_quant_lightning_indexer_output_tensor(const at::Tensor& query,
     output_size = {query.size(DIM_0), keyHeadNum, sparse_count};
   }
   at::Tensor sparse_indices_out =
-      at::empty(output_size, query.options().dtype(at::kInt));
+      at::zeros(output_size, query.options().dtype(at::kInt));
   at::Tensor sparse_values_out;
   if (return_value) {
     sparse_values_out =
-        at::empty(output_size, query.options().dtype(at::kFloat));
+        at::zeros(output_size, query.options().dtype(at::kFloat));
   } else {
-    sparse_values_out = at::empty({0}, query.options().dtype(at::kFloat));
+    sparse_values_out = at::zeros({0}, query.options().dtype(at::kFloat));
   }
 
   return std::tuple<at::Tensor, at::Tensor>(sparse_indices_out,

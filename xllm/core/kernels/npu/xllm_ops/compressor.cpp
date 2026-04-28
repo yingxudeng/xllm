@@ -66,12 +66,12 @@ construct_compressor_output_tensor(const at::Tensor& x,
     }
   }
 
-  cmp_kv = at::empty(cmp_kv_size, x.options().dtype(x.dtype()));
+  cmp_kv = at::zeros(cmp_kv_size, x.options().dtype(x.dtype()));
   if (enable_grad) {
-    wkv_proj = at::empty(wkv_proj_size, x.options().dtype(x.dtype()));
-    softmax_res = at::empty(softmax_res_size, x.options().dtype(x.dtype()));
-    norm_x = at::empty(norm_x_size, x.options().dtype(x.dtype()));
-    norm_rstd = at::empty(norm_rstd_size, x.options().dtype(x.dtype()));
+    wkv_proj = at::zeros(wkv_proj_size, x.options().dtype(x.dtype()));
+    softmax_res = at::zeros(softmax_res_size, x.options().dtype(x.dtype()));
+    norm_x = at::zeros(norm_x_size, x.options().dtype(x.dtype()));
+    norm_rstd = at::zeros(norm_rstd_size, x.options().dtype(x.dtype()));
   } else {
     wkv_proj = at::empty({0}, x.options().dtype(x.dtype()));
     softmax_res = at::empty({0}, x.options().dtype(x.dtype()));

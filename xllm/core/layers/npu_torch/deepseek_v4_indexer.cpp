@@ -187,7 +187,7 @@ DeepseekV4IndexerImpl::DeepseekV4IndexerImpl(
                                            options));
 
   indexer_softmax_mul_head_dim_sqrt_ =
-      softmax_scale_ * std::pow(static_cast<double>(head_dim_), -0.5);
+      softmax_scale_ * std::pow(static_cast<double>(n_heads_), -0.5);
 
   hadamard_scale_ = std::pow(static_cast<double>(head_dim_), -0.5);
   index_head_dim_padded_ =

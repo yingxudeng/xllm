@@ -58,7 +58,7 @@ at::Tensor quant_lightning_indexer_metadata(
     output_device = actual_seq_lengths_key.value().device();
   }
 
-  at::Tensor output = torch::empty(
+  at::Tensor output = torch::zeros(
       {OUTPUT_SIZE}, torch::dtype(torch::kInt32).device(output_device));
   auto actual_seq_lengths_query_val =
       get_valid_tensor(actual_seq_lengths_query, output_device);

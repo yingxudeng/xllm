@@ -45,11 +45,11 @@ at::Tensor sparse_attn_sharedkv_metadata(
     bool has_cmp_kv) {
   at::Tensor output;
   if (cu_seqlens_q.has_value()) {
-    output = torch::empty(
+    output = torch::zeros(
         {1024},
         torch::dtype(torch::kInt32).device(cu_seqlens_q.value().device()));
   } else {
-    output = torch::empty({1024}, torch::dtype(torch::kInt32).device("npu"));
+    output = torch::zeros({1024}, torch::dtype(torch::kInt32).device("npu"));
   }
 
   // convert str
