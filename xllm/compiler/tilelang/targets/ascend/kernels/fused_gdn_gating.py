@@ -9,6 +9,8 @@ import tilelang.language as T
 from compiler.tilelang.targets.ascend.kernels.utils import (
     DEFAULT_ASCEND_PASS_CONFIGS,
     detect_vec_core_num,
+    mte2_wait_mte3,
+    mte3_notify_mte2,
 )
 from compiler.tilelang.common.spec import (
     DispatchField,
@@ -27,6 +29,10 @@ VECTOR_BYTES_PER_ITER = 256
 SUPPORTED_NUM_HEADS = (4, 6, 8, 12, 16, 24, 32, 48, 64, 128)
 MAX_VEC_CORE_NUM = detect_vec_core_num()
 BATCH_SIZE_SPECIALIZATIONS = tuple(range(2, 49, 2))
+# Dedicated MTE3->MTE2 event for chunk-to-chunk UB reuse. The numeric
+# id has no semantic meaning; it only needs to be paired and not collide
+# with other MTE3_MTE2 syncs in this kernel.
+CHUNK_OUTPUT_STORED_EVENT = 7
 
 
 def select_launch_block_num(*, num_batches: int, vec_core_num: int) -> int:
@@ -219,20 +225,25 @@ def build_fused_gdn_gating_kernel(
                 T.tile.exp(A_log_ub, A_log_ub)
                 T.tile.mul(A_log_ub, A_log_ub, -1.0)
 
-                T.copy(dt_bias[0], dt_bias_ub[0, :num_heads])
+                dt_bias_base_ub = T.alloc_shared(
+                    (1, ub_tensor_dim), acc_dtype
+                )
+                T.copy(dt_bias[0], dt_bias_base_ub[0, :num_heads])
                 for r in T.serial(rows_per_iter):
                     T.copy(
                         A_log_ub[0, :ub_tensor_dim],
                         neg_exp_A_ub[r, :ub_tensor_dim],
                     )
-                    if r > 0:
-                        T.copy(
-                            dt_bias_ub[0, :ub_tensor_dim],
-                            dt_bias_ub[r, :ub_tensor_dim],
-                        )
+                    T.copy(
+                        dt_bias_base_ub[0, :ub_tensor_dim],
+                        dt_bias_ub[r, :ub_tensor_dim],
+                    )
 
                 if use_bulk_dma:
                     for chunk_idx in T.serial(num_chunks):
+                        with T.If(chunk_idx > 0):
+                            with T.Then():
+                                mte2_wait_mte3(CHUNK_OUTPUT_STORED_EVENT)
                         base_row = (
                             (chunk_start + chunk_idx) * rows_per_iter
                         )
@@ -322,9 +333,15 @@ def build_fused_gdn_gating_kernel(
                                         b_half_ub[r, :num_heads],
                                         beta_out[base_row + r, :],
                                     )
+                        with T.If(chunk_idx < num_chunks - 1):
+                            with T.Then():
+                                mte3_notify_mte2(CHUNK_OUTPUT_STORED_EVENT)
 
                 else:
                     for chunk_idx in T.serial(num_chunks):
+                        with T.If(chunk_idx > 0):
+                            with T.Then():
+                                mte2_wait_mte3(CHUNK_OUTPUT_STORED_EVENT)
                         base_row = (
                             (chunk_start + chunk_idx) * rows_per_iter
                         )
@@ -408,6 +425,9 @@ def build_fused_gdn_gating_kernel(
                                 b_half_ub[r, :num_heads],
                                 beta_out[base_row + r, :],
                             )
+                        with T.If(chunk_idx < num_chunks - 1):
+                            with T.Then():
+                                mte3_notify_mte2(CHUNK_OUTPUT_STORED_EVENT)
 
     return fused_gdn_gating_kernel
 

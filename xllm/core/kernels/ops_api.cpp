@@ -797,12 +797,12 @@ std::tuple<torch::Tensor, torch::Tensor> fp8_scaled_quantize(
 std::pair<torch::Tensor, torch::Tensor> fused_gdn_gating(
     FusedGdnGatingParams& params) {
 #if defined(USE_NPU)
-  return npu::npu_fused_gdn_gating(params.A_log,
-                                   params.a,
-                                   params.b,
-                                   params.dt_bias,
-                                   params.beta,
-                                   params.threshold);
+  return npu::tilelang::fused_gdn_gating(params.A_log,
+                                         params.a,
+                                         params.b,
+                                         params.dt_bias,
+                                         params.beta,
+                                         params.threshold);
 #else
   NOT_IMPLEMENTED();
 #endif
