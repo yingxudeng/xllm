@@ -344,21 +344,6 @@ FusedMoEImpl::FusedMoEImpl(const ModelArgs& model_args,
       << ") must be divisible by MoE tp world_size(" << world_size << ")";
   int64_t local_intermediate_size = intermediate_size / world_size;
   local_intermediate_size_ = local_intermediate_size;
-  LOG(INFO) << "[MOE_LOAD_DEBUG][FusedMoEInit] hidden_size=" << hidden_size_
-            << ", intermediate_size=" << intermediate_size
-            << ", local_intermediate_size=" << local_intermediate_size
-            << ", model_args.intermediate_size="
-            << model_args.intermediate_size()
-            << ", model_args.moe_intermediate_size="
-            << model_args.moe_intermediate_size()
-            << ", tp_group(rank/world)=" << tp_pg_->rank() << "/"
-            << tp_pg_->world_size() << ", ep_size=" << ep_size
-            << ", ep_rank=" << ep_rank
-            << ", num_experts_per_rank=" << num_experts_per_rank_
-            << ", start_expert_id=" << start_expert_id_ << ", quant_method="
-            << (quant_args_.quant_method().empty()
-                    ? "<empty>"
-                    : quant_args_.quant_method());
   if (quant_args_.quant_method() == kQuantMethodAscendInt4) {
     CHECK_EQ(hidden_size_ % 2, 0)
         << "Ascend int4 FusedMoE expects even hidden_size, got "
@@ -558,10 +543,6 @@ void FusedMoEImpl::resolve_quant_method_from_state_dict(
     const StateDict& state_dict) {
   resolved_moe_quant_method_ =
       resolve_moe_quant_method(quant_args_, state_dict);
-  LOG(INFO) << "[QUANT_DEBUG][FusedMoELoad] prefix=" << state_dict.prefix()
-            << ", resolved_moe_quant_method="
-            << resolved_moe_quant_method_.value_or("<none>")
-            << ", quant_desc_count=" << quant_args_.quant_descs().size();
   if (is_supported_dynamic_moe_quant_method(resolved_moe_quant_method_)) {
     validate_resolved_quant_method();
     ensure_quant_weight_layout();
@@ -1040,25 +1021,13 @@ void FusedMoEImpl::preprocess_w4a8_dynamic_weights() {
   const bool base_loaded = w13_is_loaded_ && w2_is_loaded_ &&
                            w13_scale_is_loaded_ && w2_scale_is_loaded_;
   if (!base_loaded) {
-    LOG(INFO) << "[QUANT_DEBUG][FusedMoE][W4A8Dynamic] wait for base "
-              << "weights/scales before preprocess. w13_loaded="
-              << (w13_is_loaded_ ? "true" : "false")
-              << ", w2_loaded=" << (w2_is_loaded_ ? "true" : "false")
-              << ", w13_scale_loaded="
-              << (w13_scale_is_loaded_ ? "true" : "false")
-              << ", w2_scale_loaded="
-              << (w2_scale_is_loaded_ ? "true" : "false");
     return;
   }
   if (quant_args_.group_size() > 0 &&
       !(w13_scale_second_is_loaded_ && w2_scale_second_is_loaded_)) {
-    LOG(INFO) << "[QUANT_DEBUG][FusedMoE][W4A8Dynamic] wait for "
-              << "weight_scale_second before preprocess.";
     return;
   }
   if (!(w13_scale_bias_is_loaded_ && w2_scale_bias_is_loaded_)) {
-    LOG(INFO) << "[QUANT_DEBUG][FusedMoE][W4A8Dynamic] wait for scale_bias "
-              << "before preprocess.";
     return;
   }
 
@@ -1115,12 +1084,6 @@ void FusedMoEImpl::preprocess_w4a8_dynamic_weights() {
 }
 
 void FusedMoEImpl::load_experts(const StateDict& state_dict) {
-  LOG(INFO) << "[MOE_LOAD_DEBUG][FusedMoE.load_experts] prefix="
-            << state_dict.prefix() << ", expected_w13=" << w13_.sizes()
-            << ", expected_w2=" << w2_.sizes()
-            << ", tp_group(rank/world)=" << tp_pg_->rank() << "/"
-            << tp_pg_->world_size() << ", start_expert_id=" << start_expert_id_
-            << ", num_experts_per_rank=" << num_experts_per_rank_;
   const int64_t rank = tp_pg_->rank();
   const int64_t world_size = tp_pg_->world_size();
   const int64_t start_expert_id = start_expert_id_;
@@ -1223,53 +1186,6 @@ void FusedMoEImpl::load_experts(const StateDict& state_dict) {
     if (!w2_scale_bias_is_loaded_) {
       LOAD_MOE_WEIGHT("w2.", "scale_bias", w2_scale_bias, 1);
     }
-  }
-
-  LOG(INFO) << "[QUANT_DEBUG][FusedMoE.load_experts] prefix="
-            << state_dict.prefix() << ", quant_method="
-            << (quant_args_.quant_method().empty() ? "<empty>"
-                                                   : quant_args_.quant_method())
-            << ", resolved_moe_quant_method="
-            << resolved_moe_quant_method_.value_or("<none>")
-            << ", is_w8a8_dynamic="
-            << (is_w8a8_dynamic_quant_method(resolved_moe_quant_method_)
-                    ? "true"
-                    : "false")
-            << ", is_w4a8_dynamic="
-            << (is_w4a8_dynamic_quant_method(resolved_moe_quant_method_)
-                    ? "true"
-                    : "false")
-            << ", w13_loaded=" << (w13_is_loaded_ ? "true" : "false")
-            << ", w2_loaded=" << (w2_is_loaded_ ? "true" : "false") << ", w13={"
-            << tensor_debug_info(w13_) << "}"
-            << ", w2={" << tensor_debug_info(w2_) << "}";
-
-  if (is_w8a8_dynamic_quant_method(resolved_moe_quant_method_)) {
-    LOG(INFO) << "[QUANT_DEBUG][FusedMoE.load_experts][W8A8Dynamic] prefix="
-              << state_dict.prefix() << ", w13_scale_loaded="
-              << (w13_scale_is_loaded_ ? "true" : "false")
-              << ", w2_scale_loaded="
-              << (w2_scale_is_loaded_ ? "true" : "false") << ", w13_scale={"
-              << tensor_debug_info(w13_scale_) << "}"
-              << ", w2_scale={" << tensor_debug_info(w2_scale_) << "}";
-  }
-  if (is_w4a8_dynamic_quant_method(resolved_moe_quant_method_)) {
-    LOG(INFO)
-        << "[QUANT_DEBUG][FusedMoE.load_experts][W4A8Dynamic] prefix="
-        << state_dict.prefix() << ", group_size=" << quant_args_.group_size()
-        << ", quant_version="
-        << (quant_args_.quant_version().empty() ? "<empty>"
-                                                : quant_args_.quant_version())
-        << ", w13_scale_loaded=" << (w13_scale_is_loaded_ ? "true" : "false")
-        << ", w2_scale_loaded=" << (w2_scale_is_loaded_ ? "true" : "false")
-        << ", w13_scale_second_loaded="
-        << (w13_scale_second_is_loaded_ ? "true" : "false")
-        << ", w2_scale_second_loaded="
-        << (w2_scale_second_is_loaded_ ? "true" : "false")
-        << ", w13_scale_bias_loaded="
-        << (w13_scale_bias_is_loaded_ ? "true" : "false")
-        << ", w2_scale_bias_loaded="
-        << (w2_scale_bias_is_loaded_ ? "true" : "false");
   }
 }
 

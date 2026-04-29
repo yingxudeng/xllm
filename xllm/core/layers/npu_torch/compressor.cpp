@@ -247,17 +247,6 @@ void CompressorImpl::load_state_dict(const StateDict& state_dict) {
         << "cmp_ape device mismatch, expected: " << options_.device()
         << ", actual: " << cmp_ape_.device();
   }
-
-  if (!(cmp_wkv_loaded_ && cmp_wgate_loaded_ && cmp_norm_loaded_ &&
-        cmp_ape_loaded_)) {
-    LOG(INFO) << "[MOE_LOAD_DEBUG][Compressor] partial load under "
-              << state_dict.prefix()
-              << ", loaded={wkv:" << (cmp_wkv_loaded_ ? "true" : "false")
-              << ", wgate:" << (cmp_wgate_loaded_ ? "true" : "false")
-              << ", norm:" << (cmp_norm_loaded_ ? "true" : "false")
-              << ", ape:" << (cmp_ape_loaded_ ? "true" : "false") << "} keys=["
-              << list_available_keys(state_dict) << "]";
-  }
 }
 
 int64_t CompressorImpl::weight_bytes() const {
