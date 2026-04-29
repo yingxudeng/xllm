@@ -61,4 +61,28 @@ TEST(JinjaChatTemplate, OpenChatModel) {
   EXPECT_EQ(result.value(), expected);
 }
 
+TEST(JinjaChatTemplate, AppliesChatTemplateKwargs) {
+  const std::string template_str =
+      "{% if enable_thinking %}<think>{% endif %}"
+      "{% for message in messages %}"
+      "{{ message['role'] + ': ' + message['content'] }}"
+      "{% endfor %}"
+      "{% if not enable_thinking %}<no_think>{% endif %}";
+
+  nlohmann::ordered_json messages = {
+      {{"role", "user"}, {"content", "describe this image"}}};
+  nlohmann::ordered_json chat_template_kwargs = {{"enable_thinking", false}};
+
+  TokenizerArgs args;
+  args.chat_template(template_str);
+  args.bos_token("");
+  args.eos_token("");
+  TestableJinjaChatTemplate template_(args);
+  const nlohmann::ordered_json tools = nlohmann::json::array();
+  auto result = template_.apply(messages, tools, chat_template_kwargs);
+  ASSERT_TRUE(result.has_value());
+
+  EXPECT_EQ(result.value(), "user: describe this image<no_think>");
+}
+
 }  // namespace xllm
