@@ -292,6 +292,9 @@ message ForwardInput {
   repeated string request_ids = 44;
   DiTForwardInput dit_forward_input = 45;
   repeated int32 linear_state_ids = 46;
+  repeated string linear_state_request_ids = 47;
+  repeated bytes linear_state_prefix_hashes = 48;
+  repeated bytes linear_state_save_prefix_hashes = 49;
 }
 
  message BatchedForwardInputs {

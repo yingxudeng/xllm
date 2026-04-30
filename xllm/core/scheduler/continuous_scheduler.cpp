@@ -31,6 +31,7 @@ limitations under the License.
 #include "common/metrics.h"
 #include "distributed_runtime/engine.h"
 #include "framework/batch/batch_factory.h"
+#include "framework/model/model_args.h"
 #include "framework/request/priority_comparator.h"
 #include "framework/request/request.h"
 #include "framework/request/sequence.h"
@@ -89,6 +90,29 @@ inline size_t maybe_align_cp_prefill_tokens(const Sequence* sequence,
   }
   const size_t alignment = static_cast<size_t>(cp_size) * 2;
   return xllm::util::align_up(num_tokens, alignment);
+}
+
+inline size_t maybe_limit_prefill_tokens_to_next_block(const Sequence* sequence,
+                                                       size_t num_tokens,
+                                                       size_t block_size,
+                                                       bool enable_prefix_cache,
+                                                       const ModelArgs& args) {
+  if (sequence == nullptr || num_tokens == 0 || block_size == 0 ||
+      !enable_prefix_cache || !sequence->is_prefill_stage() ||
+      !has_linear_attention_layers(args)) {
+    return num_tokens;
+  }
+
+  const size_t kv_cache_tokens_num = sequence->kv_cache_tokens_num();
+  const size_t next_boundary =
+      ((kv_cache_tokens_num / block_size) + 1) * block_size;
+  const size_t target_num_tokens = kv_cache_tokens_num + num_tokens;
+  if (next_boundary >= sequence->num_tokens() ||
+      target_num_tokens <= next_boundary) {
+    return num_tokens;
+  }
+  CHECK_GT(next_boundary, kv_cache_tokens_num);
+  return next_boundary - kv_cache_tokens_num;
 }
 
 }  // namespace
@@ -303,6 +327,12 @@ void ContinuousScheduler::handle_prefill_requests(
       size_t num_tokens = prefill_sequence->num_need_compute_tokens();
       num_tokens = maybe_align_cp_prefill_tokens(
           prefill_sequence.get(), num_tokens, options_.cp_size());
+      num_tokens = maybe_limit_prefill_tokens_to_next_block(
+          prefill_sequence.get(),
+          num_tokens,
+          kv_cache_manager_->block_size(),
+          enable_prefix_cache_,
+          engine_->model_args());
       const size_t target_num_tokens =
           prefill_sequence->kv_cache_tokens_num() + num_tokens;
       if (remaining_token_budget < allocated_tokens + num_tokens ||

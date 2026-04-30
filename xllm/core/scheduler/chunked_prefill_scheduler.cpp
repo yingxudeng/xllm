@@ -19,7 +19,9 @@ limitations under the License.
 #include <limits>
 
 #include "common/metrics.h"
+#include "distributed_runtime/engine.h"
 #include "framework/batch/batch_factory.h"
+#include "framework/model/model_args.h"
 #include "util/timer.h"
 #include "util/utils.h"
 
@@ -730,6 +732,17 @@ bool ChunkedPrefillScheduler::allocate_blocks_for(
   // there may some tokens can not be handled once when enable chunked prefill.
   size_t max_handle_num_tokens =
       std::min(kv_cache_tokens_num + token_budget, sequence->num_tokens());
+  if (has_linear_attention_layers(engine_->model_args()) &&
+      enable_prefix_cache_ && sequence->is_prefill_stage()) {
+    const size_t block_size = kv_cache_manager_->block_size();
+    if (block_size > 0 && max_handle_num_tokens > kv_cache_tokens_num) {
+      const size_t next_boundary =
+          ((kv_cache_tokens_num / block_size) + 1) * block_size;
+      if (next_boundary < sequence->num_tokens()) {
+        max_handle_num_tokens = std::min(max_handle_num_tokens, next_boundary);
+      }
+    }
+  }
 
   // speculative decoding specific logic,
   // prefill stage don't need speculative decoding.

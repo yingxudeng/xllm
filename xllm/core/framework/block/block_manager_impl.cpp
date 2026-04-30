@@ -134,7 +134,10 @@ std::vector<Block> BlockManagerImpl::allocate_shared(
     const size_t prefix_length =
         shared_blocks.empty() ? 0
                               : shared_blocks.size() * shared_blocks[0].size();
-    COUNTER_ADD(prefix_cache_match_length_total, prefix_length);
+    if (!shared_blocks.empty()) {
+      LOG(INFO) << "Prefix cache matched " << shared_blocks.size()
+                << " blocks, prefix_length=" << prefix_length;
+    }
 
     // update effective block usage
     for (const auto& block : shared_blocks) {

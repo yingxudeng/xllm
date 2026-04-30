@@ -18,6 +18,7 @@ limitations under the License.
 
 #include <torch/torch.h>
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -364,7 +365,10 @@ struct ModelInputParams {
     params.dp_is_decode = dp_is_decode;
     params.embedding_ids = std::move(embedding_ids);
     params.linear_state_ids = std::move(linear_state_ids);
+    params.linear_state_request_ids = std::move(linear_state_request_ids);
     params.linear_state_indices = safe_to(linear_state_indices, device, true);
+    params.linear_state_prefix_hashes = linear_state_prefix_hashes;
+    params.linear_state_save_prefix_hashes = linear_state_save_prefix_hashes;
     params.request_ids = std::move(request_ids);
     params.extra_token_ids = std::move(extra_token_ids);
     params.dp_ep_padding_data = dp_ep_padding_data;
@@ -563,6 +567,17 @@ struct ModelInputParams {
 
   // linear state ids of each sequence
   std::vector<int32_t> linear_state_ids;
+
+  // Request ids aligned with linear_state_ids, used for in-flight state reuse.
+  std::vector<std::string> linear_state_request_ids;
+
+  // Prefix hash for the cached KV boundary of each linear-attention row.
+  std::vector<std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>>
+      linear_state_prefix_hashes;
+
+  // Prefix hash for the post-forward block boundary of each row.
+  std::vector<std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>>
+      linear_state_save_prefix_hashes;
 
   // IntTensor: [n_seq]
   torch::Tensor linear_state_indices;

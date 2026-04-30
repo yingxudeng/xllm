@@ -18,6 +18,8 @@ limitations under the License.
 #include <c10/core/DeviceType.h>
 #include <torch/torch.h>
 
+#include <algorithm>
+#include <cstring>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -26,6 +28,7 @@ limitations under the License.
 #include "common/global_flags.h"
 #include "common/metrics.h"
 #include "framework/batch/mposition.h"
+#include "framework/block/block.h"
 #include "framework/model/model_args.h"
 #include "framework/model/model_input_params.h"
 #include "framework/request/sequence.h"
@@ -45,6 +48,103 @@ uint32_t get_sample_source_position(const SampleSlot& sample_slot) {
     return 0;
   }
   return static_cast<uint32_t>(sample_slot.token_position - 1);
+}
+
+void update_prefix_hash(const uint8_t* previous_hash,
+                        const Slice<int32_t>& token_ids,
+                        uint8_t* hash) {
+  if (previous_hash == nullptr) {
+    XXH128_hash_t hash_value =
+        XXH3_128bits_withSeed(reinterpret_cast<const void*>(token_ids.data()),
+                              sizeof(int32_t) * token_ids.size(),
+                              FLAGS_xxh3_128bits_seed);
+    std::memcpy(hash, &hash_value, sizeof(hash_value));
+    return;
+  }
+
+  uint8_t key[1024];
+  const int32_t data_len = static_cast<int32_t>(
+      sizeof(int32_t) * token_ids.size() + XXH3_128BITS_HASH_VALUE_LEN);
+  CHECK_GT(sizeof(key), data_len) << "key size is too small";
+  std::memcpy(key, previous_hash, XXH3_128BITS_HASH_VALUE_LEN);
+  std::memcpy(key + XXH3_128BITS_HASH_VALUE_LEN,
+              reinterpret_cast<const void*>(token_ids.data()),
+              sizeof(int32_t) * token_ids.size());
+
+  XXH128_hash_t hash_value = XXH3_128bits_withSeed(
+      reinterpret_cast<const void*>(key), data_len, FLAGS_xxh3_128bits_seed);
+  std::memcpy(hash, &hash_value, sizeof(hash_value));
+}
+
+std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN> get_prefix_boundary_hash(
+    Sequence* sequence,
+    uint32_t boundary_tokens) {
+  std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN> hash{};
+  const auto blocks = sequence->kv_state().kv_blocks();
+  if (boundary_tokens == 0 || blocks.empty()) {
+    return hash;
+  }
+
+  const uint32_t block_size = blocks[0].size();
+  if (block_size == 0 || boundary_tokens % block_size != 0) {
+    return hash;
+  }
+
+  const size_t block_index = boundary_tokens / block_size - 1;
+  if (block_index >= blocks.size()) {
+    return hash;
+  }
+
+  std::memcpy(hash.data(),
+              blocks[block_index].get_immutable_hash_value(),
+              XXH3_128BITS_HASH_VALUE_LEN);
+  return hash;
+}
+
+std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN> compute_prefix_boundary_hash(
+    Sequence* sequence,
+    uint32_t boundary_tokens) {
+  std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN> hash{};
+  const auto blocks = sequence->kv_state().kv_blocks();
+  if (boundary_tokens == 0 || blocks.empty()) {
+    return hash;
+  }
+
+  const uint32_t block_size = blocks[0].size();
+  if (block_size == 0 || boundary_tokens % block_size != 0) {
+    return hash;
+  }
+
+  const Slice<int32_t> token_ids = sequence->tokens();
+  if (boundary_tokens > token_ids.size()) {
+    return hash;
+  }
+
+  const size_t boundary_blocks = boundary_tokens / block_size;
+  const size_t shared_blocks = sequence->kv_state().shared_kv_blocks_num();
+  if (boundary_blocks <= shared_blocks) {
+    return get_prefix_boundary_hash(sequence, boundary_tokens);
+  }
+
+  const uint8_t* previous_hash = nullptr;
+  if (shared_blocks > 0) {
+    const size_t shared_block_index = shared_blocks - 1;
+    if (shared_block_index >= blocks.size()) {
+      return hash;
+    }
+    previous_hash = blocks[shared_block_index].get_immutable_hash_value();
+    std::memcpy(hash.data(), previous_hash, XXH3_128BITS_HASH_VALUE_LEN);
+  }
+
+  for (size_t block_idx = shared_blocks; block_idx < boundary_blocks;
+       ++block_idx) {
+    update_prefix_hash(
+        previous_hash,
+        token_ids.slice(block_idx * block_size, (block_idx + 1) * block_size),
+        hash.data());
+    previous_hash = hash.data();
+  }
+  return hash;
 }
 
 }  // namespace
@@ -241,6 +341,18 @@ void BatchInputBuilder::process_sequences_multithreaded() {
     state_.linear_state_ids.insert(state_.linear_state_ids.end(),
                                    state.linear_state_ids.begin(),
                                    state.linear_state_ids.end());
+    state_.linear_state_request_ids.insert(
+        state_.linear_state_request_ids.end(),
+        state.linear_state_request_ids.begin(),
+        state.linear_state_request_ids.end());
+    state_.linear_state_prefix_hashes.insert(
+        state_.linear_state_prefix_hashes.end(),
+        state.linear_state_prefix_hashes.begin(),
+        state.linear_state_prefix_hashes.end());
+    state_.linear_state_save_prefix_hashes.insert(
+        state_.linear_state_save_prefix_hashes.end(),
+        state.linear_state_save_prefix_hashes.begin(),
+        state.linear_state_save_prefix_hashes.end());
     state_.request_ids.insert(state_.request_ids.end(),
                               state.request_ids.begin(),
                               state.request_ids.end());
@@ -402,6 +514,11 @@ void BatchInputBuilder::extract_tokens_and_positions(Sequence* sequence,
   // `linear_state_ids` is sequence-scoped metadata and must stay aligned with
   // logical batch rows even for non-terminal chunked-prefill slices.
   state.linear_state_ids.emplace_back(sequence->get_single_block_id());
+  state.linear_state_request_ids.emplace_back(sequence->request_id());
+  state.linear_state_prefix_hashes.emplace_back(
+      get_prefix_boundary_hash(sequence, n_kv_cache_tokens));
+  state.linear_state_save_prefix_hashes.emplace_back(
+      compute_prefix_boundary_hash(sequence, seq_len));
 
   // Add extra token id
   if (n_tokens == seq_len) {
@@ -557,6 +674,12 @@ ForwardInput BatchInputBuilder::state_to_forward_input() {
 
   input_params.embedding_ids = std::move(state_.embedding_ids);
   input_params.linear_state_ids = std::move(state_.linear_state_ids);
+  input_params.linear_state_request_ids =
+      std::move(state_.linear_state_request_ids);
+  input_params.linear_state_prefix_hashes =
+      std::move(state_.linear_state_prefix_hashes);
+  input_params.linear_state_save_prefix_hashes =
+      std::move(state_.linear_state_save_prefix_hashes);
   if (!input_params.linear_state_ids.empty()) {
     input_params.linear_state_indices =
         torch::tensor(input_params.linear_state_ids, torch::kInt);
@@ -642,6 +765,12 @@ RawForwardInput BatchInputBuilder::state_to_raw_forward_input() {
 
   raw_forward_input.embedding_ids = std::move(state_.embedding_ids);
   raw_forward_input.linear_state_ids = std::move(state_.linear_state_ids);
+  raw_forward_input.linear_state_request_ids =
+      std::move(state_.linear_state_request_ids);
+  raw_forward_input.linear_state_prefix_hashes =
+      std::move(state_.linear_state_prefix_hashes);
+  raw_forward_input.linear_state_save_prefix_hashes =
+      std::move(state_.linear_state_save_prefix_hashes);
   raw_forward_input.request_ids = std::move(state_.request_ids);
   raw_forward_input.extra_token_ids = std::move(state_.extra_token_ids);
   // beam search kernel input

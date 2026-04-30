@@ -75,6 +75,15 @@ constexpr uint32_t TIMEOUT_MS = 60000;  // millisecond
 
 namespace {
 
+constexpr size_t kMaxLinearStateSnapshots = 256;
+
+bool is_zero_prefix_hash(
+    const std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>& prefix_hash) {
+  return std::all_of(prefix_hash.begin(), prefix_hash.end(), [](uint8_t value) {
+    return value == 0;
+  });
+}
+
 // During TP model initialization, each rank loads weights concurrently.
 // MoE weight assembly (especially stack/cat on large expert tensors) runs on
 // CPU and is backed by ATen intra-op thread pools.
@@ -125,14 +134,20 @@ void prepare_input_params_for_linear_attention(ModelInputParams& input_params) {
         input_params.query_start_loc[i] + seq_len;
   }
 
-  torch::Tensor has_initial_state_tensor =
-      input_params.kv_cache_tokens_nums > 0;
-  torch::Tensor has_initial_state_int64 =
-      has_initial_state_tensor.contiguous().to(torch::kCPU).to(torch::kInt64);
-  input_params.has_initial_state =
-      std::vector<int64_t>(has_initial_state_int64.data_ptr<int64_t>(),
-                           has_initial_state_int64.data_ptr<int64_t>() +
-                               has_initial_state_int64.size(0));
+  if (input_params.kv_cache_tokens_nums_host.empty() &&
+      input_params.kv_cache_tokens_nums.defined()) {
+    torch::Tensor kv_cache_tokens_nums_cpu =
+        input_params.kv_cache_tokens_nums.to(torch::kCPU).to(torch::kInt32);
+    const int32_t* data_ptr = kv_cache_tokens_nums_cpu.data_ptr<int32_t>();
+    input_params.kv_cache_tokens_nums_host.assign(
+        data_ptr, data_ptr + kv_cache_tokens_nums_cpu.numel());
+  }
+
+  CHECK(input_params.has_initial_state.empty() ||
+        input_params.has_initial_state.size() == batch_size);
+  if (input_params.has_initial_state.empty()) {
+    input_params.has_initial_state.assign(batch_size, 0);
+  }
 }
 
 }  // namespace
@@ -543,6 +558,7 @@ void WorkerImpl::prepare_work_before_execute(const ForwardInput& input,
 
     if (has_linear_attention_layers(context_.get_model_args())) {
       prepare_input_params_for_linear_attention(processed_input.input_params);
+      restore_linear_state_snapshots(processed_input.input_params);
     }
 #endif
   };
@@ -557,6 +573,150 @@ void WorkerImpl::prepare_work_before_execute(const ForwardInput& input,
   if (!use_default_stream) {
     prepare_stream_->synchronize();
   }
+}
+
+void WorkerImpl::restore_linear_state_snapshots(
+    ModelInputParams& input_params) {
+  if (input_params.linear_state_ids.empty()) {
+    return;
+  }
+
+  CHECK_EQ(input_params.linear_state_ids.size(),
+           input_params.linear_state_request_ids.size());
+  CHECK_EQ(input_params.linear_state_ids.size(),
+           input_params.linear_state_prefix_hashes.size());
+
+  input_params.has_initial_state.assign(input_params.linear_state_ids.size(),
+                                        0);
+  for (size_t i = 0; i < input_params.linear_state_ids.size(); ++i) {
+    const int32_t linear_state_id = input_params.linear_state_ids[i];
+    if (linear_state_id < 0) {
+      continue;
+    }
+
+    const std::string& request_id = input_params.linear_state_request_ids[i];
+    auto active_it = active_linear_state_requests_.find(linear_state_id);
+    if (!request_id.empty() &&
+        active_it != active_linear_state_requests_.end() &&
+        active_it->second == request_id) {
+      input_params.has_initial_state[i] = 1;
+      continue;
+    }
+
+    if (is_zero_prefix_hash(input_params.linear_state_prefix_hashes[i])) {
+      const bool has_cached_kv =
+          input_params.kv_cache_tokens_nums_host.size() > i &&
+          input_params.kv_cache_tokens_nums_host[i] > 0;
+      if (has_cached_kv) {
+        LOG(FATAL)
+            << "Qwen3.5 prefix cache hit lacks linear state prefix hash; "
+            << "linear_state_id=" << linear_state_id;
+      }
+      active_linear_state_requests_[linear_state_id] = request_id;
+      continue;
+    }
+
+    if (restore_linear_state_snapshot(
+            input_params.linear_state_prefix_hashes[i], linear_state_id)) {
+      LOG(INFO) << "Qwen3.5 linear state snapshot restored; linear_state_id="
+                << linear_state_id;
+      input_params.has_initial_state[i] = 1;
+      active_linear_state_requests_[linear_state_id] = request_id;
+      continue;
+    }
+
+    LOG(FATAL) << "Qwen3.5 prefix cache hit lacks linear state snapshot; "
+               << "linear_state_id=" << linear_state_id;
+  }
+}
+
+void WorkerImpl::save_linear_state_snapshots(
+    const ModelInputParams& input_params) {
+  if (!input_params.batch_forward_type.no_decode() ||
+      input_params.linear_state_ids.empty()) {
+    return;
+  }
+
+  CHECK_EQ(input_params.linear_state_ids.size(),
+           input_params.linear_state_save_prefix_hashes.size());
+  for (size_t i = 0; i < input_params.linear_state_ids.size(); ++i) {
+    if (is_zero_prefix_hash(input_params.linear_state_save_prefix_hashes[i])) {
+      continue;
+    }
+    LOG(INFO) << "Qwen3.5 linear state snapshot saved; linear_state_id="
+              << input_params.linear_state_ids[i];
+    save_linear_state_snapshot(input_params.linear_state_save_prefix_hashes[i],
+                               input_params.linear_state_ids[i]);
+  }
+}
+
+void WorkerImpl::save_linear_state_snapshot(
+    const LinearStatePrefixHash& prefix_hash,
+    int32_t linear_state_id) {
+  if (linear_state_id < 0) {
+    return;
+  }
+
+  LinearStateSnapshot snapshot;
+  snapshot.conv_states.reserve(kv_caches_.size());
+  snapshot.ssm_states.reserve(kv_caches_.size());
+  for (const auto& kv_cache : kv_caches_) {
+    torch::Tensor conv_cache = kv_cache.get_conv_cache();
+    torch::Tensor ssm_cache = kv_cache.get_ssm_cache();
+    if (!conv_cache.defined() || !ssm_cache.defined()) {
+      continue;
+    }
+    snapshot.conv_states.emplace_back(
+        conv_cache.select(0, linear_state_id).clone());
+    snapshot.ssm_states.emplace_back(
+        ssm_cache.select(0, linear_state_id).clone());
+  }
+
+  if (snapshot.conv_states.empty()) {
+    return;
+  }
+
+  const bool is_new_snapshot = linear_state_snapshots_.count(prefix_hash) == 0;
+  linear_state_snapshots_[prefix_hash] = std::move(snapshot);
+  if (is_new_snapshot) {
+    linear_state_snapshot_lru_.emplace_back(prefix_hash);
+  }
+
+  while (linear_state_snapshot_lru_.size() > kMaxLinearStateSnapshots) {
+    linear_state_snapshots_.erase(linear_state_snapshot_lru_.front());
+    linear_state_snapshot_lru_.pop_front();
+  }
+}
+
+bool WorkerImpl::restore_linear_state_snapshot(
+    const LinearStatePrefixHash& prefix_hash,
+    int32_t linear_state_id) {
+  if (linear_state_id < 0) {
+    return false;
+  }
+
+  auto snapshot_it = linear_state_snapshots_.find(prefix_hash);
+  if (snapshot_it == linear_state_snapshots_.end()) {
+    return false;
+  }
+
+  const auto& snapshot = snapshot_it->second;
+  size_t snapshot_idx = 0;
+  for (auto& kv_cache : kv_caches_) {
+    torch::Tensor conv_cache = kv_cache.get_conv_cache();
+    torch::Tensor ssm_cache = kv_cache.get_ssm_cache();
+    if (!conv_cache.defined() || !ssm_cache.defined()) {
+      continue;
+    }
+    CHECK_LT(snapshot_idx, snapshot.conv_states.size());
+    conv_cache.select(0, linear_state_id)
+        .copy_(snapshot.conv_states[snapshot_idx]);
+    ssm_cache.select(0, linear_state_id)
+        .copy_(snapshot.ssm_states[snapshot_idx]);
+    ++snapshot_idx;
+  }
+  CHECK_EQ(snapshot_idx, snapshot.conv_states.size());
+  return snapshot_idx > 0;
 }
 
 void WorkerImpl::apply_kv_block_swaps(const ModelInputParams& input_params) {
@@ -696,6 +856,7 @@ folly::SemiFuture<std::optional<ForwardOutput>> WorkerImpl::step_async(
     // run the model on the given input in working thread
     if (!enable_schedule_overlap()) {
       const auto output = this->step(input);
+      this->save_linear_state_snapshots(input.input_params);
       promise.setValue(output);
     } else {
       if (last_step_output_valid_ && input.token_ids.numel() > 0 &&
@@ -705,6 +866,7 @@ folly::SemiFuture<std::optional<ForwardOutput>> WorkerImpl::step_async(
       }
 
       const auto output = this->step(input);
+      this->save_linear_state_snapshots(input.input_params);
       if (output.has_value()) {
         if (is_driver() || FLAGS_enable_eplb) {
           std::unique_lock<std::mutex> lock(mtx_);

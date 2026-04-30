@@ -19,7 +19,10 @@ limitations under the License.
 #include <sys/mman.h>
 #include <torch/torch.h>
 
+#include <array>
+#include <deque>
 #include <memory>
+#include <unordered_map>
 
 #include "common/types.h"
 #include "executor.h"
@@ -40,6 +43,7 @@ limitations under the License.
 #include "framework/xtensor/xtensor.h"
 #include "options.h"
 #include "platform/device.h"
+#include "util/hash_util.h"
 #include "util/threadpool.h"
 #if defined(USE_NPU)
 #include "framework/kv_cache_transfer/mooncake_weight_transfer.h"
@@ -199,6 +203,9 @@ class WorkerImpl {
   // Only used for deepseek chunked prefill ops on npu device
   void prepare_mla_prefixcache_inputs(ModelInputParams& input_params);
 
+  void restore_linear_state_snapshots(ModelInputParams& input_params);
+  void save_linear_state_snapshots(const ModelInputParams& input_params);
+
   void init_hierarchy_kv_cache_transfer();
 
   // Get the effective number of layers based on whether this is a spec draft
@@ -206,6 +213,38 @@ class WorkerImpl {
   int64_t get_num_layers() const;
 
   bool wakeup_local(const WakeupOptions& options);
+
+  using LinearStatePrefixHash =
+      std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>;
+
+  class LinearStatePrefixHashHasher {
+   public:
+    size_t operator()(const LinearStatePrefixHash& prefix_hash) const {
+      size_t hash = 0;
+      for (const uint8_t value : prefix_hash) {
+        hash = hash * 131 + value;
+      }
+      return hash;
+    }
+  };
+
+  class LinearStateSnapshot {
+   public:
+    std::vector<torch::Tensor> conv_states;
+    std::vector<torch::Tensor> ssm_states;
+  };
+
+  void save_linear_state_snapshot(const LinearStatePrefixHash& prefix_hash,
+                                  int32_t linear_state_id);
+  bool restore_linear_state_snapshot(const LinearStatePrefixHash& prefix_hash,
+                                     int32_t linear_state_id);
+
+  std::unordered_map<LinearStatePrefixHash,
+                     LinearStateSnapshot,
+                     LinearStatePrefixHashHasher>
+      linear_state_snapshots_;
+  std::deque<LinearStatePrefixHash> linear_state_snapshot_lru_;
+  std::unordered_map<int32_t, std::string> active_linear_state_requests_;
 
 #if defined(USE_CUDA)
   void refresh_cuda_block_copy_runtime_state();
