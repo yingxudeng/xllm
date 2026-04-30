@@ -13,25 +13,23 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <c10/core/Device.h>
 #include <glog/logging.h>
-#include <torch/torch.h>
-#include <torch_npu/csrc/libs/init_npu.h>
-#include <torch_npu/torch_npu.h>
 
-#include <nlohmann/json.hpp>
-#ifdef TORCH_HIGHER_THAN_PTA6
-#include <torch_npu/csrc/framework/OpCommand.h>
-#else
-#include <torch_npu/csrc/aten/NPUNativeFunctions.h>
-#include <torch_npu/csrc/framework/utils/OpPreparation.h>
-#endif
-
-#include "acl/acl.h"
-#include "aclnn_recurrent_gated_delta_rule.h"
-#include "core/common/macros.h"
+#include "core/kernels/npu/aclnn/pytorch_npu_helper.hpp"
+#include "core/kernels/npu/npu_ops_api.h"
 #include "core/kernels/npu/utils.h"
-#include "npu_ops_api.h"
+
+namespace {
+
+c10::optional<torch::Tensor> to_c10_optional_tensor(
+    const std::optional<torch::Tensor>& tensor_opt) {
+  if (tensor_opt.has_value() && tensor_opt.value().defined()) {
+    return tensor_opt.value();
+  }
+  return c10::nullopt;
+}
+
+}  // namespace
 
 namespace xllm::kernel::npu {
 
@@ -51,115 +49,35 @@ torch::Tensor npu_recurrent_gated_delta_rule(
   check_tensor(key, "key", "recurrent_gated_delta_rule");
   check_tensor(value, "value", "recurrent_gated_delta_rule");
   check_tensor(state, "state", "recurrent_gated_delta_rule");
+  CHECK(scale.has_value())
+      << "recurrent_gated_delta_rule requires a valid scale value";
 
-  aclTensor* query_ids = nullptr;
-  aclTensor* key_ids = nullptr;
-  aclTensor* value_ids = nullptr;
-  aclTensor* state_ids = nullptr;
-  aclTensor* beta_ids = nullptr;
-  aclTensor* actual_seq_lengths_ids = nullptr;
-  aclTensor* ssm_state_indices_ids = nullptr;
-  aclTensor* num_accepted_tokens_ids = nullptr;
-  aclTensor* g_ids = nullptr;
-  aclTensor* gk_ids = nullptr;
-  aclTensor* out_ids = nullptr;
-
-  int32_t device_id = query.device().index();
-  aclrtStream stream = c10_npu::getCurrentNPUStream(device_id).stream();
-
-  create_acltensor(&query_ids, query);
-  create_acltensor(&key_ids, key);
-  create_acltensor(&value_ids, value);
-  create_acltensor(&state_ids, state);
-
-  if (beta.has_value() && beta.value().defined()) {
-    create_acltensor(&beta_ids, beta.value());
-  }
-  if (actual_seq_lengths.has_value() && actual_seq_lengths.value().defined()) {
-    create_acltensor(&actual_seq_lengths_ids, actual_seq_lengths.value());
-  }
-  if (ssm_state_indices.has_value() && ssm_state_indices.value().defined()) {
-    create_acltensor(&ssm_state_indices_ids, ssm_state_indices.value());
-  }
-  if (num_accepted_tokens.has_value() &&
-      num_accepted_tokens.value().defined()) {
-    create_acltensor(&num_accepted_tokens_ids, num_accepted_tokens.value());
-  }
-  if (g.has_value() && g.value().defined()) {
-    create_acltensor(&g_ids, g.value());
-  }
-  if (gk.has_value() && gk.value().defined()) {
-    create_acltensor(&gk_ids, gk.value());
-  }
-
-  at::Tensor out_result = at::empty_like(value);
-  create_acltensor(&out_ids, out_result);
-
+  c10::optional<torch::Tensor> beta_tensor = to_c10_optional_tensor(beta);
+  c10::optional<torch::Tensor> actual_seq_lengths_tensor =
+      to_c10_optional_tensor(actual_seq_lengths);
+  c10::optional<torch::Tensor> ssm_state_indices_tensor =
+      to_c10_optional_tensor(ssm_state_indices);
+  c10::optional<torch::Tensor> num_accepted_tokens_tensor =
+      to_c10_optional_tensor(num_accepted_tokens);
+  c10::optional<torch::Tensor> g_tensor = to_c10_optional_tensor(g);
+  c10::optional<torch::Tensor> gk_tensor = to_c10_optional_tensor(gk);
   float scale_value = static_cast<float>(scale.value());
+  torch::Tensor output = torch::empty_like(value);
 
-  uint64_t workspace_size = 0;
-  aclOpExecutor* executor = nullptr;
-
-  CHECK_ACL_SUCCESS(
-      aclnnRecurrentGatedDeltaRuleGetWorkspaceSize(query_ids,
-                                                   key_ids,
-                                                   value_ids,
-                                                   beta_ids,
-                                                   state_ids,
-                                                   actual_seq_lengths_ids,
-                                                   ssm_state_indices_ids,
-                                                   g_ids,
-                                                   gk_ids,
-                                                   num_accepted_tokens_ids,
-                                                   scale_value,
-                                                   out_ids,
-                                                   &workspace_size,
-                                                   &executor),
-      "recurrent_gated_delta_rule: failed to get workspace size");
-
-  void* workspace_addr = nullptr;
-  if (workspace_size > 0) {
-    CHECK_ACL_SUCCESS(
-        aclrtMalloc(&workspace_addr, workspace_size, ACL_MEM_MALLOC_HUGE_FIRST),
-        "recurrent_gated_delta_rule: failed to allocate workspace");
-  }
-
-  CHECK_ACL_SUCCESS(aclnnRecurrentGatedDeltaRule(
-                        workspace_addr, workspace_size, executor, stream),
-                    "recurrent_gated_delta_rule: failed to perform recurrent "
-                    "gated delta rule");
-
-  aclDestroyTensor(query_ids);
-  aclDestroyTensor(key_ids);
-  aclDestroyTensor(value_ids);
-  aclDestroyTensor(state_ids);
-  aclDestroyTensor(out_ids);
-
-  if (beta_ids != nullptr) {
-    aclDestroyTensor(beta_ids);
-  }
-  if (actual_seq_lengths_ids != nullptr) {
-    aclDestroyTensor(actual_seq_lengths_ids);
-  }
-  if (ssm_state_indices_ids != nullptr) {
-    aclDestroyTensor(ssm_state_indices_ids);
-  }
-  if (num_accepted_tokens_ids != nullptr) {
-    aclDestroyTensor(num_accepted_tokens_ids);
-  }
-  if (g_ids != nullptr) {
-    aclDestroyTensor(g_ids);
-  }
-  if (gk_ids != nullptr) {
-    aclDestroyTensor(gk_ids);
-  }
-
-  if (workspace_size > 0) {
-    CHECK_ACL_SUCCESS(aclrtFree(workspace_addr),
-                      "recurrent_gated_delta_rule: failed to free workspace");
-  }
-
-  return out_result;
+  EXEC_NPU_CMD(aclnnRecurrentGatedDeltaRule,
+               query,
+               key,
+               value,
+               beta_tensor,
+               state,
+               actual_seq_lengths_tensor,
+               ssm_state_indices_tensor,
+               g_tensor,
+               gk_tensor,
+               num_accepted_tokens_tensor,
+               scale_value,
+               output);
+  return output;
 }
 
 }  // namespace xllm::kernel::npu

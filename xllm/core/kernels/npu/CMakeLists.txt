@@ -9,11 +9,13 @@ cc_library(
     npu_kernels
   HDRS
     npu_ops_api.h
+    aclnn/pytorch_npu_helper.hpp
   SRCS
     active.cpp
     attention.cpp
     fused_layernorm.cpp
     matmul.cpp
+    npu_causal_conv1d.cpp
     npu_gemma_rms_norm.cpp
     npu_grouped_matmul.cpp
     npu_moe_gating_topk_softmax.cpp
@@ -24,5 +26,4 @@ cc_library(
   DEPS
     :torch_npu_kernels
     :tilelang_kernels
-    ascendc_ops
 )
