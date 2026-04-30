@@ -40,6 +40,7 @@ cc_library(
     :request
     :runtime
     :profile
+    :pd_topology_guard
     glog::glog
     Folly::folly
     absl::time
