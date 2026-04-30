@@ -82,16 +82,30 @@ void run_fused_gdn_gating_case(const FusedGdnGatingTestCase& test_case) {
       A_log, a, b, dt_bias, test_case.beta, test_case.threshold);
 
   auto g_max_diff = (g_out - g_ref).abs().max().item<float>();
+  int64_t g_max_index = (g_out - g_ref).abs().argmax().item<int64_t>();
+  const int64_t g_max_head = g_max_index % test_case.num_heads;
+  const int64_t g_max_row =
+      (g_max_index / test_case.num_heads) % test_case.num_batches;
   auto beta_max_diff =
       (beta_out.to(torch::kFloat32) - beta_ref.to(torch::kFloat32))
           .abs()
           .max()
           .item<float>();
+  int64_t beta_max_index =
+      (beta_out.to(torch::kFloat32) - beta_ref.to(torch::kFloat32))
+          .abs()
+          .argmax()
+          .item<int64_t>();
+  const int64_t beta_max_head = beta_max_index % test_case.num_heads;
+  const int64_t beta_max_row =
+      (beta_max_index / test_case.num_heads) % test_case.num_batches;
 
   EXPECT_TRUE(torch::allclose(g_out, g_ref, 1e-3, 1e-3))
-      << "g mismatch, max_diff=" << g_max_diff;
+      << "g mismatch, max_diff=" << g_max_diff << ", row=" << g_max_row
+      << ", head=" << g_max_head;
   EXPECT_TRUE(torch::allclose(beta_out, beta_ref, 1e-2, 1e-2))
-      << "beta mismatch, max_diff=" << beta_max_diff;
+      << "beta mismatch, max_diff=" << beta_max_diff << ", row=" << beta_max_row
+      << ", head=" << beta_max_head;
 }
 
 TEST_F(TileLangFusedGdnGatingWrapperTest, MatchesTorchReference) {
@@ -113,6 +127,30 @@ TEST_F(TileLangFusedGdnGatingWrapperTest, MatchesTorchReference) {
           .num_batches = 1,
           .num_heads = 16,
           .seed = 101,
+      },
+      {
+          .name = "qwen35_tp2_image_b275_h24",
+          .num_batches = 275,
+          .num_heads = 24,
+          .seed = 201,
+      },
+      {
+          .name = "qwen35_tp2_video_b3716_h24",
+          .num_batches = 3716,
+          .num_heads = 24,
+          .seed = 202,
+      },
+      {
+          .name = "qwen35_tp2_video_b4096_h24",
+          .num_batches = 4096,
+          .num_heads = 24,
+          .seed = 203,
+      },
+      {
+          .name = "qwen35_tp2_video_b8192_h24",
+          .num_batches = 8192,
+          .num_heads = 24,
+          .seed = 204,
       },
       {
           .name = "small_b17_h32",
