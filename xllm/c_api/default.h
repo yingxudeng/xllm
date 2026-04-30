@@ -90,6 +90,14 @@ const XLLM_InitOptions XLLM_INIT_REC_OPTIONS_DEFAULT = {
     .enable_pd_ooc = false,
     .enable_schedule_overlap = false,
     .enable_shm = false,
+    .enable_graph = true,
+    .enable_rec_fast_sampler = true,
+    .enable_prefill_piecewise_graph = true,
+    .enable_xattention_one_stage = false,
+    .enable_graph_mode_decode_no_padding = true,
+    .enable_block_copy_kernel = false,
+    .enable_topk_sorted = false,
+    .enable_rec_prefill_only = false,
 
     .transfer_listen_port = 26000,
     .nnodes = 1,
@@ -109,6 +117,7 @@ const XLLM_InitOptions XLLM_INIT_REC_OPTIONS_DEFAULT = {
     .max_decode_rounds = 3,
     .max_token_per_req = 1000,
     .max_memory_utilization = 0.55,
+    .rec_worker_max_concurrency = 2,
 
     .task = "generate",
     .communication_backend = "lccl",

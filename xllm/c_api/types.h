@@ -61,6 +61,30 @@ typedef struct XLLM_CAPI_EXPORT XLLM_InitOptions {
   /** Whether to enable shared memory for model execution */
   bool enable_shm;
 
+  /** Whether to enable graph execution for REC */
+  bool enable_graph;
+
+  /** Whether to enable REC fast sampler */
+  bool enable_rec_fast_sampler;
+
+  /** Whether to enable prefill piecewise graph for REC */
+  bool enable_prefill_piecewise_graph;
+
+  /** Whether to enable xattention one-stage execution for REC */
+  bool enable_xattention_one_stage;
+
+  /** Whether to enable graph-mode decode without padding for REC */
+  bool enable_graph_mode_decode_no_padding;
+
+  /** Whether to enable block copy kernel */
+  bool enable_block_copy_kernel;
+
+  /** Whether to keep REC top-k outputs sorted */
+  bool enable_topk_sorted;
+
+  /** Whether to enable rec prefill only */
+  bool enable_rec_prefill_only;
+
   /** KVCache transfer listen port */
   uint32_t transfer_listen_port;
 
@@ -114,6 +138,9 @@ typedef struct XLLM_CAPI_EXPORT XLLM_InitOptions {
 
   /** Maximum GPU memory utilization ratio for model inference */
   float max_memory_utilization;
+
+  /** Maximum REC worker pipeline concurrency */
+  uint32_t rec_worker_max_concurrency;
 
   /** Model task type (generate/embed) */
   char task[XLLM_META_STRING_FIELD_MAX_LEN];
