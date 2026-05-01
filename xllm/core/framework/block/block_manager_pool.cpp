@@ -204,15 +204,22 @@ bool BlockManagerPool::allocate(Sequence* sequence, size_t num_tokens) {
   }
 
   const size_t num_blocks = sequence->kv_state().num_kv_blocks();
-  // round up to the nearest block number
   const size_t block_size = options_.block_size();
-  const size_t num_blocks_needed = (num_tokens + block_size - 1) / block_size;
-  if (num_blocks_needed <= num_blocks) {
+  const size_t shared_tokens =
+      sequence->kv_state().shared_kv_blocks_num() * block_size;
+  CHECK_LE(shared_tokens, num_tokens);
+  const size_t non_shared_tokens = num_tokens - shared_tokens;
+  const size_t shared_blocks = sequence->kv_state().shared_kv_blocks_num();
+  const size_t owned_blocks = num_blocks - shared_blocks;
+  const size_t num_owned_blocks_needed =
+      (non_shared_tokens + block_size - 1) / block_size;
+  if (num_owned_blocks_needed <= owned_blocks) {
     return process_beam_search(sequence, /*need_swap*/ true);
   }
   process_beam_search(sequence);
 
-  const uint32_t num_additional_blocks = num_blocks_needed - num_blocks;
+  const uint32_t num_additional_blocks =
+      static_cast<uint32_t>(num_owned_blocks_needed - owned_blocks);
 
   const auto blocks = block_managers_[dp_rank]->allocate(num_additional_blocks);
   if (blocks.size() != num_additional_blocks) {

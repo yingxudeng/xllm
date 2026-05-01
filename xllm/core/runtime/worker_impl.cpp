@@ -146,7 +146,15 @@ void prepare_input_params_for_linear_attention(ModelInputParams& input_params) {
   CHECK(input_params.has_initial_state.empty() ||
         input_params.has_initial_state.size() == batch_size);
   if (input_params.has_initial_state.empty()) {
-    input_params.has_initial_state.assign(batch_size, 0);
+    if (!input_params.kv_cache_tokens_nums_host.empty()) {
+      input_params.has_initial_state.reserve(batch_size);
+      for (int64_t i = 0; i < batch_size; ++i) {
+        input_params.has_initial_state.emplace_back(
+            input_params.kv_cache_tokens_nums_host[i] > 0 ? 1 : 0);
+      }
+    } else {
+      input_params.has_initial_state.assign(batch_size, 0);
+    }
   }
 }
 

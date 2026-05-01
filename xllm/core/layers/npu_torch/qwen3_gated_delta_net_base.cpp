@@ -450,8 +450,9 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
     has_initial_state = torch::IntArrayRef(input_params.has_initial_state);
   }
 
-  if (is_prefill && should_use_torch_causal_conv1d_prefill(
-                        mixed_qkv, conv_weight, input_params)) {
+  if (attn_metadata.is_chunked_prefill &&
+      should_use_torch_causal_conv1d_prefill(
+          mixed_qkv, conv_weight, input_params)) {
     mixed_qkv = torch_causal_conv1d_prefill(mixed_qkv,
                                             conv_weight,
                                             conv_cache,
@@ -511,7 +512,9 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
     // Get initial state from ssm_cache for sequences with previous state
     // Shape: [batch_size, num_heads, head_k_dim, head_v_dim]
     torch::Tensor initial_state_tensor =
-        torch::index_select(ssm_cache, 0, linear_state_indices);
+        torch::index_select(ssm_cache, 0, linear_state_indices)
+            .transpose(-1, -2)
+            .contiguous();
     CHECK_EQ(input_params.has_initial_state.size(),
              input_params.linear_state_ids.size())
         << "has_initial_state must be sequence-scoped.";
@@ -527,8 +530,9 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
     chunk_gated_delta_params.use_qk_l2norm_in_kernel = true;
     std::tie(core_attn_out, last_recurrent_state) =
         xllm::kernel::chunk_gated_delta_rule(chunk_gated_delta_params);
-    ssm_cache.index_put_({linear_state_indices},
-                         last_recurrent_state.to(ssm_cache.dtype()));
+    ssm_cache.index_put_(
+        {linear_state_indices},
+        last_recurrent_state.transpose(-1, -2).to(ssm_cache.dtype()));
   } else {
     processed_q = xllm::kernel::l2_norm(processed_q, 1e-6);
     processed_k = xllm::kernel::l2_norm(processed_k, 1e-6);

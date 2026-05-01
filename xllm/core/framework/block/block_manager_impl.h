@@ -24,7 +24,8 @@ namespace xllm {
 class BlockManagerImpl : public BlockManager {
  public:
   explicit BlockManagerImpl(const Options& options);
-  virtual ~BlockManagerImpl() {
+  ~BlockManagerImpl() override {
+    prefix_cache_.reset();
     CHECK_EQ(num_free_blocks_, free_blocks_.size() - 1)
         << "Not all blocks have been freed";
   };

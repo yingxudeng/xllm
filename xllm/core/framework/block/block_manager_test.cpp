@@ -325,4 +325,27 @@ TEST(BlockManagerPoolTest, SequenceCopyDoesNotReuseSingleBlockSlot) {
   EXPECT_NE(GetSingleBlockIdOrFail(clone), GetSingleBlockIdOrFail(src));
 }
 
+TEST(BlockManagerPoolTest, AllocateAfterPrefixCacheHitAllocatesSuffixBlocks) {
+  ScopedValue<int32_t> max_seqs_guard(&FLAGS_max_seqs_per_batch, 2);
+
+  BlockManagerPool::Options options;
+  options.num_blocks(16).host_num_blocks(0).block_size(4).enable_prefix_cache(
+      true);
+  BlockManagerPool pool(options, /*dp_size=*/1);
+
+  Sequence cached_seq =
+      MakeSequence(0, /*prompt_tokens=*/{1, 2, 3, 4, 5, 6, 7, 8});
+  ASSERT_TRUE(pool.allocate(&cached_seq));
+  cached_seq.kv_state().set_kv_cache_tokens_num(cached_seq.num_tokens());
+  pool.cache(&cached_seq);
+  pool.deallocate(&cached_seq);
+
+  Sequence hit_seq =
+      MakeSequence(1, /*prompt_tokens=*/{1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
+  ASSERT_TRUE(pool.allocate(&hit_seq, hit_seq.num_tokens()));
+  EXPECT_EQ(hit_seq.kv_state().shared_kv_blocks_num(), 2);
+  EXPECT_GE(hit_seq.kv_state().current_max_tokens_capacity(),
+            hit_seq.num_tokens());
+}
+
 }  // namespace xllm
