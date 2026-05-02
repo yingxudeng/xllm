@@ -290,6 +290,34 @@ TEST(BlockManagerPoolTest, TryAllocateKvFailureRollsBackSingleBlock) {
   EXPECT_TRUE(HasSingleBlockIdOrFail(seq2));
 }
 
+TEST(BlockManagerPoolTest, SingleBlockCapacityCanBeLowerThanMaxSeqs) {
+  ScopedValue<int32_t> max_seqs_guard(&FLAGS_max_seqs_per_batch, 8);
+
+  BlockManagerPool::Options options;
+  options.num_blocks(16)
+      .host_num_blocks(0)
+      .block_size(1)
+      .single_block_capacity(3)
+      .enable_prefix_cache(false);
+  ASSERT_TRUE(EnableLinearStateOrFail(options));
+  BlockManagerPool pool(options, /*dp_size=*/1);
+
+  Sequence seq0 = MakeSequence(0, /*prompt_tokens=*/{1});
+  Sequence seq1 = MakeSequence(1, /*prompt_tokens=*/{2});
+  Sequence seq2 = MakeSequence(2, /*prompt_tokens=*/{3});
+  Sequence seq3 = MakeSequence(3, /*prompt_tokens=*/{4});
+
+  EXPECT_TRUE(pool.try_allocate(&seq0));
+  EXPECT_TRUE(pool.try_allocate(&seq1));
+  EXPECT_TRUE(pool.try_allocate(&seq2));
+  EXPECT_FALSE(pool.try_allocate(&seq3));
+
+  EXPECT_TRUE(HasSingleBlockIdOrFail(seq0));
+  EXPECT_TRUE(HasSingleBlockIdOrFail(seq1));
+  EXPECT_TRUE(HasSingleBlockIdOrFail(seq2));
+  EXPECT_FALSE(HasSingleBlockIdOrFail(seq3));
+}
+
 TEST(BlockManagerPoolTest, AllocateAssignsSingleBlockWhenLinearStateDisabled) {
   ScopedValue<int32_t> max_seqs_guard(&FLAGS_max_seqs_per_batch, 2);
 

@@ -26,6 +26,16 @@ limitations under the License.
 #include "framework/xtensor/xtensor_block_manager_impl.h"
 
 namespace xllm {
+namespace {
+
+uint32_t get_single_block_capacity(const BlockManagerPool::Options& options) {
+  if (options.single_block_capacity() > 0) {
+    return options.single_block_capacity();
+  }
+  return static_cast<uint32_t>(std::max(FLAGS_max_seqs_per_batch, 0) + 2);
+}
+
+}  // namespace
 
 BlockManagerPool::BlockManagerPool(const Options& options, int32_t dp_size)
     : options_(options) {
@@ -72,7 +82,7 @@ BlockManagerPool::BlockManagerPool(const Options& options, int32_t dp_size)
     // pool. Worker-side embedding and linear-state caches remain physically
     // separate and are addressed via transport fields.
     single_block_managers_.emplace_back(std::make_unique<SingleBlockManager>(
-        /*num_blocks=*/FLAGS_max_seqs_per_batch + 2,
+        /*num_blocks=*/get_single_block_capacity(options_),
         /*resource_name=*/"single block",
         /*exhaustion_message=*/"No more single-block ids available"));
   }

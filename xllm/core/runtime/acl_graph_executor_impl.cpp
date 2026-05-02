@@ -69,6 +69,17 @@ int64_t get_decode_graph_capacity(const runtime::Options& options) {
   }
   return options.max_seqs_per_batch() * options.num_decoding_tokens();
 }
+
+int32_t get_padding_linear_state_id(const std::vector<KVCache>& kv_caches) {
+  for (const KVCache& kv_cache : kv_caches) {
+    const torch::Tensor conv_cache = kv_cache.get_conv_cache();
+    if (conv_cache.defined() && conv_cache.dim() > 0 &&
+        conv_cache.size(0) > 0) {
+      return static_cast<int32_t>(conv_cache.size(0) - 1);
+    }
+  }
+  return FLAGS_max_seqs_per_batch + 1;
+}
 }  // namespace
 
 // GraphPersistentParam implementation
@@ -204,6 +215,7 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
     const torch::Tensor& positions,
     const ModelInputParams& params,
     uint32_t padded_num_tokens,
+    int32_t padding_linear_state_id,
     bool return_capture_params) {
   CHECK_GT(padded_num_tokens, 0)
       << "padded_num_tokens must be > 0 when return_capture_params is true";
@@ -263,7 +275,6 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
               /*non_blocking=*/true);
     }
     if (padded_num_tokens > actual_batch_size) {
-      const int32_t padding_linear_state_id = options_.max_seqs_per_batch() + 1;
       persistent_linear_state_indices_
           .slice(/*dim=*/0,
                  /*start=*/actual_batch_size,
@@ -363,7 +374,6 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
         persistent_block_tables(padded_num_tokens);
     if (!params.linear_state_ids.empty()) {
       params_for_capture->linear_state_ids = params.linear_state_ids;
-      const int32_t padding_linear_state_id = options_.max_seqs_per_batch() + 1;
       params_for_capture->linear_state_ids.resize(padded_num_tokens,
                                                   padding_linear_state_id);
       params_for_capture->linear_state_indices =
@@ -871,13 +881,15 @@ bool AclGraph::capture(CausalLM* model,
   const uint32_t actual_num_tokens = tokens.size(0);
   CHECK_GE(num_tokens_, actual_num_tokens)
       << "num_tokens_ >= actual_num_tokens";
-  auto graph_params = persistent_param_.update(tokens,
-                                               k_cache,
-                                               v_cache,
-                                               positions,
-                                               params,
-                                               num_tokens_,
-                                               /*return_capture_params=*/true);
+  auto graph_params =
+      persistent_param_.update(tokens,
+                               k_cache,
+                               v_cache,
+                               positions,
+                               params,
+                               num_tokens_,
+                               get_padding_linear_state_id(kv_cache),
+                               /*return_capture_params=*/true);
 
   // Use the returned ModelInputParams for graph capture
   CHECK(graph_params.has_value())
@@ -977,6 +989,7 @@ ModelOutput AclGraph::replay(const torch::Tensor& tokens,
                            positions,
                            params,
                            num_tokens_,
+                           get_padding_linear_state_id(kv_cache),
                            /*return_capture_params=*/false);
 
   // Replay captured graph - NPUGraph mempool reuses temporary tensors

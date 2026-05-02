@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "framework/kv_cache/kv_cache_utils.h"
 
+#include <algorithm>
+
 #include "common/global_flags.h"
 #include "framework/kv_cache/kv_cache_shape.h"
 
@@ -25,6 +27,49 @@ bool is_linear_attention_layer(int64_t layer_idx,
     return false;
   }
   return (layer_idx + 1) % full_attention_interval != 0;
+}
+
+int64_t calculate_linear_state_blocks(int64_t max_seqs_per_batch,
+                                      int64_t cache_size_in_bytes,
+                                      int64_t num_linear_attention_layers,
+                                      int64_t linear_slot_size,
+                                      int64_t num_full_attention_layers,
+                                      int64_t full_attention_block_size) {
+  constexpr int64_t kPaddingLinearStateBlocks = 2;
+  const int64_t requested_blocks =
+      std::max<int64_t>(max_seqs_per_batch, 0) + kPaddingLinearStateBlocks;
+  if (linear_slot_size <= 0 || num_linear_attention_layers <= 0) {
+    return requested_blocks;
+  }
+
+  CHECK_GT(cache_size_in_bytes, 0);
+  CHECK_GT(full_attention_block_size, 0);
+  const int64_t linear_bytes_per_block =
+      num_linear_attention_layers * linear_slot_size;
+  const int64_t full_cache_bytes_per_block =
+      std::max<int64_t>(num_full_attention_layers, 1) *
+      full_attention_block_size;
+  CHECK_GT(linear_bytes_per_block, 0);
+  CHECK_GT(full_cache_bytes_per_block, 0);
+
+  for (int64_t linear_blocks = requested_blocks;
+       linear_blocks >= kPaddingLinearStateBlocks;
+       --linear_blocks) {
+    const int64_t reserved_linear_bytes =
+        linear_blocks * linear_bytes_per_block;
+    if (reserved_linear_bytes >= cache_size_in_bytes) {
+      continue;
+    }
+
+    const int64_t full_attention_blocks =
+        (cache_size_in_bytes - reserved_linear_bytes) /
+        full_cache_bytes_per_block;
+    if (full_attention_blocks + kPaddingLinearStateBlocks >= linear_blocks) {
+      return linear_blocks;
+    }
+  }
+
+  return kPaddingLinearStateBlocks;
 }
 
 KVCacheTensors create_kv_cache_tensors(
