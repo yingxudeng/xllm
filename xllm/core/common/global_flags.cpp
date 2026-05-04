@@ -144,6 +144,30 @@ DEFINE_string(
     "cache dtype aligns with model dtype (no quantization). "
     "\"int8\": Enables INT8 quantization. Only supported on MLU backend.");
 
+DEFINE_string(linear_state_cache_policy,
+              "auto",
+              "Linear-attention state cache sizing policy. \"auto\" derives "
+              "capacity from the linear/full-KV memory ratio, \"fixed\" uses "
+              "max_linear_state_cache_slots, and \"compat\" requests the old "
+              "max_seqs_per_batch-based capacity before applying the same "
+              "available-KV budget bounds.");
+
+DEFINE_int64(max_linear_state_cache_slots,
+             0,
+             "Maximum active linear-attention state cache slots. Only used by "
+             "linear_state_cache_policy=fixed. Must be greater than 0 in fixed "
+             "mode.");
+
+DEFINE_double(linear_state_full_kv_memory_ratio,
+              0.9,
+              "Target linear-state memory to full-attention KV memory ratio "
+              "for linear_state_cache_policy=auto.");
+
+DEFINE_int64(min_full_kv_cache_blocks,
+             0,
+             "Minimum full-attention KV blocks preserved when reserving "
+             "linear-attention state cache. 0 means no explicit lower bound.");
+
 // --- scheduler config ---
 
 DEFINE_int32(max_tokens_per_batch, 10240, "Max number of tokens per batch.");

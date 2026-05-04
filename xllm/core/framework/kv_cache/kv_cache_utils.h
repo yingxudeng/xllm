@@ -24,6 +24,7 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#include "common/linear_state_cache_options.h"
 #include "common/macros.h"
 
 #if defined(USE_NPU)
@@ -107,6 +108,14 @@ int64_t calculate_linear_state_blocks(int64_t max_seqs_per_batch,
                                       int64_t linear_slot_size,
                                       int64_t num_full_attention_layers,
                                       int64_t full_attention_block_size);
+
+int64_t calculate_linear_state_blocks(int64_t max_seqs_per_batch,
+                                      int64_t cache_size_in_bytes,
+                                      int64_t num_linear_attention_layers,
+                                      int64_t linear_slot_size,
+                                      int64_t num_full_attention_layers,
+                                      int64_t full_attention_block_size,
+                                      const LinearStateCacheOptions& options);
 
 KVCacheTensors create_kv_cache_tensors(
     const KVCacheShape& kv_cache_shape,

@@ -127,6 +127,24 @@ Sequence MakeSequence(size_t index, const std::vector<int32_t>& prompt_tokens) {
                   params);
 }
 
+class TestBlockManagerPool final : public BlockManagerPool {
+ public:
+  using BlockManagerPool::BlockManagerPool;
+
+  int32_t select_manager_with_max_free_blocks() const {
+    return get_manager_with_max_free_blocks();
+  }
+
+  void drain_kv_blocks(size_t dp_rank) {
+    CHECK_LT(dp_rank, block_managers_.size());
+    held_blocks_.emplace_back(block_managers_[dp_rank]->allocate(
+        block_managers_[dp_rank]->num_free_blocks()));
+  }
+
+ private:
+  std::vector<std::vector<Block>> held_blocks_;
+};
+
 }  // namespace
 
 TEST(BlockManagerTest, Basic) {
@@ -316,6 +334,133 @@ TEST(BlockManagerPoolTest, SingleBlockCapacityCanBeLowerThanMaxSeqs) {
   EXPECT_TRUE(HasSingleBlockIdOrFail(seq1));
   EXPECT_TRUE(HasSingleBlockIdOrFail(seq2));
   EXPECT_FALSE(HasSingleBlockIdOrFail(seq3));
+}
+
+TEST(BlockManagerPoolTest, ReportsSingleBlockCapacityAndFreeBlocks) {
+  ScopedValue<int32_t> max_seqs_guard(&FLAGS_max_seqs_per_batch, 8);
+
+  BlockManagerPool::Options options;
+  options.num_blocks(16)
+      .host_num_blocks(0)
+      .block_size(1)
+      .single_block_capacity(3)
+      .enable_prefix_cache(false);
+  ASSERT_TRUE(EnableLinearStateOrFail(options));
+  BlockManagerPool pool(options, /*dp_size=*/1);
+
+  EXPECT_EQ(pool.num_total_single_blocks(), std::vector<size_t>{3});
+  EXPECT_EQ(pool.num_free_single_blocks(), std::vector<size_t>{3});
+
+  Sequence seq = MakeSequence(0, /*prompt_tokens=*/{1});
+  ASSERT_TRUE(pool.try_allocate(&seq));
+  EXPECT_EQ(pool.num_total_single_blocks(), std::vector<size_t>{3});
+  EXPECT_EQ(pool.num_free_single_blocks(), std::vector<size_t>{2});
+
+  pool.deallocate(&seq);
+  EXPECT_EQ(pool.num_free_single_blocks(), std::vector<size_t>{3});
+}
+
+TEST(BlockManagerPoolTest, DpRankSelectionSkipsExhaustedSingleBlockPool) {
+  ScopedValue<int32_t> max_seqs_guard(&FLAGS_max_seqs_per_batch, 8);
+
+  BlockManagerPool::Options options;
+  options.num_blocks(16)
+      .host_num_blocks(0)
+      .block_size(1)
+      .single_block_capacity(1)
+      .enable_prefix_cache(false);
+  ASSERT_TRUE(EnableLinearStateOrFail(options));
+  BlockManagerPool pool(options, /*dp_size=*/2);
+
+  Sequence seq0 = MakeSequence(0, /*prompt_tokens=*/{1});
+  ASSERT_TRUE(pool.try_allocate(&seq0));
+  EXPECT_EQ(seq0.dp_rank(), 0);
+  EXPECT_EQ(pool.num_free_single_blocks(), (std::vector<size_t>{0, 1}));
+
+  Sequence seq1 = MakeSequence(1, /*prompt_tokens=*/{2});
+  ASSERT_TRUE(pool.try_allocate(&seq1));
+  EXPECT_EQ(seq1.dp_rank(), 1);
+  EXPECT_EQ(pool.num_free_single_blocks(), (std::vector<size_t>{0, 0}));
+}
+
+TEST(BlockManagerPoolTest, DpRankSelectionKeepsEligibleZeroFreeKvRank) {
+  ScopedValue<int32_t> max_seqs_guard(&FLAGS_max_seqs_per_batch, 8);
+
+  BlockManagerPool::Options options;
+  options.num_blocks(4)
+      .host_num_blocks(0)
+      .block_size(1)
+      .single_block_capacity(1)
+      .enable_prefix_cache(false);
+  ASSERT_TRUE(EnableLinearStateOrFail(options));
+  TestBlockManagerPool pool(options, /*dp_size=*/2);
+
+  Sequence seq0 = MakeSequence(0, /*prompt_tokens=*/{1});
+  ASSERT_TRUE(pool.try_allocate(&seq0));
+  ASSERT_EQ(seq0.dp_rank(), 0);
+  ASSERT_EQ(pool.num_free_single_blocks(), (std::vector<size_t>{0, 1}));
+
+  pool.drain_kv_blocks(/*dp_rank=*/1);
+  ASSERT_EQ(pool.num_free_blocks(), (std::vector<size_t>{2, 0}));
+  EXPECT_EQ(pool.select_manager_with_max_free_blocks(), 1);
+}
+
+TEST(BlockManagerPoolTest, FailedSingleBlockAllocationDoesNotPinDpRank) {
+  ScopedValue<int32_t> max_seqs_guard(&FLAGS_max_seqs_per_batch, 8);
+
+  BlockManagerPool::Options options;
+  options.num_blocks(16)
+      .host_num_blocks(0)
+      .block_size(1)
+      .single_block_capacity(1)
+      .enable_prefix_cache(false);
+  ASSERT_TRUE(EnableLinearStateOrFail(options));
+  BlockManagerPool pool(options, /*dp_size=*/2);
+
+  Sequence seq0 = MakeSequence(0, /*prompt_tokens=*/{1});
+  Sequence seq1 = MakeSequence(1, /*prompt_tokens=*/{2});
+  ASSERT_TRUE(pool.try_allocate(&seq0));
+  ASSERT_TRUE(pool.try_allocate(&seq1));
+  ASSERT_EQ(pool.num_free_single_blocks(), (std::vector<size_t>{0, 0}));
+
+  Sequence retry = MakeSequence(2, /*prompt_tokens=*/{3});
+  EXPECT_FALSE(pool.try_allocate(&retry));
+  EXPECT_EQ(retry.dp_rank(), -1);
+
+  pool.deallocate(&seq1);
+  ASSERT_EQ(pool.num_free_single_blocks(), (std::vector<size_t>{0, 1}));
+  ASSERT_TRUE(pool.try_allocate(&retry));
+  EXPECT_EQ(retry.dp_rank(), 1);
+}
+
+TEST(BlockManagerPoolTest,
+     SharedPrefixAllocationSkipsWhenSingleBlocksExhausted) {
+  ScopedValue<int32_t> max_seqs_guard(&FLAGS_max_seqs_per_batch, 8);
+
+  BlockManagerPool::Options options;
+  options.num_blocks(16)
+      .host_num_blocks(0)
+      .block_size(1)
+      .single_block_capacity(1)
+      .enable_prefix_cache(true);
+  ASSERT_TRUE(EnableLinearStateOrFail(options));
+  BlockManagerPool pool(options, /*dp_size=*/1);
+
+  Sequence seq0 = MakeSequence(0, /*prompt_tokens=*/{1});
+  ASSERT_TRUE(pool.try_allocate(&seq0));
+  ASSERT_EQ(pool.num_free_single_blocks(), std::vector<size_t>{0});
+
+  Sequence retry = MakeSequence(1, /*prompt_tokens=*/{1});
+  pool.allocate_shared(&retry);
+  EXPECT_EQ(retry.dp_rank(), -1);
+  EXPECT_EQ(retry.kv_state().num_kv_blocks(), 0);
+
+  EXPECT_FALSE(pool.allocate(&retry));
+  EXPECT_EQ(retry.dp_rank(), -1);
+
+  pool.deallocate(&retry);
+  EXPECT_EQ(retry.dp_rank(), -1);
+  EXPECT_EQ(pool.num_free_single_blocks(), std::vector<size_t>{0});
 }
 
 TEST(BlockManagerPoolTest, AllocateAssignsSingleBlockWhenLinearStateDisabled) {

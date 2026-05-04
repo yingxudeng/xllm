@@ -293,7 +293,8 @@ KVCacheCapacity VLMEngine::estimate_kv_cache_capacity() {
                                     kv_cache_cap.num_linear_attention_layers(),
                                     kv_cache_cap.linear_slot_size(),
                                     kv_cache_cap.num_full_attention_layers(),
-                                    block_size_in_bytes);
+                                    block_size_in_bytes,
+                                    options_.linear_state_cache_options());
   kv_cache_cap.linear_cache_size_in_bytes() =
       kv_cache_cap.num_linear_attention_layers() *
       kv_cache_cap.num_linear_state_blocks() * kv_cache_cap.linear_slot_size();
@@ -305,7 +306,10 @@ KVCacheCapacity VLMEngine::estimate_kv_cache_capacity() {
              kv_cache_cap.linear_cache_size_in_bytes())
         << "failed to reserve linear state cache for VLM linear-attention "
         << "layers: max_seqs_per_batch (" << options_.max_seqs_per_batch()
-        << ") is too large.";
+        << "), policy "
+        << linear_state_cache_policy_to_string(
+               options_.linear_state_cache_options().policy())
+        << ".";
   }
   CHECK_GT(available_full_cache_size_in_bytes, 0)
       << "no memory left for full-attention kv cache after reserving linear "
@@ -326,6 +330,11 @@ bool VLMEngine::allocate_kv_cache(const KVCacheCapacity& kv_cache_cap) {
             << ", slot_size: " << kv_cache_cap.slot_size()
             << ", linear_slot_size: " << kv_cache_cap.linear_slot_size()
             << ", linear_blocks: " << kv_cache_cap.num_linear_state_blocks()
+            << ", linear_state_slots: "
+            << std::max<int64_t>(kv_cache_cap.num_linear_state_blocks() - 2, 0)
+            << ", linear_state_cache_policy: "
+            << linear_state_cache_policy_to_string(
+                   options_.linear_state_cache_options().policy())
             << ", reserved_linear_bytes: "
             << readable_size(kv_cache_cap.linear_cache_size_in_bytes());
 

@@ -91,17 +91,23 @@ BlockManagerPool::BlockManagerPool(const Options& options, int32_t dp_size)
 
 int32_t BlockManagerPool::get_manager_with_max_free_blocks() const {
   if (block_managers_.empty()) {
-    return 0;
+    return -1;
   }
 
-  size_t max_index = 0;
-  size_t max_free = block_managers_[0]->num_free_blocks();
+  int32_t max_index = -1;
+  size_t max_free = 0;
+  bool found_manager = false;
 
-  for (size_t i = 1; i < block_managers_.size(); ++i) {
+  for (size_t i = 0; i < block_managers_.size(); ++i) {
+    if (options_.enable_linear_state() &&
+        single_block_managers_[i]->num_free_blocks() == 0) {
+      continue;
+    }
     const size_t current_free = block_managers_[i]->num_free_blocks();
-    if (current_free > max_free) {
+    if (!found_manager || current_free > max_free) {
       max_free = current_free;
-      max_index = i;
+      max_index = static_cast<int32_t>(i);
+      found_manager = true;
     }
   }
   return max_index;
@@ -113,7 +119,9 @@ int32_t BlockManagerPool::get_dp_rank(Sequence* sequence) const {
     dp_rank = sequence->dp_rank();
   } else {
     dp_rank = get_manager_with_max_free_blocks();
-    sequence->set_dp_rank(dp_rank);
+    if (dp_rank >= 0) {
+      sequence->set_dp_rank(dp_rank);
+    }
   }
   return dp_rank;
 }
@@ -163,8 +171,18 @@ void BlockManagerPool::deallocate(std::vector<Sequence*>& sequences) {
 
 void BlockManagerPool::deallocate(Sequence* sequence) {
   DCHECK(sequence != nullptr);
+  if (sequence->dp_rank() < 0 && sequence->kv_state().num_kv_blocks() == 0 &&
+      !sequence->has_single_block_id()) {
+    sequence->reset();
+    return;
+  }
+
   // add blocks to the prefix cache
   int32_t dp_rank = get_dp_rank(sequence);
+  if (dp_rank < 0) {
+    sequence->reset();
+    return;
+  }
   cache(sequence);
   block_managers_[dp_rank]->deallocate(sequence->kv_state().kv_blocks());
   deallocate_single_block(sequence, dp_rank);
@@ -201,11 +219,19 @@ bool BlockManagerPool::allocate(std::vector<Sequence*>& sequences) {
 bool BlockManagerPool::allocate(Sequence* sequence, size_t num_tokens) {
   AUTO_COUNTER(allocate_blocks_latency_seconds);
   DCHECK(sequence != nullptr);
-  int32_t dp_rank = get_dp_rank(sequence);
+  const bool has_dp_rank = sequence->dp_rank() >= 0;
+  int32_t dp_rank =
+      has_dp_rank ? sequence->dp_rank() : get_manager_with_max_free_blocks();
+  if (dp_rank < 0) {
+    return false;
+  }
   const bool started_empty = sequence->kv_state().num_kv_blocks() == 0;
   const bool needs_single_block = !sequence->has_single_block_id();
   if (needs_single_block && !allocate_single_block(sequence, dp_rank)) {
     return false;
+  }
+  if (!has_dp_rank) {
+    sequence->set_dp_rank(dp_rank);
   }
 
   // first try to allocate shared blocks
@@ -263,16 +289,27 @@ bool BlockManagerPool::allocate(Sequence* sequence,
 std::vector<Block> BlockManagerPool::allocate(size_t num_tokens,
                                               int32_t& dp_rank) {
   dp_rank = get_manager_with_max_free_blocks();
+  if (dp_rank < 0) {
+    return {};
+  }
   const size_t block_size = options_.block_size();
   const size_t num_blocks_needed = (num_tokens + block_size - 1) / block_size;
   return block_managers_[dp_rank]->allocate(num_blocks_needed);
 }
 
 bool BlockManagerPool::try_allocate(Sequence* sequence) {
-  int32_t dp_rank = get_dp_rank(sequence);
+  const bool has_dp_rank = sequence->dp_rank() >= 0;
+  int32_t dp_rank =
+      has_dp_rank ? sequence->dp_rank() : get_manager_with_max_free_blocks();
+  if (dp_rank < 0) {
+    return false;
+  }
   const bool needs_single_block = !sequence->has_single_block_id();
   if (needs_single_block && !allocate_single_block(sequence, dp_rank)) {
     return false;
+  }
+  if (!has_dp_rank) {
+    sequence->set_dp_rank(dp_rank);
   }
 
   std::vector<Block> shared_blocks;
@@ -347,6 +384,9 @@ void BlockManagerPool::allocate_shared(Sequence* sequence) {
   // only allocate shared blocks for prefill sequences
   if (options_.enable_prefix_cache()) {
     int32_t dp_rank = get_dp_rank(sequence);
+    if (dp_rank < 0) {
+      return;
+    }
     const auto& existed_shared_blocks = sequence->kv_state().kv_blocks().slice(
         0, sequence->kv_state().shared_kv_blocks_num());
     // If the sequence holds shared_blocks, the hash values of these blocks do
@@ -360,6 +400,9 @@ void BlockManagerPool::allocate_shared(Sequence* sequence) {
 
 void BlockManagerPool::cache(Sequence* sequence) {
   int32_t dp_rank = get_dp_rank(sequence);
+  if (dp_rank < 0) {
+    return;
+  }
   const auto token_ids = sequence->cached_tokens();
   auto* blocks = sequence->kv_state().mutable_kv_blocks();
   auto existed_shared_blocks_num = sequence->kv_state().shared_kv_blocks_num();
@@ -410,8 +453,29 @@ std::vector<size_t> BlockManagerPool::num_used_blocks() const {
   return num_used_blocks;
 }
 
+std::vector<size_t> BlockManagerPool::num_free_single_blocks() const {
+  std::vector<size_t> num_free_blocks(single_block_managers_.size());
+  for (size_t dp_rank = 0; dp_rank < single_block_managers_.size(); ++dp_rank) {
+    num_free_blocks[dp_rank] =
+        single_block_managers_[dp_rank]->num_free_blocks();
+  }
+  return num_free_blocks;
+}
+
+std::vector<size_t> BlockManagerPool::num_total_single_blocks() const {
+  std::vector<size_t> num_total_blocks(single_block_managers_.size());
+  for (size_t dp_rank = 0; dp_rank < single_block_managers_.size(); ++dp_rank) {
+    num_total_blocks[dp_rank] =
+        single_block_managers_[dp_rank]->num_total_blocks();
+  }
+  return num_total_blocks;
+}
+
 double BlockManagerPool::kv_cache_utilization() const {
   int32_t dp_rank = get_manager_with_max_free_blocks();
+  if (dp_rank < 0) {
+    dp_rank = 0;
+  }
   return block_managers_[dp_rank]->kv_cache_utilization();
 }
 
