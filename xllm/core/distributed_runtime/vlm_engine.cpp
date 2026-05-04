@@ -288,8 +288,7 @@ KVCacheCapacity VLMEngine::estimate_kv_cache_capacity() {
   const int64_t block_size = kv_cache_cap.block_size();
   const int64_t block_size_in_bytes = block_size * slot_size;
   kv_cache_cap.num_linear_state_blocks() =
-      calculate_linear_state_blocks(options_.max_seqs_per_batch(),
-                                    kv_cache_cap.cache_size_in_bytes(),
+      calculate_linear_state_blocks(kv_cache_cap.cache_size_in_bytes(),
                                     kv_cache_cap.num_linear_attention_layers(),
                                     kv_cache_cap.linear_slot_size(),
                                     kv_cache_cap.num_full_attention_layers(),
@@ -305,10 +304,11 @@ KVCacheCapacity VLMEngine::estimate_kv_cache_capacity() {
     CHECK_GT(kv_cache_cap.cache_size_in_bytes(),
              kv_cache_cap.linear_cache_size_in_bytes())
         << "failed to reserve linear state cache for VLM linear-attention "
-        << "layers: max_seqs_per_batch (" << options_.max_seqs_per_batch()
-        << "), policy "
-        << linear_state_cache_policy_to_string(
-               options_.linear_state_cache_options().policy())
+        << "layers: max_linear_state_cache_slots "
+        << options_.linear_state_cache_options().max_linear_state_cache_slots()
+        << ", linear_state_full_kv_memory_ratio "
+        << options_.linear_state_cache_options()
+               .linear_state_full_kv_memory_ratio()
         << ".";
   }
   CHECK_GT(available_full_cache_size_in_bytes, 0)
@@ -324,19 +324,22 @@ KVCacheCapacity VLMEngine::estimate_kv_cache_capacity() {
 }
 
 bool VLMEngine::allocate_kv_cache(const KVCacheCapacity& kv_cache_cap) {
-  LOG(INFO) << "kv cache capacity: "
-            << "bytes: " << kv_cache_cap.cache_size_in_bytes()
-            << ", blocks: " << kv_cache_cap.n_blocks()
-            << ", slot_size: " << kv_cache_cap.slot_size()
-            << ", linear_slot_size: " << kv_cache_cap.linear_slot_size()
-            << ", linear_blocks: " << kv_cache_cap.num_linear_state_blocks()
-            << ", linear_state_slots: "
-            << std::max<int64_t>(kv_cache_cap.num_linear_state_blocks() - 2, 0)
-            << ", linear_state_cache_policy: "
-            << linear_state_cache_policy_to_string(
-                   options_.linear_state_cache_options().policy())
-            << ", reserved_linear_bytes: "
-            << readable_size(kv_cache_cap.linear_cache_size_in_bytes());
+  LOG(INFO)
+      << "kv cache capacity: "
+      << "bytes: " << kv_cache_cap.cache_size_in_bytes()
+      << ", blocks: " << kv_cache_cap.n_blocks()
+      << ", slot_size: " << kv_cache_cap.slot_size()
+      << ", linear_slot_size: " << kv_cache_cap.linear_slot_size()
+      << ", linear_blocks: " << kv_cache_cap.num_linear_state_blocks()
+      << ", linear_state_slots: "
+      << std::max<int64_t>(kv_cache_cap.num_linear_state_blocks() - 2, 0)
+      << ", max_linear_state_cache_slots: "
+      << options_.linear_state_cache_options().max_linear_state_cache_slots()
+      << ", linear_state_full_kv_memory_ratio: "
+      << options_.linear_state_cache_options()
+             .linear_state_full_kv_memory_ratio()
+      << ", reserved_linear_bytes: "
+      << readable_size(kv_cache_cap.linear_cache_size_in_bytes());
 
   const int32_t block_size = static_cast<int32_t>(kv_cache_cap.block_size());
   const bool enable_linear_attention = has_linear_attention_layers(args_);

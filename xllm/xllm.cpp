@@ -226,11 +226,9 @@ int run() {
   Options options;
   LinearStateCacheOptions linear_state_cache_options;
   linear_state_cache_options
-      .policy(parse_linear_state_cache_policy(FLAGS_linear_state_cache_policy))
       .max_linear_state_cache_slots(FLAGS_max_linear_state_cache_slots)
       .linear_state_full_kv_memory_ratio(
-          FLAGS_linear_state_full_kv_memory_ratio)
-      .min_full_kv_cache_blocks(FLAGS_min_full_kv_cache_blocks);
+          FLAGS_linear_state_full_kv_memory_ratio);
   validate_linear_state_cache_options(linear_state_cache_options);
 #if defined(USE_NPU)
   options.npu_kernel_backend(FLAGS_npu_kernel_backend);

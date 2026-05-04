@@ -16,35 +16,17 @@ limitations under the License.
 #pragma once
 
 #include <cstdint>
-#include <string>
 
 #include "common/macros.h"
 
 namespace xllm {
 
-enum class LinearStateCachePolicy {
-  COMPAT,
-  FIXED,
-  AUTO,
-};
-
-LinearStateCachePolicy parse_linear_state_cache_policy(
-    const std::string& policy);
-
-const char* linear_state_cache_policy_to_string(LinearStateCachePolicy policy);
-
 struct LinearStateCacheOptions {
-  // Active linear-state slots. The allocator still reserves internal padding
-  // blocks on top of this value.
+  // Active linear-state slots. 0 derives capacity from the memory ratio.
   PROPERTY(int64_t, max_linear_state_cache_slots) = 0;
 
-  // Ratio of linear-state memory to full-attention KV memory in AUTO mode.
+  // Ratio of linear-state memory to full-attention KV memory in auto mode.
   PROPERTY(double, linear_state_full_kv_memory_ratio) = 0.9;
-
-  // Minimum full-attention KV blocks to preserve when reserving linear states.
-  PROPERTY(int64_t, min_full_kv_cache_blocks) = 0;
-
-  PROPERTY(LinearStateCachePolicy, policy) = LinearStateCachePolicy::AUTO;
 };
 
 void validate_linear_state_cache_options(

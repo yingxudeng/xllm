@@ -55,10 +55,8 @@ const OptionCategory kCacheOptions = {"KV CACHE OPTIONS",
                                        "max_cache_size",
                                        "max_memory_utilization",
                                        "kv_cache_dtype",
-                                       "linear_state_cache_policy",
                                        "max_linear_state_cache_slots",
-                                       "linear_state_full_kv_memory_ratio",
-                                       "min_full_kv_cache_blocks"}};
+                                       "linear_state_full_kv_memory_ratio"}};
 
 const OptionCategory kMoeModelOptions = {
     "MOE MODEL OPTIONS",

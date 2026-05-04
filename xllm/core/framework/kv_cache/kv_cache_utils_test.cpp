@@ -22,23 +22,11 @@ limitations under the License.
 namespace xllm {
 namespace {
 
-TEST(KVCacheUtilsTest, CompatLinearStateBlocksFollowMaxSeqs) {
-  EXPECT_EQ(calculate_linear_state_blocks(/*max_seqs_per_batch=*/4,
-                                          /*cache_size_in_bytes=*/10000,
-                                          /*num_linear_attention_layers=*/1,
-                                          /*linear_slot_size=*/10,
-                                          /*num_full_attention_layers=*/1,
-                                          /*full_attention_block_size=*/100),
-            6);
-}
-
 TEST(KVCacheUtilsTest, AutoLinearStateBlocksAreMemoryRatioDerived) {
   LinearStateCacheOptions options;
-  options.policy(LinearStateCachePolicy::AUTO)
-      .linear_state_full_kv_memory_ratio(1.0);
+  options.linear_state_full_kv_memory_ratio(1.0);
 
-  EXPECT_EQ(calculate_linear_state_blocks(/*max_seqs_per_batch=*/1,
-                                          /*cache_size_in_bytes=*/10000,
+  EXPECT_EQ(calculate_linear_state_blocks(/*cache_size_in_bytes=*/10000,
                                           /*num_linear_attention_layers=*/1,
                                           /*linear_slot_size=*/100,
                                           /*num_full_attention_layers=*/1,
@@ -47,34 +35,25 @@ TEST(KVCacheUtilsTest, AutoLinearStateBlocksAreMemoryRatioDerived) {
             50);
 }
 
-TEST(KVCacheUtilsTest, AutoLinearStateBlocksDoNotDependOnMaxSeqs) {
+TEST(KVCacheUtilsTest, AutoLinearStateBlocksUseRatioWhenSlotsUnset) {
   LinearStateCacheOptions options;
-  options.policy(LinearStateCachePolicy::AUTO)
-      .linear_state_full_kv_memory_ratio(1.0);
+  options.max_linear_state_cache_slots(0).linear_state_full_kv_memory_ratio(
+      0.5);
 
-  EXPECT_EQ(calculate_linear_state_blocks(/*max_seqs_per_batch=*/1,
-                                          /*cache_size_in_bytes=*/10000,
+  EXPECT_EQ(calculate_linear_state_blocks(/*cache_size_in_bytes=*/12000,
                                           /*num_linear_attention_layers=*/1,
                                           /*linear_slot_size=*/100,
                                           /*num_full_attention_layers=*/1,
                                           /*full_attention_block_size=*/100,
                                           options),
-            calculate_linear_state_blocks(/*max_seqs_per_batch=*/1024,
-                                          /*cache_size_in_bytes=*/10000,
-                                          /*num_linear_attention_layers=*/1,
-                                          /*linear_slot_size=*/100,
-                                          /*num_full_attention_layers=*/1,
-                                          /*full_attention_block_size=*/100,
-                                          options));
+            40);
 }
 
-TEST(KVCacheUtilsTest, FixedLinearStateBlocksUseExplicitSlotCapacity) {
+TEST(KVCacheUtilsTest, ExplicitLinearStateBlocksUseSlotCapacity) {
   LinearStateCacheOptions options;
-  options.policy(LinearStateCachePolicy::FIXED)
-      .max_linear_state_cache_slots(12);
+  options.max_linear_state_cache_slots(12);
 
-  EXPECT_EQ(calculate_linear_state_blocks(/*max_seqs_per_batch=*/1,
-                                          /*cache_size_in_bytes=*/10000,
+  EXPECT_EQ(calculate_linear_state_blocks(/*cache_size_in_bytes=*/10000,
                                           /*num_linear_attention_layers=*/1,
                                           /*linear_slot_size=*/100,
                                           /*num_full_attention_layers=*/1,
@@ -83,13 +62,11 @@ TEST(KVCacheUtilsTest, FixedLinearStateBlocksUseExplicitSlotCapacity) {
             14);
 }
 
-TEST(KVCacheUtilsTest, FixedLinearStateBlocksAreBoundedByKvBudget) {
+TEST(KVCacheUtilsTest, ExplicitLinearStateBlocksAreBoundedByKvBudget) {
   LinearStateCacheOptions options;
-  options.policy(LinearStateCachePolicy::FIXED)
-      .max_linear_state_cache_slots(1024);
+  options.max_linear_state_cache_slots(1024);
 
-  EXPECT_EQ(calculate_linear_state_blocks(/*max_seqs_per_batch=*/1,
-                                          /*cache_size_in_bytes=*/10000,
+  EXPECT_EQ(calculate_linear_state_blocks(/*cache_size_in_bytes=*/10000,
                                           /*num_linear_attention_layers=*/1,
                                           /*linear_slot_size=*/100,
                                           /*num_full_attention_layers=*/1,
@@ -98,51 +75,17 @@ TEST(KVCacheUtilsTest, FixedLinearStateBlocksAreBoundedByKvBudget) {
             51);
 }
 
-TEST(KVCacheUtilsTest, LinearStateBlocksPreserveMinimumFullKvBlocks) {
+TEST(KVCacheUtilsTest, AutoLinearStateBlocksAreBoundedByKvBudget) {
   LinearStateCacheOptions options;
-  options.policy(LinearStateCachePolicy::AUTO)
-      .linear_state_full_kv_memory_ratio(1.0)
-      .min_full_kv_cache_blocks(80);
+  options.linear_state_full_kv_memory_ratio(1.0);
 
-  EXPECT_EQ(calculate_linear_state_blocks(/*max_seqs_per_batch=*/1,
-                                          /*cache_size_in_bytes=*/10000,
+  EXPECT_EQ(calculate_linear_state_blocks(/*cache_size_in_bytes=*/10000,
                                           /*num_linear_attention_layers=*/1,
                                           /*linear_slot_size=*/100,
                                           /*num_full_attention_layers=*/1,
                                           /*full_attention_block_size=*/100,
                                           options),
-            20);
-}
-
-TEST(KVCacheUtilsTest, CompatLinearStateBlocksPreserveMinimumFullKvBlocks) {
-  LinearStateCacheOptions options;
-  options.policy(LinearStateCachePolicy::COMPAT).min_full_kv_cache_blocks(80);
-
-  EXPECT_EQ(calculate_linear_state_blocks(/*max_seqs_per_batch=*/1024,
-                                          /*cache_size_in_bytes=*/10000,
-                                          /*num_linear_attention_layers=*/1,
-                                          /*linear_slot_size=*/100,
-                                          /*num_full_attention_layers=*/1,
-                                          /*full_attention_block_size=*/100,
-                                          options),
-            20);
-}
-
-TEST(KVCacheUtilsTest, MinFullKvBlocksMustFitWithLinearStatePadding) {
-  LinearStateCacheOptions options;
-  options.policy(LinearStateCachePolicy::AUTO)
-      .linear_state_full_kv_memory_ratio(1.0)
-      .min_full_kv_cache_blocks(99);
-
-  EXPECT_DEATH(calculate_linear_state_blocks(
-                   /*max_seqs_per_batch=*/1,
-                   /*cache_size_in_bytes=*/10000,
-                   /*num_linear_attention_layers=*/1,
-                   /*linear_slot_size=*/100,
-                   /*num_full_attention_layers=*/1,
-                   /*full_attention_block_size=*/100,
-                   options),
-               "min_full_kv_cache_blocks cannot be preserved");
+            50);
 }
 
 TEST(KVCacheUtilsTest, LinearStateCacheRatioMustBeFinite) {
@@ -153,13 +96,19 @@ TEST(KVCacheUtilsTest, LinearStateCacheRatioMustBeFinite) {
   EXPECT_DEATH(validate_linear_state_cache_options(options), "must be finite");
 }
 
+TEST(KVCacheUtilsTest, MaxLinearStateCacheSlotsMustBeNonNegative) {
+  LinearStateCacheOptions options;
+  options.max_linear_state_cache_slots(-1);
+
+  EXPECT_DEATH(validate_linear_state_cache_options(options),
+               "must be greater than or equal to 0");
+}
+
 TEST(KVCacheUtilsTest, AutoLinearStateBlocksHandlesVeryLargeFiniteRatio) {
   LinearStateCacheOptions options;
-  options.policy(LinearStateCachePolicy::AUTO)
-      .linear_state_full_kv_memory_ratio(std::numeric_limits<double>::max());
+  options.linear_state_full_kv_memory_ratio(std::numeric_limits<double>::max());
 
-  EXPECT_EQ(calculate_linear_state_blocks(/*max_seqs_per_batch=*/1,
-                                          /*cache_size_in_bytes=*/10000,
+  EXPECT_EQ(calculate_linear_state_blocks(/*cache_size_in_bytes=*/10000,
                                           /*num_linear_attention_layers=*/1,
                                           /*linear_slot_size=*/100,
                                           /*num_full_attention_layers=*/1,
