@@ -20,7 +20,6 @@ limitations under the License.
 #include <torch/torch.h>
 
 #include <array>
-#include <deque>
 #include <memory>
 #include <unordered_map>
 
@@ -204,6 +203,7 @@ class WorkerImpl {
   void prepare_mla_prefixcache_inputs(ModelInputParams& input_params);
 
   void restore_linear_state_snapshots(ModelInputParams& input_params);
+  void prune_linear_state_snapshots(const ModelInputParams& input_params);
   void save_linear_state_snapshots(const ModelInputParams& input_params);
 
   void init_hierarchy_kv_cache_transfer();
@@ -243,7 +243,6 @@ class WorkerImpl {
                      LinearStateSnapshot,
                      LinearStatePrefixHashHasher>
       linear_state_snapshots_;
-  std::deque<LinearStatePrefixHash> linear_state_snapshot_lru_;
   std::unordered_map<int32_t, std::string> active_linear_state_requests_;
 
 #if defined(USE_CUDA)

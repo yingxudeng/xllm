@@ -416,6 +416,12 @@ void BlockManagerPool::get_merged_kvcache_event(KvCacheEvent* event) const {
   }
 }
 
+void BlockManagerPool::drain_prefix_cache_event(KvCacheEvent* event) const {
+  for (int32_t i = 0; i < block_managers_.size(); ++i) {
+    block_managers_[i]->drain_prefix_cache_event(event);
+  }
+}
+
 float BlockManagerPool::get_gpu_cache_usage_perc() const {
   float perc = 0.0;
   for (int32_t i = 0; i < block_managers_.size(); ++i) {

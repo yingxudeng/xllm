@@ -521,4 +521,34 @@ TEST(BlockManagerPoolTest, AllocateAfterPrefixCacheHitAllocatesSuffixBlocks) {
             hit_seq.num_tokens());
 }
 
+TEST(BlockManagerPoolTest, DrainsPrefixCacheEvictionEvents) {
+  ScopedValue<int32_t> max_seqs_guard(&FLAGS_max_seqs_per_batch, 4);
+
+  BlockManagerPool::Options options;
+  options.num_blocks(4).host_num_blocks(0).block_size(1).enable_prefix_cache(
+      true);
+  BlockManagerPool pool(options, /*dp_size=*/1);
+
+  Sequence cached_seq = MakeSequence(0, /*prompt_tokens=*/{1, 2});
+  ASSERT_TRUE(pool.allocate(&cached_seq));
+  cached_seq.kv_state().set_kv_cache_tokens_num(cached_seq.num_tokens());
+  pool.deallocate(&cached_seq);
+
+  KvCacheEvent insert_event;
+  pool.drain_prefix_cache_event(&insert_event);
+  ASSERT_EQ(insert_event.stored_cache.size(), 2u);
+  ASSERT_TRUE(insert_event.removed_cache.empty());
+
+  Sequence pressure_seq = MakeSequence(1, /*prompt_tokens=*/{3, 4, 5});
+  ASSERT_TRUE(pool.allocate(&pressure_seq, pressure_seq.num_tokens()));
+
+  KvCacheEvent evict_event;
+  pool.drain_prefix_cache_event(&evict_event);
+  EXPECT_TRUE(evict_event.stored_cache.empty());
+  EXPECT_EQ(evict_event.removed_cache.size(), 2u);
+  for (const XXH3Key& key : evict_event.removed_cache) {
+    EXPECT_EQ(insert_event.stored_cache.count(key), 1u);
+  }
+}
+
 }  // namespace xllm

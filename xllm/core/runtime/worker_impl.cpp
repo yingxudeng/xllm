@@ -75,8 +75,6 @@ constexpr uint32_t TIMEOUT_MS = 60000;  // millisecond
 
 namespace {
 
-constexpr size_t kMaxLinearStateSnapshots = 256;
-
 bool is_zero_prefix_hash(
     const std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>& prefix_hash) {
   return std::all_of(prefix_hash.begin(), prefix_hash.end(), [](uint8_t value) {
@@ -566,6 +564,7 @@ void WorkerImpl::prepare_work_before_execute(const ForwardInput& input,
 
     if (has_linear_attention_layers(context_.get_model_args())) {
       prepare_input_params_for_linear_attention(processed_input.input_params);
+      prune_linear_state_snapshots(processed_input.input_params);
       restore_linear_state_snapshots(processed_input.input_params);
     }
 #endif
@@ -626,8 +625,8 @@ void WorkerImpl::restore_linear_state_snapshots(
 
     if (restore_linear_state_snapshot(
             input_params.linear_state_prefix_hashes[i], linear_state_id)) {
-      LOG(INFO) << "Qwen3.5 linear state snapshot restored; linear_state_id="
-                << linear_state_id;
+      VLOG(1) << "Qwen3.5 linear state snapshot restored; linear_state_id="
+              << linear_state_id;
       input_params.has_initial_state[i] = 1;
       active_linear_state_requests_[linear_state_id] = request_id;
       continue;
@@ -638,10 +637,20 @@ void WorkerImpl::restore_linear_state_snapshots(
   }
 }
 
+void WorkerImpl::prune_linear_state_snapshots(
+    const ModelInputParams& input_params) {
+  for (const LinearStatePrefixHash& prefix_hash :
+       input_params.linear_state_evict_prefix_hashes) {
+    if (is_zero_prefix_hash(prefix_hash)) {
+      continue;
+    }
+    linear_state_snapshots_.erase(prefix_hash);
+  }
+}
+
 void WorkerImpl::save_linear_state_snapshots(
     const ModelInputParams& input_params) {
-  if (!input_params.batch_forward_type.no_decode() ||
-      input_params.linear_state_ids.empty()) {
+  if (!FLAGS_enable_prefix_cache || input_params.linear_state_ids.empty()) {
     return;
   }
 
@@ -651,8 +660,8 @@ void WorkerImpl::save_linear_state_snapshots(
     if (is_zero_prefix_hash(input_params.linear_state_save_prefix_hashes[i])) {
       continue;
     }
-    LOG(INFO) << "Qwen3.5 linear state snapshot saved; linear_state_id="
-              << input_params.linear_state_ids[i];
+    VLOG(1) << "Qwen3.5 linear state snapshot saved; linear_state_id="
+            << input_params.linear_state_ids[i];
     save_linear_state_snapshot(input_params.linear_state_save_prefix_hashes[i],
                                input_params.linear_state_ids[i]);
   }
@@ -684,16 +693,7 @@ void WorkerImpl::save_linear_state_snapshot(
     return;
   }
 
-  const bool is_new_snapshot = linear_state_snapshots_.count(prefix_hash) == 0;
   linear_state_snapshots_[prefix_hash] = std::move(snapshot);
-  if (is_new_snapshot) {
-    linear_state_snapshot_lru_.emplace_back(prefix_hash);
-  }
-
-  while (linear_state_snapshot_lru_.size() > kMaxLinearStateSnapshots) {
-    linear_state_snapshots_.erase(linear_state_snapshot_lru_.front());
-    linear_state_snapshot_lru_.pop_front();
-  }
 }
 
 bool WorkerImpl::restore_linear_state_snapshot(

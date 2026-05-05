@@ -2059,6 +2059,7 @@ inline void deserialize_raw_forward_input(const char*& buffer,
   read_string_vector(context, input_params.linear_state_request_ids);
   read_vector(context, input_params.linear_state_prefix_hashes);
   read_vector(context, input_params.linear_state_save_prefix_hashes);
+  read_vector(context, input_params.linear_state_evict_prefix_hashes);
   read_string_vector(context, input_params.request_ids);
   normalize_linear_state_metadata(input_params.linear_state_ids,
                                   input_params.request_ids,
@@ -2174,6 +2175,7 @@ inline void serialize_raw_forward_input_sections(
   write_string_vector(context.descriptor, input.linear_state_request_ids);
   write_vector(context.descriptor, input.linear_state_prefix_hashes);
   write_vector(context.descriptor, input.linear_state_save_prefix_hashes);
+  write_vector(context.descriptor, input.linear_state_evict_prefix_hashes);
   write_string_vector(context.descriptor, input.request_ids);
   write_vector(context.descriptor, input.extra_token_ids);
   write_swap_blocks(context, input.swap_blocks);
@@ -2424,6 +2426,8 @@ void convert_raw_forward_input_to_forward_input(RawForwardInput& raw_input,
       std::move(raw_input.linear_state_prefix_hashes);
   input_params.linear_state_save_prefix_hashes =
       std::move(raw_input.linear_state_save_prefix_hashes);
+  input_params.linear_state_evict_prefix_hashes =
+      std::move(raw_input.linear_state_evict_prefix_hashes);
   input_params.request_ids = std::move(raw_input.request_ids);
   normalize_linear_state_ids(input_params.linear_state_ids,
                              input_params.num_sequences);

@@ -31,6 +31,7 @@ limitations under the License.
 #include "framework/block/block.h"
 #include "framework/model/model_args.h"
 #include "framework/model/model_input_params.h"
+#include "framework/prefix_cache/prefix_cache.h"
 #include "framework/request/sequence.h"
 #include "framework/sampling/sampling_params.h"
 #include "runtime/params_utils.h"
@@ -48,32 +49,6 @@ uint32_t get_sample_source_position(const SampleSlot& sample_slot) {
     return 0;
   }
   return static_cast<uint32_t>(sample_slot.token_position - 1);
-}
-
-void update_prefix_hash(const uint8_t* previous_hash,
-                        const Slice<int32_t>& token_ids,
-                        uint8_t* hash) {
-  if (previous_hash == nullptr) {
-    XXH128_hash_t hash_value =
-        XXH3_128bits_withSeed(reinterpret_cast<const void*>(token_ids.data()),
-                              sizeof(int32_t) * token_ids.size(),
-                              FLAGS_xxh3_128bits_seed);
-    std::memcpy(hash, &hash_value, sizeof(hash_value));
-    return;
-  }
-
-  uint8_t key[1024];
-  const int32_t data_len = static_cast<int32_t>(
-      sizeof(int32_t) * token_ids.size() + XXH3_128BITS_HASH_VALUE_LEN);
-  CHECK_GT(sizeof(key), data_len) << "key size is too small";
-  std::memcpy(key, previous_hash, XXH3_128BITS_HASH_VALUE_LEN);
-  std::memcpy(key + XXH3_128BITS_HASH_VALUE_LEN,
-              reinterpret_cast<const void*>(token_ids.data()),
-              sizeof(int32_t) * token_ids.size());
-
-  XXH128_hash_t hash_value = XXH3_128bits_withSeed(
-      reinterpret_cast<const void*>(key), data_len, FLAGS_xxh3_128bits_seed);
-  std::memcpy(hash, &hash_value, sizeof(hash_value));
 }
 
 std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN> get_prefix_boundary_hash(
@@ -138,7 +113,7 @@ std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN> compute_prefix_boundary_hash(
 
   for (size_t block_idx = shared_blocks; block_idx < boundary_blocks;
        ++block_idx) {
-    update_prefix_hash(
+    xxh3_128bits_hash(
         previous_hash,
         token_ids.slice(block_idx * block_size, (block_idx + 1) * block_size),
         hash.data());

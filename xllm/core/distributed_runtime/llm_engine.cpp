@@ -22,9 +22,11 @@ limitations under the License.
 #include <glog/logging.h>
 
 #include <algorithm>
+#include <array>
 #include <boost/algorithm/string.hpp>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 
 #include "common/device_monitor.h"
@@ -49,6 +51,31 @@ limitations under the License.
 #include "util/utils.h"
 
 namespace {
+using LinearStatePrefixHash =
+    std::array<uint8_t, xllm::XXH3_128BITS_HASH_VALUE_LEN>;
+
+void append_removed_prefix_hashes(const xllm::KvCacheEvent& event,
+                                  std::vector<xllm::RawForwardInput>* inputs) {
+  if (event.removed_cache.empty() || inputs == nullptr) {
+    return;
+  }
+
+  std::vector<LinearStatePrefixHash> removed_prefix_hashes;
+  removed_prefix_hashes.reserve(event.removed_cache.size());
+  for (const xllm::XXH3Key& key : event.removed_cache) {
+    LinearStatePrefixHash hash{};
+    std::memcpy(hash.data(), key.data, xllm::XXH3_128BITS_HASH_VALUE_LEN);
+    removed_prefix_hashes.emplace_back(hash);
+  }
+
+  for (xllm::RawForwardInput& input : *inputs) {
+    input.linear_state_evict_prefix_hashes.insert(
+        input.linear_state_evict_prefix_hashes.end(),
+        removed_prefix_hashes.begin(),
+        removed_prefix_hashes.end());
+  }
+}
+
 int64_t get_kv_cache_dtype_size_in_bytes(const std::string& kv_cache_dtype,
                                          int64_t model_dtype_size) {
   if (kv_cache_dtype == "auto") {
@@ -1230,6 +1257,10 @@ std::vector<RawForwardInput> LLMEngine::prepare_inputs(
       batched_inputs[dp_rank].batch_forward_type = batch_forward_type;
     }
   }
+
+  KvCacheEvent prefix_cache_event;
+  block_manager_pool()->drain_prefix_cache_event(&prefix_cache_event);
+  append_removed_prefix_hashes(prefix_cache_event, &batched_inputs);
 
   return batched_inputs;
 }

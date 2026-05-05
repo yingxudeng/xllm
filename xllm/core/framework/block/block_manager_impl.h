@@ -48,6 +48,7 @@ class BlockManagerImpl : public BlockManager {
   void cache(const std::vector<Block>& blocks) override;
 
   void get_merged_kvcache_event(KvCacheEvent* event) const override;
+  void drain_prefix_cache_event(KvCacheEvent* event) const override;
 
   size_t num_blocks_in_prefix_cache() const override {
     if (options_.enable_prefix_cache()) {

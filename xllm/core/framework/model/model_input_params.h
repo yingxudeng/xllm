@@ -369,6 +369,7 @@ struct ModelInputParams {
     params.linear_state_indices = safe_to(linear_state_indices, device, true);
     params.linear_state_prefix_hashes = linear_state_prefix_hashes;
     params.linear_state_save_prefix_hashes = linear_state_save_prefix_hashes;
+    params.linear_state_evict_prefix_hashes = linear_state_evict_prefix_hashes;
     params.request_ids = std::move(request_ids);
     params.extra_token_ids = std::move(extra_token_ids);
     params.dp_ep_padding_data = dp_ep_padding_data;
@@ -578,6 +579,10 @@ struct ModelInputParams {
   // Prefix hash for the post-forward block boundary of each row.
   std::vector<std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>>
       linear_state_save_prefix_hashes;
+
+  // Prefix hashes evicted from KV prefix cache before this forward.
+  std::vector<std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>>
+      linear_state_evict_prefix_hashes;
 
   // IntTensor: [n_seq]
   torch::Tensor linear_state_indices;
