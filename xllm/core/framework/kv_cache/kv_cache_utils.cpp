@@ -25,6 +25,7 @@ namespace xllm {
 namespace {
 
 constexpr int64_t kPaddingLinearStateBlocks = 2;
+constexpr double kDefaultLinearStateFullKvMemoryRatio = 0.9;
 
 int64_t clamp_linear_state_blocks(int64_t requested_blocks,
                                   int64_t cache_size_in_bytes,
@@ -61,26 +62,21 @@ int64_t clamp_linear_state_blocks(int64_t requested_blocks,
       kPaddingLinearStateBlocks);
 }
 
-int64_t calculate_auto_linear_state_blocks(
-    int64_t cache_size_in_bytes,
-    int64_t num_linear_attention_layers,
-    int64_t linear_slot_size,
-    const LinearStateCacheOptions& options) {
+int64_t calculate_auto_linear_state_blocks(int64_t cache_size_in_bytes,
+                                           int64_t num_linear_attention_layers,
+                                           int64_t linear_slot_size) {
   if (linear_slot_size <= 0 || num_linear_attention_layers <= 0) {
     return kPaddingLinearStateBlocks;
   }
   CHECK_GT(cache_size_in_bytes, 0);
-  CHECK_GT(options.linear_state_full_kv_memory_ratio(), 0.0);
 
   const int64_t linear_bytes_per_block =
       num_linear_attention_layers * linear_slot_size;
   CHECK_GT(linear_bytes_per_block, 0);
 
   const double linear_memory_fraction =
-      options.linear_state_full_kv_memory_ratio() /
-      (1.0 + options.linear_state_full_kv_memory_ratio());
-  CHECK(std::isfinite(linear_memory_fraction))
-      << "linear_state_full_kv_memory_ratio is too large.";
+      kDefaultLinearStateFullKvMemoryRatio /
+      (1.0 + kDefaultLinearStateFullKvMemoryRatio);
   const double linear_memory_bytes =
       static_cast<double>(cache_size_in_bytes) * linear_memory_fraction;
   return std::max<int64_t>(
@@ -109,8 +105,7 @@ int64_t calculate_linear_state_blocks(int64_t cache_size_in_bytes,
           ? options.max_linear_state_cache_slots() + kPaddingLinearStateBlocks
           : calculate_auto_linear_state_blocks(cache_size_in_bytes,
                                                num_linear_attention_layers,
-                                               linear_slot_size,
-                                               options);
+                                               linear_slot_size);
   return clamp_linear_state_blocks(requested_blocks,
                                    cache_size_in_bytes,
                                    num_linear_attention_layers,

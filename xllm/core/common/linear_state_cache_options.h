@@ -22,11 +22,8 @@ limitations under the License.
 namespace xllm {
 
 struct LinearStateCacheOptions {
-  // Active linear-state slots. 0 derives capacity from the memory ratio.
+  // Active linear-state slots. 0 derives capacity from the KV cache budget.
   PROPERTY(int64_t, max_linear_state_cache_slots) = 0;
-
-  // Ratio of linear-state memory to full-attention KV memory in auto mode.
-  PROPERTY(double, linear_state_full_kv_memory_ratio) = 0.9;
 };
 
 void validate_linear_state_cache_options(

@@ -47,7 +47,6 @@ DECLARE_int64(max_cache_size);
 DECLARE_double(max_memory_utilization);
 DECLARE_string(kv_cache_dtype);
 DECLARE_int64(max_linear_state_cache_slots);
-DECLARE_double(linear_state_full_kv_memory_ratio);
 
 DECLARE_bool(enable_prefix_cache);
 

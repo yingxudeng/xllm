@@ -586,10 +586,7 @@ KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
              kv_cache_cap.linear_cache_size_in_bytes())
         << "failed to reserve linear state cache for linear-attention layers: "
         << "max_linear_state_cache_slots "
-        << options_.linear_state_cache_options().max_linear_state_cache_slots()
-        << ", linear_state_full_kv_memory_ratio "
-        << options_.linear_state_cache_options()
-               .linear_state_full_kv_memory_ratio();
+        << options_.linear_state_cache_options().max_linear_state_cache_slots();
   }
   CHECK_GT(available_full_cache_size_in_bytes, 0)
       << "no memory left for full-attention kv cache after reserving linear "
@@ -614,9 +611,6 @@ bool LLMEngine::allocate_kv_cache(const KVCacheCapacity& kv_cache_cap) {
       << std::max<int64_t>(kv_cache_cap.num_linear_state_blocks() - 2, 0)
       << ", max_linear_state_cache_slots: "
       << options_.linear_state_cache_options().max_linear_state_cache_slots()
-      << ", linear_state_full_kv_memory_ratio: "
-      << options_.linear_state_cache_options()
-             .linear_state_full_kv_memory_ratio()
       << ", reserved_linear_bytes: "
       << readable_size(kv_cache_cap.linear_cache_size_in_bytes())
       << ", n_layers: " << kv_cache_cap.n_layers()

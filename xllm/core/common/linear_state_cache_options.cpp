@@ -17,18 +17,12 @@ limitations under the License.
 
 #include <glog/logging.h>
 
-#include <cmath>
-
 namespace xllm {
 
 void validate_linear_state_cache_options(
     const LinearStateCacheOptions& options) {
   CHECK_GE(options.max_linear_state_cache_slots(), 0)
       << "max_linear_state_cache_slots must be greater than or equal to 0.";
-  CHECK(std::isfinite(options.linear_state_full_kv_memory_ratio()))
-      << "linear_state_full_kv_memory_ratio must be finite.";
-  CHECK_GT(options.linear_state_full_kv_memory_ratio(), 0.0)
-      << "linear_state_full_kv_memory_ratio must be greater than 0.";
 }
 
 }  // namespace xllm

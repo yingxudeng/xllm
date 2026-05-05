@@ -17,14 +17,11 @@ limitations under the License.
 
 #include <gtest/gtest.h>
 
-#include <limits>
-
 namespace xllm {
 namespace {
 
-TEST(KVCacheUtilsTest, AutoLinearStateBlocksAreMemoryRatioDerived) {
+TEST(KVCacheUtilsTest, AutoLinearStateBlocksAreDerivedFromKvBudget) {
   LinearStateCacheOptions options;
-  options.linear_state_full_kv_memory_ratio(1.0);
 
   EXPECT_EQ(calculate_linear_state_blocks(/*cache_size_in_bytes=*/10000,
                                           /*num_linear_attention_layers=*/1,
@@ -32,21 +29,7 @@ TEST(KVCacheUtilsTest, AutoLinearStateBlocksAreMemoryRatioDerived) {
                                           /*num_full_attention_layers=*/1,
                                           /*full_attention_block_size=*/100,
                                           options),
-            50);
-}
-
-TEST(KVCacheUtilsTest, AutoLinearStateBlocksUseRatioWhenSlotsUnset) {
-  LinearStateCacheOptions options;
-  options.max_linear_state_cache_slots(0).linear_state_full_kv_memory_ratio(
-      0.5);
-
-  EXPECT_EQ(calculate_linear_state_blocks(/*cache_size_in_bytes=*/12000,
-                                          /*num_linear_attention_layers=*/1,
-                                          /*linear_slot_size=*/100,
-                                          /*num_full_attention_layers=*/1,
-                                          /*full_attention_block_size=*/100,
-                                          options),
-            40);
+            47);
 }
 
 TEST(KVCacheUtilsTest, ExplicitLinearStateBlocksUseSlotCapacity) {
@@ -77,7 +60,6 @@ TEST(KVCacheUtilsTest, ExplicitLinearStateBlocksAreBoundedByKvBudget) {
 
 TEST(KVCacheUtilsTest, AutoLinearStateBlocksAreBoundedByKvBudget) {
   LinearStateCacheOptions options;
-  options.linear_state_full_kv_memory_ratio(1.0);
 
   EXPECT_EQ(calculate_linear_state_blocks(/*cache_size_in_bytes=*/10000,
                                           /*num_linear_attention_layers=*/1,
@@ -85,15 +67,7 @@ TEST(KVCacheUtilsTest, AutoLinearStateBlocksAreBoundedByKvBudget) {
                                           /*num_full_attention_layers=*/1,
                                           /*full_attention_block_size=*/100,
                                           options),
-            50);
-}
-
-TEST(KVCacheUtilsTest, LinearStateCacheRatioMustBeFinite) {
-  LinearStateCacheOptions options;
-  options.linear_state_full_kv_memory_ratio(
-      std::numeric_limits<double>::infinity());
-
-  EXPECT_DEATH(validate_linear_state_cache_options(options), "must be finite");
+            47);
 }
 
 TEST(KVCacheUtilsTest, MaxLinearStateCacheSlotsMustBeNonNegative) {
@@ -102,19 +76,6 @@ TEST(KVCacheUtilsTest, MaxLinearStateCacheSlotsMustBeNonNegative) {
 
   EXPECT_DEATH(validate_linear_state_cache_options(options),
                "must be greater than or equal to 0");
-}
-
-TEST(KVCacheUtilsTest, AutoLinearStateBlocksHandlesVeryLargeFiniteRatio) {
-  LinearStateCacheOptions options;
-  options.linear_state_full_kv_memory_ratio(std::numeric_limits<double>::max());
-
-  EXPECT_EQ(calculate_linear_state_blocks(/*cache_size_in_bytes=*/10000,
-                                          /*num_linear_attention_layers=*/1,
-                                          /*linear_slot_size=*/100,
-                                          /*num_full_attention_layers=*/1,
-                                          /*full_attention_block_size=*/100,
-                                          options),
-            51);
 }
 
 }  // namespace

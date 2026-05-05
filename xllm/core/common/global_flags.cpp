@@ -146,14 +146,8 @@ DEFINE_string(
 
 DEFINE_int64(max_linear_state_cache_slots,
              0,
-             "Maximum active linear-attention state cache slots. 0 derives "
-             "capacity from linear_state_full_kv_memory_ratio; values greater "
-             "than 0 use the explicit slot capacity.");
-
-DEFINE_double(linear_state_full_kv_memory_ratio,
-              0.9,
-              "Target linear-state memory to full-attention KV memory ratio "
-              "when max_linear_state_cache_slots is 0.");
+             "Maximum active linear-attention state cache slots. 0 derives an "
+             "automatic capacity from the available KV cache budget.");
 
 // --- scheduler config ---
 
