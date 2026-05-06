@@ -21,12 +21,30 @@ limitations under the License.
 #include <cmath>
 #include <optional>
 
+#include "common/global_flags.h"
 #include "distributed_runtime/engine.h"
 #include "util/utils.h"
 
 namespace xllm {
 
 namespace {
+
+template <typename T>
+class ScopedValue final {
+ public:
+  ScopedValue(T* target, T value) : target_(target), old_(*target) {
+    *target_ = value;
+  }
+  ~ScopedValue() { *target_ = old_; }
+
+  ScopedValue(const ScopedValue&) = delete;
+  ScopedValue& operator=(const ScopedValue&) = delete;
+
+ private:
+  T* target_;
+  T old_;
+};
+
 class FakeTokenizer : public Tokenizer {
  public:
   bool encode(const std::string_view& text,
@@ -50,11 +68,16 @@ class FakeTokenizer : public Tokenizer {
 
 class FakeEngine : public Engine {
  public:
-  FakeEngine(int32_t num_blocks, int32_t block_size) {
+  FakeEngine(int32_t num_blocks,
+             int32_t block_size,
+             bool enable_linear_attention = false) {
     BlockManagerPool::Options opt;
     opt.num_blocks_ = num_blocks;
     opt.block_size_ = block_size;
     opt.enable_prefix_cache_ = false;  // we dont consider prefix cache here
+    if (enable_linear_attention) {
+      model_args_.layer_types({"linear_attention"});
+    }
     fake_tokenizer_ = std::make_unique<FakeTokenizer>();
     fake_block_manager_ = std::make_unique<BlockManagerPool>(opt, 1);
   }
@@ -64,10 +87,7 @@ class FakeEngine : public Engine {
   BlockManagerPool* block_manager_pool() const {
     return fake_block_manager_.get();
   }
-  const ModelArgs& model_args() const {
-    static ModelArgs args;
-    return args;
-  }
+  const ModelArgs& model_args() const { return model_args_; }
   const TokenizerArgs& tokenizer_args() const { NOT_IMPLEMENTED(); }
   std::vector<int64_t> get_active_activation_memory() const {
     NOT_IMPLEMENTED();
@@ -77,6 +97,7 @@ class FakeEngine : public Engine {
  private:
   std::unique_ptr<Tokenizer> fake_tokenizer_;
   std::unique_ptr<BlockManagerPool> fake_block_manager_;
+  ModelArgs model_args_;
 };
 
 ContinuousScheduler::Options create_scheduler_options(
@@ -697,6 +718,39 @@ TEST(ChunkedPrefillSchedulerTest, LatencySchedule) {
   EXPECT_EQ(scheduler->get_running_requests().size(), 4);
   EXPECT_EQ(running_sequences_budgets.size(), 4);
   EXPECT_EQ(running_sequences_budgets[3], max_tokens_per_chunk_for_prefill);
+}
+
+TEST(ChunkedPrefillSchedulerTest,
+     LinearStatePrefillUsesChunkBudgetInsteadOfBlockBoundary) {
+  ScopedValue<bool> prefix_cache_guard(&FLAGS_enable_prefix_cache, true);
+
+  int block_num = 32;
+  int block_size = 128;
+  int max_tokens_per_chunk_for_prefill = 512;
+  ContinuousScheduler::Options opt =
+      create_scheduler_options(max_tokens_per_chunk_for_prefill,
+                               256,
+                               0,
+                               max_tokens_per_chunk_for_prefill,
+                               1);
+  auto engine = std::make_unique<FakeEngine>(block_num,
+                                             block_size,
+                                             /*enable_linear_attention=*/true);
+  auto scheduler = std::make_unique<ChunkedPrefillScheduler>(engine.get(), opt);
+  EXPECT_TRUE(scheduler != nullptr);
+
+  auto requests =
+      generate_request({1000}, {10}, std::nullopt, std::nullopt, 30000);
+  scheduler->add_request(requests[0]);
+
+  auto batch = scheduler->prepare_batch_test();
+  auto running_sequences_budgets = scheduler->get_running_sequences_budgets();
+
+  EXPECT_EQ(batch.size(), 1);
+  EXPECT_EQ(batch[0].size(), 1);
+  ASSERT_EQ(running_sequences_budgets.size(), 1u);
+  EXPECT_GT(running_sequences_budgets[0], block_size);
+  EXPECT_EQ(running_sequences_budgets[0], max_tokens_per_chunk_for_prefill);
 }
 
 }  // namespace xllm

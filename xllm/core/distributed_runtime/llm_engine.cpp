@@ -76,6 +76,40 @@ void append_removed_prefix_hashes(const xllm::KvCacheEvent& event,
   }
 }
 
+bool is_zero_prefix_hash(const LinearStatePrefixHash& prefix_hash) {
+  return std::all_of(prefix_hash.begin(), prefix_hash.end(), [](uint8_t value) {
+    return value == 0;
+  });
+}
+
+void record_linear_state_checkpoint_hashes(
+    xllm::BlockManagerPool* block_manager_pool,
+    int32_t dp_rank,
+    const std::vector<xllm::RawForwardInput>& raw_forward_inputs) {
+  CHECK_GE(dp_rank, 0);
+  CHECK_LT(static_cast<size_t>(dp_rank), raw_forward_inputs.size());
+  if (block_manager_pool == nullptr ||
+      raw_forward_inputs[dp_rank].linear_state_save_prefix_hashes.empty()) {
+    return;
+  }
+
+  std::vector<xllm::XXH3Key> checkpoint_hashes;
+  checkpoint_hashes.reserve(
+      raw_forward_inputs[dp_rank].linear_state_save_prefix_hashes.size());
+  for (const auto& prefix_hash :
+       raw_forward_inputs[dp_rank].linear_state_save_prefix_hashes) {
+    if (is_zero_prefix_hash(prefix_hash)) {
+      continue;
+    }
+    checkpoint_hashes.emplace_back(prefix_hash.data());
+  }
+  if (checkpoint_hashes.empty()) {
+    return;
+  }
+  block_manager_pool->record_linear_state_checkpoint_hashes(dp_rank,
+                                                            checkpoint_hashes);
+}
+
 int64_t get_kv_cache_dtype_size_in_bytes(const std::string& kv_cache_dtype,
                                          int64_t model_dtype_size) {
   if (kv_cache_dtype == "auto") {
@@ -1102,6 +1136,13 @@ ForwardOutput LLMEngine::step(std::vector<Batch>& batch) {
     ++dp_rank;
   }
 
+  for (int32_t dp_rank = 0;
+       dp_rank < static_cast<int32_t>(raw_forward_inputs.size());
+       ++dp_rank) {
+    record_linear_state_checkpoint_hashes(
+        block_manager_pool(), dp_rank, raw_forward_inputs);
+  }
+
   COUNTER_ADD(engine_latency_seconds, timer.elapsed_seconds());
   return {};
 }
@@ -1254,6 +1295,8 @@ std::vector<RawForwardInput> LLMEngine::prepare_inputs(
 
   KvCacheEvent prefix_cache_event;
   block_manager_pool()->drain_prefix_cache_event(&prefix_cache_event);
+  block_manager_pool()->prune_linear_state_checkpoint_hashes(
+      prefix_cache_event);
   append_removed_prefix_hashes(prefix_cache_event, &batched_inputs);
 
   return batched_inputs;

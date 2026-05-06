@@ -739,14 +739,14 @@ bool ChunkedPrefillScheduler::allocate_blocks_for(
   size_t max_handle_num_tokens =
       std::min(kv_cache_tokens_num + token_budget, sequence->num_tokens());
   if (has_linear_attention_layers(engine_->model_args()) &&
-      enable_prefix_cache_ && sequence->is_prefill_stage()) {
+      enable_prefix_cache_ && sequence->is_prefill_stage() &&
+      max_handle_num_tokens < sequence->num_tokens()) {
     const size_t block_size = kv_cache_manager_->block_size();
-    if (block_size > 0 && max_handle_num_tokens > kv_cache_tokens_num) {
-      const size_t next_boundary =
-          ((kv_cache_tokens_num / block_size) + 1) * block_size;
-      if (next_boundary < sequence->num_tokens()) {
-        max_handle_num_tokens = std::min(max_handle_num_tokens, next_boundary);
-      }
+    const size_t aligned_handle_num_tokens =
+        block_size == 0 ? max_handle_num_tokens
+                        : (max_handle_num_tokens / block_size) * block_size;
+    if (aligned_handle_num_tokens > kv_cache_tokens_num) {
+      max_handle_num_tokens = aligned_handle_num_tokens;
     }
   }
 

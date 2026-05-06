@@ -1158,6 +1158,12 @@ void AclGraph::print_graph_tensors() const {
 // bucket will be [1, 2, 4, 8, 16, 32, 48, 64, ..., max_seqs_per_batch]
 uint32_t AclGraphExecutorImpl::get_bucket_num_tokens(
     uint32_t num_tokens) const {
+  if (has_linear_attention_layers(args_)) {
+    // Linear/GDN layers update sequence-scoped recurrent caches during decode.
+    // Keep graph replay on the real batch size so padded rows cannot touch
+    // linear-state cache slots or enter causal-conv tiling.
+    return num_tokens;
+  }
   if (FLAGS_enable_graph_mode_decode_no_padding) {
     return num_tokens;
   }
