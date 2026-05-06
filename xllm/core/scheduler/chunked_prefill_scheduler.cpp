@@ -776,6 +776,14 @@ void ChunkedPrefillScheduler::allocate_shared_blocks_for(Sequence* sequence) {
     return;
   }
   if (sequence->is_chunked_prefill_stage()) {
+    if (has_linear_attention_layers(engine_->model_args()) &&
+        enable_prefix_cache_) {
+      // Linear-state prefix cache can only resume at saved state checkpoints.
+      // Re-match at every chunk boundary and let BlockManagerPool truncate the
+      // hit to checkpoint-backed blocks.
+      kv_cache_manager_->allocate_shared(sequence);
+      return;
+    }
     const size_t max_tokens_per_chunk_for_prefill =
         std::max(options_.max_tokens_per_chunk_for_prefill(), 64);
     size_t total_chunked_size =
