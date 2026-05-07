@@ -19,6 +19,7 @@ limitations under the License.
 #include <absl/time/clock.h>
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdint>
 #include <optional>
 
@@ -35,6 +36,17 @@ limitations under the License.
 #include "runtime/params_utils.h"
 
 namespace xllm {
+namespace {
+using LinearStatePrefixHash = std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>;
+
+LinearStatePrefixHash make_linear_state_prefix_hash(uint8_t base) {
+  LinearStatePrefixHash hash{};
+  for (size_t i = 0; i < hash.size(); ++i) {
+    hash[i] = static_cast<uint8_t>(base + i);
+  }
+  return hash;
+}
+}  // namespace
 
 template <typename T>
 bool equal(const torch::Tensor& t, const std::vector<T>& d) {
@@ -539,7 +551,7 @@ TEST(BatchTest, DecodeSingleBlockIdsStaySplitInTransportButShareSlotValue) {
   EXPECT_EQ(forward_input.input_params.linear_state_ids[0], expected_slot_id);
 }
 
-TEST(BatchTest, ProtoRoundTripPreservesAndDefaultsLinearStateIds) {
+TEST(BatchTest, ProtoRoundTripPreservesAndDefaultsLinearStateMetadata) {
   RawForwardInput raw_input;
   raw_input.batch_forward_type = BatchForwardType::DECODE;
   raw_input.flatten_tokens_vec = {1, 2};
@@ -553,6 +565,16 @@ TEST(BatchTest, ProtoRoundTripPreservesAndDefaultsLinearStateIds) {
   raw_input.block_tables_vec = {{0}, {0}};
   raw_input.num_sequences = 2;
   raw_input.linear_state_ids = {7, 9};
+  raw_input.linear_state_request_ids = {"request-0", "request-1"};
+  raw_input.linear_state_prefix_hashes = {
+      make_linear_state_prefix_hash(/*base=*/1),
+      make_linear_state_prefix_hash(/*base=*/17)};
+  raw_input.linear_state_save_prefix_hashes = {
+      make_linear_state_prefix_hash(/*base=*/33),
+      make_linear_state_prefix_hash(/*base=*/49)};
+  raw_input.linear_state_evict_prefix_hashes = {
+      make_linear_state_prefix_hash(/*base=*/113)};
+  raw_input.request_ids = {"fallback-0", "fallback-1"};
 
   proto::ForwardInput pb_forward_input;
   forward_input_to_proto(raw_input, &pb_forward_input);
@@ -563,9 +585,21 @@ TEST(BatchTest, ProtoRoundTripPreservesAndDefaultsLinearStateIds) {
                          /*num_decoding_tokens=*/1);
   EXPECT_EQ(round_trip.input_params.linear_state_ids,
             std::vector<int32_t>({7, 9}));
+  EXPECT_EQ(round_trip.input_params.linear_state_request_ids,
+            std::vector<std::string>({"request-0", "request-1"}));
+  EXPECT_EQ(round_trip.input_params.linear_state_prefix_hashes,
+            raw_input.linear_state_prefix_hashes);
+  EXPECT_EQ(round_trip.input_params.linear_state_save_prefix_hashes,
+            raw_input.linear_state_save_prefix_hashes);
+  EXPECT_EQ(round_trip.input_params.linear_state_evict_prefix_hashes,
+            raw_input.linear_state_evict_prefix_hashes);
 
   proto::ForwardInput legacy_pb = pb_forward_input;
   legacy_pb.clear_linear_state_ids();
+  legacy_pb.clear_linear_state_request_ids();
+  legacy_pb.clear_linear_state_prefix_hashes();
+  legacy_pb.clear_linear_state_save_prefix_hashes();
+  legacy_pb.clear_linear_state_evict_prefix_hashes();
 
   ForwardInput legacy_round_trip;
   proto_to_forward_input(&legacy_pb,
@@ -573,9 +607,17 @@ TEST(BatchTest, ProtoRoundTripPreservesAndDefaultsLinearStateIds) {
                          /*num_decoding_tokens=*/1);
   EXPECT_EQ(legacy_round_trip.input_params.linear_state_ids,
             std::vector<int32_t>({-1, -1}));
+  EXPECT_EQ(legacy_round_trip.input_params.linear_state_request_ids,
+            raw_input.request_ids);
+  EXPECT_EQ(legacy_round_trip.input_params.linear_state_prefix_hashes,
+            std::vector<LinearStatePrefixHash>(2));
+  EXPECT_EQ(legacy_round_trip.input_params.linear_state_save_prefix_hashes,
+            std::vector<LinearStatePrefixHash>(2));
+  EXPECT_TRUE(
+      legacy_round_trip.input_params.linear_state_evict_prefix_hashes.empty());
 }
 
-TEST(BatchTest, SharedMemoryRoundTripPreservesAndDefaultsLinearStateIds) {
+TEST(BatchTest, SharedMemoryRoundTripPreservesAndDefaultsLinearStateMetadata) {
   RawForwardInput raw_input;
   raw_input.batch_forward_type = BatchForwardType::DECODE;
   raw_input.flatten_tokens_vec = {1, 2};
@@ -589,6 +631,16 @@ TEST(BatchTest, SharedMemoryRoundTripPreservesAndDefaultsLinearStateIds) {
   raw_input.block_tables_vec = {{0}, {0}};
   raw_input.num_sequences = 2;
   raw_input.linear_state_ids = {4, 6};
+  raw_input.linear_state_request_ids = {"request-4", "request-6"};
+  raw_input.linear_state_prefix_hashes = {
+      make_linear_state_prefix_hash(/*base=*/65),
+      make_linear_state_prefix_hash(/*base=*/81)};
+  raw_input.linear_state_save_prefix_hashes = {
+      make_linear_state_prefix_hash(/*base=*/97),
+      make_linear_state_prefix_hash(/*base=*/113)};
+  raw_input.linear_state_evict_prefix_hashes = {
+      make_linear_state_prefix_hash(/*base=*/129)};
+  raw_input.request_ids = {"fallback-4", "fallback-6"};
 
   bool is_creator = false;
   auto shm_name =
@@ -607,14 +659,34 @@ TEST(BatchTest, SharedMemoryRoundTripPreservesAndDefaultsLinearStateIds) {
   reader_manager.raw_input_read(from_shm, torch::Device(torch::kCPU));
   EXPECT_EQ(from_shm.input_params.linear_state_ids,
             std::vector<int32_t>({4, 6}));
+  EXPECT_EQ(from_shm.input_params.linear_state_request_ids,
+            std::vector<std::string>({"request-4", "request-6"}));
+  EXPECT_EQ(from_shm.input_params.linear_state_prefix_hashes,
+            raw_input.linear_state_prefix_hashes);
+  EXPECT_EQ(from_shm.input_params.linear_state_save_prefix_hashes,
+            raw_input.linear_state_save_prefix_hashes);
+  EXPECT_EQ(from_shm.input_params.linear_state_evict_prefix_hashes,
+            raw_input.linear_state_evict_prefix_hashes);
 
   raw_input.linear_state_ids.clear();
+  raw_input.linear_state_request_ids.clear();
+  raw_input.linear_state_prefix_hashes.clear();
+  raw_input.linear_state_save_prefix_hashes.clear();
+  raw_input.linear_state_evict_prefix_hashes.clear();
   ASSERT_TRUE(writer_manager.raw_input_write(raw_input));
 
   ForwardInput legacy_from_shm;
   reader_manager.raw_input_read(legacy_from_shm, torch::Device(torch::kCPU));
   EXPECT_EQ(legacy_from_shm.input_params.linear_state_ids,
             std::vector<int32_t>({-1, -1}));
+  EXPECT_EQ(legacy_from_shm.input_params.linear_state_request_ids,
+            raw_input.request_ids);
+  EXPECT_EQ(legacy_from_shm.input_params.linear_state_prefix_hashes,
+            std::vector<LinearStatePrefixHash>(2));
+  EXPECT_EQ(legacy_from_shm.input_params.linear_state_save_prefix_hashes,
+            std::vector<LinearStatePrefixHash>(2));
+  EXPECT_TRUE(
+      legacy_from_shm.input_params.linear_state_evict_prefix_hashes.empty());
 }
 
 TEST(BatchTest, SampleRequestProcessesAllMatchedRawOutputs) {

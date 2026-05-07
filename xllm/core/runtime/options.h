@@ -22,6 +22,7 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#include "common/linear_state_cache_options.h"
 #include "common/macros.h"
 #include "common/types.h"
 
@@ -55,6 +56,8 @@ struct Options {
 
   // enable prefix cache
   PROPERTY(bool, enable_prefix_cache) = true;
+
+  PROPERTY(LinearStateCacheOptions, linear_state_cache_options);
 
   // number of decoding tokens per sequence
   // in speculative decoding, it is the number of speculative tokens + 1

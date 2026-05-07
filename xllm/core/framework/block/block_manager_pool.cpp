@@ -26,6 +26,16 @@ limitations under the License.
 #include "framework/xtensor/xtensor_block_manager_impl.h"
 
 namespace xllm {
+namespace {
+
+uint32_t get_single_block_capacity(const BlockManagerPool::Options& options) {
+  if (options.single_block_capacity() > 0) {
+    return options.single_block_capacity();
+  }
+  return static_cast<uint32_t>(std::max(FLAGS_max_seqs_per_batch, 0) + 2);
+}
+
+}  // namespace
 
 BlockManagerPool::BlockManagerPool(const Options& options, int32_t dp_size)
     : options_(options) {
@@ -72,26 +82,33 @@ BlockManagerPool::BlockManagerPool(const Options& options, int32_t dp_size)
     // pool. Worker-side embedding and linear-state caches remain physically
     // separate and are addressed via transport fields.
     single_block_managers_.emplace_back(std::make_unique<SingleBlockManager>(
-        /*num_blocks=*/FLAGS_max_concurrent_requests + 2,
+        /*num_blocks=*/get_single_block_capacity(options_),
         /*resource_name=*/"single block",
         /*exhaustion_message=*/"No more single-block ids available"));
   }
+  linear_state_checkpoint_hashes_.resize(dp_size);
   reset_transfer_infos();
 }
 
 int32_t BlockManagerPool::get_manager_with_max_free_blocks() const {
   if (block_managers_.empty()) {
-    return 0;
+    return -1;
   }
 
-  size_t max_index = 0;
-  size_t max_free = block_managers_[0]->num_free_blocks();
+  int32_t max_index = -1;
+  size_t max_free = 0;
+  bool found_manager = false;
 
-  for (size_t i = 1; i < block_managers_.size(); ++i) {
+  for (size_t i = 0; i < block_managers_.size(); ++i) {
+    if (options_.enable_linear_state() &&
+        single_block_managers_[i]->num_free_blocks() == 0) {
+      continue;
+    }
     const size_t current_free = block_managers_[i]->num_free_blocks();
-    if (current_free > max_free) {
+    if (!found_manager || current_free > max_free) {
       max_free = current_free;
-      max_index = i;
+      max_index = static_cast<int32_t>(i);
+      found_manager = true;
     }
   }
   return max_index;
@@ -103,7 +120,9 @@ int32_t BlockManagerPool::get_dp_rank(Sequence* sequence) const {
     dp_rank = sequence->dp_rank();
   } else {
     dp_rank = get_manager_with_max_free_blocks();
-    sequence->set_dp_rank(dp_rank);
+    if (dp_rank >= 0) {
+      sequence->set_dp_rank(dp_rank);
+    }
   }
   return dp_rank;
 }
@@ -153,8 +172,18 @@ void BlockManagerPool::deallocate(std::vector<Sequence*>& sequences) {
 
 void BlockManagerPool::deallocate(Sequence* sequence) {
   DCHECK(sequence != nullptr);
+  if (sequence->dp_rank() < 0 && sequence->kv_state().num_kv_blocks() == 0 &&
+      !sequence->has_single_block_id()) {
+    sequence->reset();
+    return;
+  }
+
   // add blocks to the prefix cache
   int32_t dp_rank = get_dp_rank(sequence);
+  if (dp_rank < 0) {
+    sequence->reset();
+    return;
+  }
   cache(sequence);
   block_managers_[dp_rank]->deallocate(sequence->kv_state().kv_blocks());
   deallocate_single_block(sequence, dp_rank);
@@ -170,6 +199,35 @@ BlockManagerPool::get_swap_block_transfer_infos() {
 void BlockManagerPool::reset_transfer_infos() {
   swap_block_transfer_infos_.clear();
   swap_block_transfer_infos_.resize(block_managers_.size());
+}
+
+void BlockManagerPool::record_linear_state_checkpoint_hashes(
+    int32_t dp_rank,
+    const std::vector<XXH3Key>& checkpoint_hashes) {
+  if (!options_.enable_linear_state() || checkpoint_hashes.empty()) {
+    return;
+  }
+  CHECK_GE(dp_rank, 0);
+  CHECK_LT(static_cast<size_t>(dp_rank),
+           linear_state_checkpoint_hashes_.size());
+
+  auto& checkpoint_hashes_for_rank = linear_state_checkpoint_hashes_[dp_rank];
+  for (const XXH3Key& checkpoint_hash : checkpoint_hashes) {
+    checkpoint_hashes_for_rank.insert(checkpoint_hash);
+  }
+}
+
+void BlockManagerPool::prune_linear_state_checkpoint_hashes(
+    const KvCacheEvent& event) {
+  if (!options_.enable_linear_state() || event.removed_cache.empty()) {
+    return;
+  }
+
+  for (auto& checkpoint_hashes_for_rank : linear_state_checkpoint_hashes_) {
+    for (const XXH3Key& evicted_hash : event.removed_cache) {
+      checkpoint_hashes_for_rank.erase(evicted_hash);
+    }
+  }
 }
 
 bool BlockManagerPool::allocate(Sequence* sequence) {
@@ -191,11 +249,19 @@ bool BlockManagerPool::allocate(std::vector<Sequence*>& sequences) {
 bool BlockManagerPool::allocate(Sequence* sequence, size_t num_tokens) {
   AUTO_COUNTER(allocate_blocks_latency_seconds);
   DCHECK(sequence != nullptr);
-  int32_t dp_rank = get_dp_rank(sequence);
+  const bool has_dp_rank = sequence->dp_rank() >= 0;
+  int32_t dp_rank =
+      has_dp_rank ? sequence->dp_rank() : get_manager_with_max_free_blocks();
+  if (dp_rank < 0) {
+    return false;
+  }
   const bool started_empty = sequence->kv_state().num_kv_blocks() == 0;
   const bool needs_single_block = !sequence->has_single_block_id();
   if (needs_single_block && !allocate_single_block(sequence, dp_rank)) {
     return false;
+  }
+  if (!has_dp_rank) {
+    sequence->set_dp_rank(dp_rank);
   }
 
   // first try to allocate shared blocks
@@ -204,15 +270,22 @@ bool BlockManagerPool::allocate(Sequence* sequence, size_t num_tokens) {
   }
 
   const size_t num_blocks = sequence->kv_state().num_kv_blocks();
-  // round up to the nearest block number
   const size_t block_size = options_.block_size();
-  const size_t num_blocks_needed = (num_tokens + block_size - 1) / block_size;
-  if (num_blocks_needed <= num_blocks) {
+  const size_t shared_tokens =
+      sequence->kv_state().shared_kv_blocks_num() * block_size;
+  CHECK_LE(shared_tokens, num_tokens);
+  const size_t non_shared_tokens = num_tokens - shared_tokens;
+  const size_t shared_blocks = sequence->kv_state().shared_kv_blocks_num();
+  const size_t owned_blocks = num_blocks - shared_blocks;
+  const size_t num_owned_blocks_needed =
+      (non_shared_tokens + block_size - 1) / block_size;
+  if (num_owned_blocks_needed <= owned_blocks) {
     return process_beam_search(sequence, /*need_swap*/ true);
   }
   process_beam_search(sequence);
 
-  const uint32_t num_additional_blocks = num_blocks_needed - num_blocks;
+  const uint32_t num_additional_blocks =
+      static_cast<uint32_t>(num_owned_blocks_needed - owned_blocks);
 
   const auto blocks = block_managers_[dp_rank]->allocate(num_additional_blocks);
   if (blocks.size() != num_additional_blocks) {
@@ -246,16 +319,27 @@ bool BlockManagerPool::allocate(Sequence* sequence,
 std::vector<Block> BlockManagerPool::allocate(size_t num_tokens,
                                               int32_t& dp_rank) {
   dp_rank = get_manager_with_max_free_blocks();
+  if (dp_rank < 0) {
+    return {};
+  }
   const size_t block_size = options_.block_size();
   const size_t num_blocks_needed = (num_tokens + block_size - 1) / block_size;
   return block_managers_[dp_rank]->allocate(num_blocks_needed);
 }
 
 bool BlockManagerPool::try_allocate(Sequence* sequence) {
-  int32_t dp_rank = get_dp_rank(sequence);
+  const bool has_dp_rank = sequence->dp_rank() >= 0;
+  int32_t dp_rank =
+      has_dp_rank ? sequence->dp_rank() : get_manager_with_max_free_blocks();
+  if (dp_rank < 0) {
+    return false;
+  }
   const bool needs_single_block = !sequence->has_single_block_id();
   if (needs_single_block && !allocate_single_block(sequence, dp_rank)) {
     return false;
+  }
+  if (!has_dp_rank) {
+    sequence->set_dp_rank(dp_rank);
   }
 
   std::vector<Block> shared_blocks;
@@ -267,7 +351,8 @@ bool BlockManagerPool::try_allocate(Sequence* sequence) {
     // not need to be recalculated and can be reused directly.
     shared_blocks = block_managers_[dp_rank]->allocate_shared(
         sequence->tokens(), existed_shared_blocks);
-
+    truncate_linear_state_prefix_match(
+        dp_rank, sequence->kv_state().shared_kv_blocks_num(), &shared_blocks);
     if (!shared_blocks.empty()) {
       sequence->add_kv_blocks(shared_blocks);
       sequence->kv_state().incr_shared_kv_blocks_num(shared_blocks.size());
@@ -330,6 +415,9 @@ void BlockManagerPool::allocate_shared(Sequence* sequence) {
   // only allocate shared blocks for prefill sequences
   if (options_.enable_prefix_cache()) {
     int32_t dp_rank = get_dp_rank(sequence);
+    if (dp_rank < 0) {
+      return;
+    }
     const auto& existed_shared_blocks = sequence->kv_state().kv_blocks().slice(
         0, sequence->kv_state().shared_kv_blocks_num());
     // If the sequence holds shared_blocks, the hash values of these blocks do
@@ -337,12 +425,17 @@ void BlockManagerPool::allocate_shared(Sequence* sequence) {
     std::vector<Block> shared_blocks =
         block_managers_[dp_rank]->allocate_shared(sequence->tokens(),
                                                   existed_shared_blocks);
+    truncate_linear_state_prefix_match(
+        dp_rank, sequence->kv_state().shared_kv_blocks_num(), &shared_blocks);
     sequence->add_shared_kv_blocks(std::move(shared_blocks));
   }
 }
 
 void BlockManagerPool::cache(Sequence* sequence) {
   int32_t dp_rank = get_dp_rank(sequence);
+  if (dp_rank < 0) {
+    return;
+  }
   const auto token_ids = sequence->cached_tokens();
   auto* blocks = sequence->kv_state().mutable_kv_blocks();
   auto existed_shared_blocks_num = sequence->kv_state().shared_kv_blocks_num();
@@ -353,6 +446,12 @@ void BlockManagerPool::cache(Sequence* sequence) {
 void BlockManagerPool::get_merged_kvcache_event(KvCacheEvent* event) const {
   for (int32_t i = 0; i < block_managers_.size(); ++i) {
     block_managers_[i]->get_merged_kvcache_event(event);
+  }
+}
+
+void BlockManagerPool::drain_prefix_cache_event(KvCacheEvent* event) const {
+  for (int32_t i = 0; i < block_managers_.size(); ++i) {
+    block_managers_[i]->drain_prefix_cache_event(event);
   }
 }
 
@@ -393,9 +492,73 @@ std::vector<size_t> BlockManagerPool::num_used_blocks() const {
   return num_used_blocks;
 }
 
+std::vector<size_t> BlockManagerPool::num_free_single_blocks() const {
+  std::vector<size_t> num_free_blocks(single_block_managers_.size());
+  for (size_t dp_rank = 0; dp_rank < single_block_managers_.size(); ++dp_rank) {
+    num_free_blocks[dp_rank] =
+        single_block_managers_[dp_rank]->num_free_blocks();
+  }
+  return num_free_blocks;
+}
+
+std::vector<size_t> BlockManagerPool::num_total_single_blocks() const {
+  std::vector<size_t> num_total_blocks(single_block_managers_.size());
+  for (size_t dp_rank = 0; dp_rank < single_block_managers_.size(); ++dp_rank) {
+    num_total_blocks[dp_rank] =
+        single_block_managers_[dp_rank]->num_total_blocks();
+  }
+  return num_total_blocks;
+}
+
 double BlockManagerPool::kv_cache_utilization() const {
   int32_t dp_rank = get_manager_with_max_free_blocks();
+  if (dp_rank < 0) {
+    dp_rank = 0;
+  }
   return block_managers_[dp_rank]->kv_cache_utilization();
+}
+
+size_t BlockManagerPool::get_linear_state_prefix_match_blocks(
+    int32_t dp_rank,
+    const std::vector<Block>& shared_blocks,
+    size_t existed_shared_blocks_num) const {
+  CHECK_GE(dp_rank, 0);
+  CHECK_LT(static_cast<size_t>(dp_rank),
+           linear_state_checkpoint_hashes_.size());
+
+  const auto& checkpoint_hashes = linear_state_checkpoint_hashes_[dp_rank];
+  size_t safe_blocks =
+      std::min(existed_shared_blocks_num, shared_blocks.size());
+  for (size_t block_idx = safe_blocks; block_idx < shared_blocks.size();
+       ++block_idx) {
+    const XXH3Key prefix_hash(
+        shared_blocks[block_idx].get_immutable_hash_value());
+    if (checkpoint_hashes.count(prefix_hash) != 0) {
+      safe_blocks = block_idx + 1;
+    }
+  }
+  return safe_blocks;
+}
+
+void BlockManagerPool::truncate_linear_state_prefix_match(
+    int32_t dp_rank,
+    size_t existed_shared_blocks_num,
+    std::vector<Block>* shared_blocks) {
+  if (!options_.enable_linear_state() || shared_blocks == nullptr ||
+      shared_blocks->empty()) {
+    return;
+  }
+
+  const size_t safe_shared_blocks = get_linear_state_prefix_match_blocks(
+      dp_rank, *shared_blocks, existed_shared_blocks_num);
+  CHECK_LE(safe_shared_blocks, shared_blocks->size());
+  if (safe_shared_blocks == shared_blocks->size()) {
+    return;
+  }
+
+  block_managers_[dp_rank]->deallocate(
+      Slice<Block>(*shared_blocks).slice(safe_shared_blocks));
+  shared_blocks->resize(safe_shared_blocks);
 }
 
 // currently use only for profile, which not need prefix cache.
