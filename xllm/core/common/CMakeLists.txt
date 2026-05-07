@@ -9,6 +9,7 @@ cc_library(
     etcd_client.h
     global_flags.h
     instance_name.h
+    linear_state_cache_options.h
     macros.h
     message.h
     metrics.h
@@ -21,6 +22,7 @@ cc_library(
   SRCS
     etcd_client.cpp
     global_flags.cpp
+    linear_state_cache_options.cpp
     metrics.cpp
     $<$<BOOL:${USE_NPU}>:mspti_helper.cpp>
     options.cpp
@@ -30,6 +32,7 @@ cc_library(
     util
     absl::random_random
     absl::strings
+    glog::glog
     torch
     $<$<BOOL:${USE_NPU}>:torch_npu>
     $<$<BOOL:${USE_MSPTI}>:mspti>

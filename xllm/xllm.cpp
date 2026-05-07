@@ -52,6 +52,18 @@ static const std::unordered_set<std::string> prefill_sp_supported_model_set = {
 
 namespace {
 
+bool is_linear_attention_model_type(const std::string& model_type) {
+  static const std::unordered_set<std::string> linear_attention_model_types = {
+      "qwen3_5",
+      "qwen3_5_text",
+      "qwen3_5_moe",
+      "qwen3_5_moe_text",
+      "qwen3_5_mtp",
+      "qwen3_5_moe_mtp",
+      "qwen3_next"};
+  return linear_attention_model_types.contains(model_type);
+}
+
 void fix_mlu_disagg_pd_flags() {
   if (FLAGS_kv_cache_transfer_type != "Mooncake") {
     LOG(WARNING) << "MLU disaggregated PD requires "
@@ -128,6 +140,14 @@ void validate_flags(const std::string& model_type) {
 #endif
 
 #if defined(USE_NPU)
+  if (FLAGS_enable_prefix_cache && is_linear_attention_model_type(model_type) &&
+      !FLAGS_enable_chunked_prefill) {
+    LOG(WARNING) << "NPU linear-attention prefix cache requires block-aligned "
+                    "chunked prefill to save matching linear states; forcing "
+                    "enable_chunked_prefill=true.";
+    FLAGS_enable_chunked_prefill = true;
+  }
+
   // enable_xtensor / enable_rolling_load imply enable_manual_loader
   if ((FLAGS_enable_xtensor || FLAGS_enable_rolling_load) &&
       !FLAGS_enable_manual_loader) {
@@ -224,6 +244,10 @@ int run() {
 
   // Create Master
   Options options;
+  LinearStateCacheOptions linear_state_cache_options;
+  linear_state_cache_options.max_linear_state_cache_slots(
+      FLAGS_max_linear_state_cache_slots);
+  validate_linear_state_cache_options(linear_state_cache_options);
 #if defined(USE_NPU)
   options.npu_kernel_backend(FLAGS_npu_kernel_backend);
 #endif
@@ -239,6 +263,7 @@ int run() {
       .max_cache_size(FLAGS_max_cache_size)
       .max_memory_utilization(FLAGS_max_memory_utilization)
       .enable_prefix_cache(FLAGS_enable_prefix_cache)
+      .linear_state_cache_options(linear_state_cache_options)
       .max_tokens_per_batch(FLAGS_max_tokens_per_batch)
       .max_seqs_per_batch(FLAGS_max_seqs_per_batch)
       .max_tokens_per_chunk_for_prefill(FLAGS_max_tokens_per_chunk_for_prefill)

@@ -69,7 +69,7 @@ class Qwen3HybridModelImplBase : public Qwen3HybridModelModule {
             model_args_.hidden_size(), model_args_.rms_norm_eps(), options));
     embed_tokens_ =
         register_module("embed_tokens", layer::WordEmbedding(context));
-    int32_t mask_value = FLAGS_enable_chunked_prefill ? -9984 : 1;
+    int32_t mask_value = model_args_.dtype() == "bfloat16" ? 1 : -9984;
     attn_mask_ = layer::AttentionMask(options.device(),
                                       options.dtype().toScalarType(),
                                       /*mask_value=*/mask_value);
