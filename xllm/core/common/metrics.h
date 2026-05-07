@@ -158,6 +158,8 @@ DECLARE_GAUGE(kv_cache_utilization_perc);
 DECLARE_GAUGE(num_blocks_in_prefix_cache);
 DECLARE_GAUGE(num_free_blocks);
 DECLARE_GAUGE(num_used_blocks);
+DECLARE_GAUGE(num_free_single_blocks);
+DECLARE_GAUGE(num_total_single_blocks);
 DECLARE_COUNTER(scheduling_latency_seconds);
 
 // total number of processing tokens

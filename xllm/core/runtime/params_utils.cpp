@@ -16,8 +16,11 @@ limitations under the License.
 #include "runtime/params_utils.h"
 
 #include <absl/strings/str_join.h>
+#include <google/protobuf/repeated_ptr_field.h>
 #include <torch/torch.h>
 
+#include <array>
+#include <cstring>
 #include <optional>
 
 #include "common/global_flags.h"
@@ -39,6 +42,31 @@ void aprint(std::vector<T> v, const std::string& name, int global_rank) {
             << ", value = " << value;
 }
 
+using LinearStatePrefixHash = std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>;
+
+std::vector<LinearStatePrefixHash> prefix_hashes_from_proto(
+    const google::protobuf::RepeatedPtrField<std::string>& pb_hashes) {
+  std::vector<LinearStatePrefixHash> hashes;
+  hashes.reserve(pb_hashes.size());
+  for (const std::string& pb_hash : pb_hashes) {
+    CHECK_EQ(pb_hash.size(), XXH3_128BITS_HASH_VALUE_LEN);
+    LinearStatePrefixHash hash{};
+    std::memcpy(hash.data(), pb_hash.data(), XXH3_128BITS_HASH_VALUE_LEN);
+    hashes.emplace_back(hash);
+  }
+  return hashes;
+}
+
+void prefix_hashes_to_proto(
+    const std::vector<LinearStatePrefixHash>& hashes,
+    google::protobuf::RepeatedPtrField<std::string>* pb_hashes) {
+  pb_hashes->Reserve(hashes.size());
+  for (const LinearStatePrefixHash& hash : hashes) {
+    pb_hashes->Add(std::string(reinterpret_cast<const char*>(hash.data()),
+                               XXH3_128BITS_HASH_VALUE_LEN));
+  }
+}
+
 void normalize_linear_state_ids(std::vector<int32_t>& linear_state_ids,
                                 int32_t num_sequences) {
   if (num_sequences <= 0) {
@@ -52,6 +80,33 @@ void normalize_linear_state_ids(std::vector<int32_t>& linear_state_ids,
   CHECK_EQ(linear_state_ids.size(), static_cast<size_t>(num_sequences))
       << "linear_state_ids size (" << linear_state_ids.size()
       << ") must match num_sequences (" << num_sequences << ")";
+}
+
+void normalize_linear_state_metadata(
+    const std::vector<int32_t>& linear_state_ids,
+    const std::vector<std::string>& request_ids,
+    std::vector<std::string>& linear_state_request_ids,
+    std::vector<LinearStatePrefixHash>& linear_state_prefix_hashes,
+    std::vector<LinearStatePrefixHash>& linear_state_save_prefix_hashes) {
+  const size_t num_sequences = linear_state_ids.size();
+  if (linear_state_request_ids.empty()) {
+    linear_state_request_ids = request_ids;
+  }
+  if (linear_state_request_ids.empty()) {
+    linear_state_request_ids.assign(num_sequences, "");
+  }
+  CHECK_EQ(linear_state_request_ids.size(), num_sequences);
+
+  if (linear_state_prefix_hashes.empty()) {
+    linear_state_prefix_hashes.assign(num_sequences, LinearStatePrefixHash{});
+  }
+  CHECK_EQ(linear_state_prefix_hashes.size(), num_sequences);
+
+  if (linear_state_save_prefix_hashes.empty()) {
+    linear_state_save_prefix_hashes.assign(num_sequences,
+                                           LinearStatePrefixHash{});
+  }
+  CHECK_EQ(linear_state_save_prefix_hashes.size(), num_sequences);
 }
 }  // namespace
 
@@ -151,12 +206,28 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
       std::vector<int32_t>(pb_forward_input->linear_state_ids().begin(),
                            pb_forward_input->linear_state_ids().end());
   normalize_linear_state_ids(linear_state_ids, num_sequences);
+  std::vector<std::string> linear_state_request_ids = std::vector<std::string>(
+      pb_forward_input->linear_state_request_ids().begin(),
+      pb_forward_input->linear_state_request_ids().end());
+  std::vector<LinearStatePrefixHash> linear_state_prefix_hashes =
+      prefix_hashes_from_proto(pb_forward_input->linear_state_prefix_hashes());
+  std::vector<LinearStatePrefixHash> linear_state_save_prefix_hashes =
+      prefix_hashes_from_proto(
+          pb_forward_input->linear_state_save_prefix_hashes());
+  std::vector<LinearStatePrefixHash> linear_state_evict_prefix_hashes =
+      prefix_hashes_from_proto(
+          pb_forward_input->linear_state_evict_prefix_hashes());
   std::vector<int32_t> extra_token_ids =
       std::vector<int32_t>(pb_forward_input->extra_token_ids().begin(),
                            pb_forward_input->extra_token_ids().end());
   std::vector<std::string> request_ids =
       std::vector<std::string>(pb_forward_input->request_ids().begin(),
                                pb_forward_input->request_ids().end());
+  normalize_linear_state_metadata(linear_state_ids,
+                                  request_ids,
+                                  linear_state_request_ids,
+                                  linear_state_prefix_hashes,
+                                  linear_state_save_prefix_hashes);
 
   std::vector<BlockTransferInfo> swap_blocks;
   swap_blocks.reserve(pb_forward_input->swap_blocks().size());
@@ -252,6 +323,13 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
   input_params.dp_is_decode = std::move(dp_is_decode);
   input_params.embedding_ids = std::move(embedding_ids);
   input_params.linear_state_ids = std::move(linear_state_ids);
+  input_params.linear_state_request_ids = std::move(linear_state_request_ids);
+  input_params.linear_state_prefix_hashes =
+      std::move(linear_state_prefix_hashes);
+  input_params.linear_state_save_prefix_hashes =
+      std::move(linear_state_save_prefix_hashes);
+  input_params.linear_state_evict_prefix_hashes =
+      std::move(linear_state_evict_prefix_hashes);
   input_params.request_ids = std::move(request_ids);
   input_params.extra_token_ids = std::move(extra_token_ids);
 
@@ -537,6 +615,17 @@ void forward_input_to_proto(const RawForwardInput& inputs,
                       inputs.embedding_ids);
   ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_linear_state_ids(),
                       inputs.linear_state_ids);
+  ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_linear_state_request_ids(),
+                      inputs.linear_state_request_ids);
+  prefix_hashes_to_proto(
+      inputs.linear_state_prefix_hashes,
+      pb_forward_input->mutable_linear_state_prefix_hashes());
+  prefix_hashes_to_proto(
+      inputs.linear_state_save_prefix_hashes,
+      pb_forward_input->mutable_linear_state_save_prefix_hashes());
+  prefix_hashes_to_proto(
+      inputs.linear_state_evict_prefix_hashes,
+      pb_forward_input->mutable_linear_state_evict_prefix_hashes());
   ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_request_ids(),
                       inputs.request_ids);
   ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_extra_token_ids(),

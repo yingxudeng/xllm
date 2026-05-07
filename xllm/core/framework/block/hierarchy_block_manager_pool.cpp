@@ -365,4 +365,15 @@ void HierarchyBlockManagerPool::get_merged_kvcache_event(
   }
 }
 
+void HierarchyBlockManagerPool::drain_prefix_cache_event(
+    KvCacheEvent* event) const {
+  if (host_block_managers_.empty()) {
+    BlockManagerPool::drain_prefix_cache_event(event);
+  } else {
+    for (int32_t i = 0; i < host_block_managers_.size(); ++i) {
+      host_block_managers_[i]->drain_prefix_cache_event(event);
+    }
+  }
+}
+
 }  // namespace xllm

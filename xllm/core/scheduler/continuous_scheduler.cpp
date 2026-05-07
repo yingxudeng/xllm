@@ -1018,6 +1018,12 @@ std::vector<Batch> ContinuousScheduler::prepare_batch() {
             util::min(kv_cache_manager_->num_blocks_in_prefix_cache()));
   GAUGE_SET(num_free_blocks, util::max(kv_cache_manager_->num_free_blocks()));
   GAUGE_SET(num_used_blocks, util::min(kv_cache_manager_->num_used_blocks()));
+  const auto free_single_blocks = kv_cache_manager_->num_free_single_blocks();
+  GAUGE_SET(num_free_single_blocks,
+            free_single_blocks.empty() ? 0 : util::max(free_single_blocks));
+  const auto total_single_blocks = kv_cache_manager_->num_total_single_blocks();
+  GAUGE_SET(num_total_single_blocks,
+            total_single_blocks.empty() ? 0 : util::sum(total_single_blocks));
   return batches;
 }
 

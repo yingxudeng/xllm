@@ -76,6 +76,7 @@ class GraphPersistentParam {
                                          const torch::Tensor& positions,
                                          const ModelInputParams& params,
                                          uint32_t padded_num_token,
+                                         int32_t padding_linear_state_id,
                                          bool return_capture_params = false);
 
   // Getter methods for persistent tensors
