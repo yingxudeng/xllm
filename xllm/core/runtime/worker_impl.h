@@ -20,6 +20,7 @@ limitations under the License.
 #include <torch/torch.h>
 
 #include <array>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -199,11 +200,15 @@ class WorkerImpl {
   }
 
  protected:
+  using LinearStatePrefixHash =
+      std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>;
+
   void update_last_step_output(const std::optional<ForwardOutput>& output);
   // Only used for deepseek chunked prefill ops on npu device
   void prepare_mla_prefixcache_inputs(ModelInputParams& input_params);
 
-  void restore_linear_state_snapshots(ModelInputParams& input_params);
+  std::vector<LinearStatePrefixHash> restore_linear_state_snapshots(
+      ModelInputParams& input_params);
   void prune_linear_state_snapshots(const ModelInputParams& input_params);
   void save_linear_state_snapshots(const ModelInputParams& input_params);
 
@@ -214,9 +219,6 @@ class WorkerImpl {
   int64_t get_num_layers() const;
 
   bool wakeup_local(const WakeupOptions& options);
-
-  using LinearStatePrefixHash =
-      std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>;
 
   class LinearStatePrefixHashHasher {
    public:
@@ -231,11 +233,19 @@ class WorkerImpl {
 
   class LinearStateSnapshot {
    public:
-    std::vector<torch::Tensor> conv_states;
-    std::vector<torch::Tensor> ssm_states;
+    int32_t checkpoint_slot_id = -1;
+    int32_t ref_count = 0;
+    bool pending_delete = false;
     size_t bytes = 0;
   };
 
+  void initialize_linear_state_checkpoint_slots();
+  int32_t acquire_linear_state_checkpoint_slot(
+      const LinearStatePrefixHash& prefix_hash);
+  void release_linear_state_checkpoint_slot(int32_t checkpoint_slot_id);
+  void release_linear_state_snapshot_refs(
+      const std::vector<LinearStatePrefixHash>& prefix_hashes);
+  void touch_linear_state_snapshot(const LinearStatePrefixHash& prefix_hash);
   bool save_linear_state_snapshot(const LinearStatePrefixHash& prefix_hash,
                                   int32_t linear_state_id);
   bool restore_linear_state_snapshot(const LinearStatePrefixHash& prefix_hash,
@@ -247,7 +257,15 @@ class WorkerImpl {
                      LinearStateSnapshot,
                      LinearStatePrefixHashHasher>
       linear_state_snapshots_;
-  std::vector<LinearStatePrefixHash> linear_state_snapshot_order_;
+  std::list<LinearStatePrefixHash> linear_state_snapshot_lru_;
+  std::unordered_map<LinearStatePrefixHash,
+                     std::list<LinearStatePrefixHash>::iterator,
+                     LinearStatePrefixHashHasher>
+      linear_state_snapshot_lru_iters_;
+  std::vector<int32_t> free_linear_state_checkpoint_slots_;
+  std::vector<uint8_t> linear_state_checkpoint_slot_free_;
+  int32_t linear_state_live_slots_ = 0;
+  int32_t linear_state_checkpoint_slots_ = 0;
   size_t linear_state_snapshot_bytes_ = 0;
   std::unordered_map<int32_t, std::string> active_linear_state_requests_;
 

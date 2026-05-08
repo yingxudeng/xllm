@@ -290,6 +290,7 @@ class AclGraph {
   // Reference to persistent parameters (shared across multiple AclGraph
   // instances)
   GraphPersistentParam& persistent_param_;
+  int32_t padding_linear_state_id_ = -1;
 
   // Cached capture stream, initialized on first capture
   std::optional<c10_npu::NPUStream> capture_stream_;

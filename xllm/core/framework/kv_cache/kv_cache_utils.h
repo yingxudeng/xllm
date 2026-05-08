@@ -109,6 +109,9 @@ int64_t calculate_linear_state_blocks(int64_t cache_size_in_bytes,
                                       int64_t full_attention_block_size,
                                       const LinearStateCacheOptions& options);
 
+int64_t calculate_linear_state_live_slots(int64_t num_linear_state_blocks,
+                                          int64_t max_running_requests);
+
 KVCacheTensors create_kv_cache_tensors(
     const KVCacheShape& kv_cache_shape,
     const KVCacheCreateOptions& create_options);
