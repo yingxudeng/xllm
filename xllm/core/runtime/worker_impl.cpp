@@ -595,6 +595,7 @@ void WorkerImpl::restore_linear_state_snapshots(
 
   input_params.has_initial_state.assign(input_params.linear_state_ids.size(),
                                         0);
+  std::lock_guard<std::mutex> lock(linear_state_snapshots_mutex_);
   for (size_t i = 0; i < input_params.linear_state_ids.size(); ++i) {
     const int32_t linear_state_id = input_params.linear_state_ids[i];
     if (linear_state_id < 0) {
@@ -615,9 +616,9 @@ void WorkerImpl::restore_linear_state_snapshots(
           input_params.kv_cache_tokens_nums_host.size() > i &&
           input_params.kv_cache_tokens_nums_host[i] > 0;
       if (has_cached_kv) {
-        LOG(FATAL)
+        LOG(WARNING)
             << "Qwen3.5 prefix cache hit lacks linear state prefix hash; "
-            << "linear_state_id=" << linear_state_id;
+            << "falling back to recompute, linear_state_id=" << linear_state_id;
       }
       active_linear_state_requests_[linear_state_id] = request_id;
       continue;
@@ -632,19 +633,32 @@ void WorkerImpl::restore_linear_state_snapshots(
       continue;
     }
 
-    LOG(FATAL) << "Qwen3.5 prefix cache hit lacks linear state snapshot; "
-               << "linear_state_id=" << linear_state_id;
+    LOG(WARNING) << "Qwen3.5 prefix cache hit lacks linear state snapshot; "
+                 << "falling back to recompute, linear_state_id="
+                 << linear_state_id;
+    active_linear_state_requests_.erase(linear_state_id);
   }
 }
 
 void WorkerImpl::prune_linear_state_snapshots(
     const ModelInputParams& input_params) {
+  std::lock_guard<std::mutex> lock(linear_state_snapshots_mutex_);
   for (const LinearStatePrefixHash& prefix_hash :
        input_params.linear_state_evict_prefix_hashes) {
     if (is_zero_prefix_hash(prefix_hash)) {
       continue;
     }
-    linear_state_snapshots_.erase(prefix_hash);
+    auto snapshot_it = linear_state_snapshots_.find(prefix_hash);
+    if (snapshot_it == linear_state_snapshots_.end()) {
+      continue;
+    }
+    linear_state_snapshot_bytes_ -= snapshot_it->second.bytes;
+    linear_state_snapshots_.erase(snapshot_it);
+    auto order_it = std::remove(linear_state_snapshot_order_.begin(),
+                                linear_state_snapshot_order_.end(),
+                                prefix_hash);
+    linear_state_snapshot_order_.erase(order_it,
+                                       linear_state_snapshot_order_.end());
   }
 }
 
@@ -656,22 +670,25 @@ void WorkerImpl::save_linear_state_snapshots(
 
   CHECK_EQ(input_params.linear_state_ids.size(),
            input_params.linear_state_save_prefix_hashes.size());
+  std::lock_guard<std::mutex> lock(linear_state_snapshots_mutex_);
   for (size_t i = 0; i < input_params.linear_state_ids.size(); ++i) {
     if (is_zero_prefix_hash(input_params.linear_state_save_prefix_hashes[i])) {
       continue;
     }
-    VLOG(1) << "Qwen3.5 linear state snapshot saved; linear_state_id="
-            << input_params.linear_state_ids[i];
-    save_linear_state_snapshot(input_params.linear_state_save_prefix_hashes[i],
-                               input_params.linear_state_ids[i]);
+    if (save_linear_state_snapshot(
+            input_params.linear_state_save_prefix_hashes[i],
+            input_params.linear_state_ids[i])) {
+      VLOG(1) << "Qwen3.5 linear state snapshot saved; linear_state_id="
+              << input_params.linear_state_ids[i];
+    }
   }
 }
 
-void WorkerImpl::save_linear_state_snapshot(
+bool WorkerImpl::save_linear_state_snapshot(
     const LinearStatePrefixHash& prefix_hash,
     int32_t linear_state_id) {
   if (linear_state_id < 0) {
-    return;
+    return false;
   }
 
   LinearStateSnapshot snapshot;
@@ -683,17 +700,33 @@ void WorkerImpl::save_linear_state_snapshot(
     if (!conv_cache.defined() || !ssm_cache.defined()) {
       continue;
     }
-    snapshot.conv_states.emplace_back(
-        conv_cache.select(0, linear_state_id).clone());
-    snapshot.ssm_states.emplace_back(
-        ssm_cache.select(0, linear_state_id).clone());
+    torch::Tensor conv_state = conv_cache.select(0, linear_state_id).clone();
+    torch::Tensor ssm_state = ssm_cache.select(0, linear_state_id).clone();
+    snapshot.bytes += tensor_bytes(conv_state) + tensor_bytes(ssm_state);
+    snapshot.conv_states.emplace_back(std::move(conv_state));
+    snapshot.ssm_states.emplace_back(std::move(ssm_state));
   }
 
   if (snapshot.conv_states.empty()) {
-    return;
+    return false;
   }
 
+  auto old_snapshot_it = linear_state_snapshots_.find(prefix_hash);
+  if (old_snapshot_it != linear_state_snapshots_.end()) {
+    linear_state_snapshot_bytes_ -= old_snapshot_it->second.bytes;
+  } else {
+    linear_state_snapshot_order_.emplace_back(prefix_hash);
+  }
+  linear_state_snapshot_bytes_ += snapshot.bytes;
   linear_state_snapshots_[prefix_hash] = std::move(snapshot);
+  return true;
+}
+
+size_t WorkerImpl::tensor_bytes(const torch::Tensor& tensor) {
+  if (!tensor.defined()) {
+    return 0;
+  }
+  return static_cast<size_t>(tensor.numel()) * tensor.element_size();
 }
 
 bool WorkerImpl::restore_linear_state_snapshot(

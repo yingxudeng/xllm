@@ -27,14 +27,13 @@ namespace {
 constexpr int64_t kPaddingLinearStateBlocks = 2;
 constexpr double kDefaultLinearStateFullKvMemoryRatio = 0.9;
 
-int64_t clamp_linear_state_blocks(int64_t requested_blocks,
-                                  int64_t cache_size_in_bytes,
-                                  int64_t num_linear_attention_layers,
-                                  int64_t linear_slot_size,
-                                  int64_t num_full_attention_layers,
-                                  int64_t full_attention_block_size) {
+int64_t max_linear_state_blocks(int64_t cache_size_in_bytes,
+                                int64_t num_linear_attention_layers,
+                                int64_t linear_slot_size,
+                                int64_t num_full_attention_layers,
+                                int64_t full_attention_block_size) {
   if (linear_slot_size <= 0 || num_linear_attention_layers <= 0) {
-    return requested_blocks;
+    return kPaddingLinearStateBlocks;
   }
 
   CHECK_GT(cache_size_in_bytes, 0);
@@ -57,9 +56,7 @@ int64_t clamp_linear_state_blocks(int64_t requested_blocks,
       (linear_bytes_per_block + full_cache_bytes_per_block);
   max_linear_blocks = std::min(max_linear_blocks, balanced_max_linear_blocks);
 
-  return std::max<int64_t>(
-      std::min<int64_t>(requested_blocks, max_linear_blocks),
-      kPaddingLinearStateBlocks);
+  return std::max<int64_t>(max_linear_blocks, kPaddingLinearStateBlocks);
 }
 
 int64_t calculate_auto_linear_state_blocks(int64_t cache_size_in_bytes,
@@ -100,18 +97,26 @@ int64_t calculate_linear_state_blocks(int64_t cache_size_in_bytes,
                                       int64_t num_full_attention_layers,
                                       int64_t full_attention_block_size,
                                       const LinearStateCacheOptions& options) {
-  const int64_t requested_blocks =
-      options.max_linear_state_cache_slots() > 0
-          ? options.max_linear_state_cache_slots() + kPaddingLinearStateBlocks
-          : calculate_auto_linear_state_blocks(cache_size_in_bytes,
-                                               num_linear_attention_layers,
-                                               linear_slot_size);
-  return clamp_linear_state_blocks(requested_blocks,
-                                   cache_size_in_bytes,
-                                   num_linear_attention_layers,
-                                   linear_slot_size,
-                                   num_full_attention_layers,
-                                   full_attention_block_size);
+  const int64_t max_blocks =
+      max_linear_state_blocks(cache_size_in_bytes,
+                              num_linear_attention_layers,
+                              linear_slot_size,
+                              num_full_attention_layers,
+                              full_attention_block_size);
+  if (options.max_linear_state_cache_slots() > 0) {
+    const int64_t requested_blocks =
+        options.max_linear_state_cache_slots() + kPaddingLinearStateBlocks;
+    CHECK_LE(requested_blocks, max_blocks)
+        << "max_linear_state_cache_slots requires " << requested_blocks
+        << " linear-state blocks, but only " << max_blocks
+        << " fit in the configured KV cache budget.";
+    return requested_blocks;
+  }
+
+  const int64_t auto_blocks = calculate_auto_linear_state_blocks(
+      cache_size_in_bytes, num_linear_attention_layers, linear_slot_size);
+  return std::max<int64_t>(std::min<int64_t>(auto_blocks, max_blocks),
+                           kPaddingLinearStateBlocks);
 }
 
 KVCacheTensors create_kv_cache_tensors(
