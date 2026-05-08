@@ -638,7 +638,11 @@ bool LLMEngine::allocate_kv_cache(const KVCacheCapacity& kv_cache_cap) {
       << ", linear_slot_size: " << kv_cache_cap.linear_slot_size()
       << ", linear_blocks: " << kv_cache_cap.num_linear_state_blocks()
       << ", linear_state_slots: "
-      << std::max<int64_t>(kv_cache_cap.num_linear_state_blocks() - 2, 0)
+      << (has_linear_attention_layers(args_)
+              ? calculate_linear_state_live_slots(
+                    kv_cache_cap.num_linear_state_blocks(),
+                    options_.max_seqs_per_batch())
+              : 0)
       << ", max_linear_state_cache_slots: "
       << options_.linear_state_cache_options().max_linear_state_cache_slots()
       << ", reserved_linear_bytes: "
@@ -671,8 +675,10 @@ bool LLMEngine::allocate_kv_cache(const KVCacheCapacity& kv_cache_cap) {
       .slot_size(kv_cache_cap.slot_size())
       .model_id(options_.model_id());
   if (enable_gdn_attention) {
-    options.single_block_capacity(static_cast<uint32_t>(
-        std::max<int64_t>(kv_cache_cap.num_linear_state_blocks() - 2, 1)));
+    options.single_block_capacity(
+        static_cast<uint32_t>(calculate_linear_state_live_slots(
+            kv_cache_cap.num_linear_state_blocks(),
+            options_.max_seqs_per_batch())));
   }
 
   if (options_.host_blocks_factor() > 1.0 || options_.enable_kvcache_store()) {

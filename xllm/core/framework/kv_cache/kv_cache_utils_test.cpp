@@ -70,6 +70,24 @@ TEST(KVCacheUtilsTest, AutoLinearStateBlocksAreBoundedByKvBudget) {
             47);
 }
 
+TEST(KVCacheUtilsTest, LinearStateLiveSlotsLeaveCheckpointSlots) {
+  EXPECT_EQ(calculate_linear_state_live_slots(
+                /*num_linear_state_blocks=*/10, /*max_running_requests=*/4),
+            5);
+  EXPECT_EQ(calculate_linear_state_live_slots(
+                /*num_linear_state_blocks=*/10, /*max_running_requests=*/32),
+            8);
+}
+
+TEST(KVCacheUtilsTest, LinearStateLiveSlotsKeepMinimumCapacity) {
+  EXPECT_EQ(calculate_linear_state_live_slots(
+                /*num_linear_state_blocks=*/0, /*max_running_requests=*/4),
+            0);
+  EXPECT_EQ(calculate_linear_state_live_slots(
+                /*num_linear_state_blocks=*/2, /*max_running_requests=*/4),
+            2);
+}
+
 TEST(KVCacheUtilsTest, MaxLinearStateCacheSlotsMustBeNonNegative) {
   LinearStateCacheOptions options;
   options.max_linear_state_cache_slots(-1);
