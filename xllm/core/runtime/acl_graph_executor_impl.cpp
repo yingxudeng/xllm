@@ -33,6 +33,7 @@ limitations under the License.
 #endif
 #include "core/common/global_flags.h"
 #include "core/common/metrics.h"
+#include "core/framework/kv_cache/kv_cache_utils.h"
 #include "core/util/utils.h"
 #include "platform/npu/device_capture_lock.h"
 
@@ -70,15 +71,19 @@ int64_t get_decode_graph_capacity(const runtime::Options& options) {
   return options.max_seqs_per_batch() * options.num_decoding_tokens();
 }
 
-int32_t get_padding_linear_state_id(const std::vector<KVCache>& kv_caches) {
+int32_t get_padding_linear_state_id(const std::vector<KVCache>& kv_caches,
+                                    int64_t max_running_requests) {
   for (const KVCache& kv_cache : kv_caches) {
     const torch::Tensor conv_cache = kv_cache.get_conv_cache();
     if (conv_cache.defined() && conv_cache.dim() > 0 &&
         conv_cache.size(0) > 0) {
-      return static_cast<int32_t>(conv_cache.size(0) - 1);
+      return static_cast<int32_t>(
+          calculate_linear_state_live_slots(conv_cache.size(0),
+                                            max_running_requests) -
+          1);
     }
   }
-  return FLAGS_max_seqs_per_batch + 1;
+  return static_cast<int32_t>(std::max<int64_t>(max_running_requests, 0));
 }
 }  // namespace
 
@@ -878,18 +883,19 @@ bool AclGraph::capture(CausalLM* model,
   // have valid kv caches. Using layer 0's cache directly would be incorrect
   // if layer 0 is a GDN layer.
   auto [k_cache, v_cache] = find_attention_plan_kv_cache(kv_cache);
+  padding_linear_state_id_ =
+      get_padding_linear_state_id(kv_cache, options.max_seqs_per_batch());
   const uint32_t actual_num_tokens = tokens.size(0);
   CHECK_GE(num_tokens_, actual_num_tokens)
       << "num_tokens_ >= actual_num_tokens";
-  auto graph_params =
-      persistent_param_.update(tokens,
-                               k_cache,
-                               v_cache,
-                               positions,
-                               params,
-                               num_tokens_,
-                               get_padding_linear_state_id(kv_cache),
-                               /*return_capture_params=*/true);
+  auto graph_params = persistent_param_.update(tokens,
+                                               k_cache,
+                                               v_cache,
+                                               positions,
+                                               params,
+                                               num_tokens_,
+                                               padding_linear_state_id_,
+                                               /*return_capture_params=*/true);
 
   // Use the returned ModelInputParams for graph capture
   CHECK(graph_params.has_value())
@@ -983,13 +989,15 @@ ModelOutput AclGraph::replay(const torch::Tensor& tokens,
   // be updated when Full Attention layers are involved, which is determined
   // by k_cache being valid and non-empty
   auto [k_cache, v_cache] = find_attention_plan_kv_cache(kv_cache);
+  CHECK_GE(padding_linear_state_id_, 0)
+      << "padding_linear_state_id_ must be initialized during graph capture.";
   persistent_param_.update(tokens,
                            k_cache,
                            v_cache,
                            positions,
                            params,
                            num_tokens_,
-                           get_padding_linear_state_id(kv_cache),
+                           padding_linear_state_id_,
                            /*return_capture_params=*/false);
 
   // Replay captured graph - NPUGraph mempool reuses temporary tensors
