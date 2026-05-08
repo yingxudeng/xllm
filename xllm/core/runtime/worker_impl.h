@@ -21,6 +21,7 @@ limitations under the License.
 
 #include <array>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 
 #include "common/types.h"
@@ -232,17 +233,22 @@ class WorkerImpl {
    public:
     std::vector<torch::Tensor> conv_states;
     std::vector<torch::Tensor> ssm_states;
+    size_t bytes = 0;
   };
 
-  void save_linear_state_snapshot(const LinearStatePrefixHash& prefix_hash,
+  bool save_linear_state_snapshot(const LinearStatePrefixHash& prefix_hash,
                                   int32_t linear_state_id);
   bool restore_linear_state_snapshot(const LinearStatePrefixHash& prefix_hash,
                                      int32_t linear_state_id);
+  static size_t tensor_bytes(const torch::Tensor& tensor);
 
+  std::mutex linear_state_snapshots_mutex_;
   std::unordered_map<LinearStatePrefixHash,
                      LinearStateSnapshot,
                      LinearStatePrefixHashHasher>
       linear_state_snapshots_;
+  std::vector<LinearStatePrefixHash> linear_state_snapshot_order_;
+  size_t linear_state_snapshot_bytes_ = 0;
   std::unordered_map<int32_t, std::string> active_linear_state_requests_;
 
 #if defined(USE_CUDA)

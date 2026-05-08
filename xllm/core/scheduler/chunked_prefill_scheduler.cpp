@@ -723,6 +723,30 @@ std::vector<Batch> ChunkedPrefillScheduler::prepare_batch() {
   return batches;
 }
 
+size_t ChunkedPrefillScheduler::get_linear_state_safe_prefill_tokens(
+    Sequence* sequence,
+    size_t token_budget) const {
+  const size_t kv_cache_tokens_num = sequence->kv_cache_tokens_num();
+  size_t max_handle_num_tokens =
+      std::min(kv_cache_tokens_num + token_budget, sequence->num_tokens());
+  if (!has_linear_attention_layers(engine_->model_args()) ||
+      !enable_prefix_cache_ || !sequence->is_prefill_stage()) {
+    return max_handle_num_tokens;
+  }
+
+  const size_t block_size = kv_cache_manager_->block_size();
+  const size_t aligned_handle_num_tokens =
+      block_size == 0 ? max_handle_num_tokens
+                      : (max_handle_num_tokens / block_size) * block_size;
+  if (aligned_handle_num_tokens <= kv_cache_tokens_num) {
+    if (max_handle_num_tokens == sequence->num_tokens()) {
+      return max_handle_num_tokens;
+    }
+    return 0;
+  }
+  return aligned_handle_num_tokens;
+}
+
 bool ChunkedPrefillScheduler::allocate_blocks_for(
     Sequence* sequence,
     size_t token_budget,
@@ -737,17 +761,9 @@ bool ChunkedPrefillScheduler::allocate_blocks_for(
   // the total number tokens for the sequence can be handled till now.
   // there may some tokens can not be handled once when enable chunked prefill.
   size_t max_handle_num_tokens =
-      std::min(kv_cache_tokens_num + token_budget, sequence->num_tokens());
-  if (has_linear_attention_layers(engine_->model_args()) &&
-      enable_prefix_cache_ && sequence->is_prefill_stage() &&
-      max_handle_num_tokens < sequence->num_tokens()) {
-    const size_t block_size = kv_cache_manager_->block_size();
-    const size_t aligned_handle_num_tokens =
-        block_size == 0 ? max_handle_num_tokens
-                        : (max_handle_num_tokens / block_size) * block_size;
-    if (aligned_handle_num_tokens > kv_cache_tokens_num) {
-      max_handle_num_tokens = aligned_handle_num_tokens;
-    }
+      get_linear_state_safe_prefill_tokens(sequence, token_budget);
+  if (max_handle_num_tokens == 0) {
+    return false;
   }
 
   // speculative decoding specific logic,

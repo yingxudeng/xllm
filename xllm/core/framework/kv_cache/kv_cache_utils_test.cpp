@@ -45,17 +45,17 @@ TEST(KVCacheUtilsTest, ExplicitLinearStateBlocksUseSlotCapacity) {
             14);
 }
 
-TEST(KVCacheUtilsTest, ExplicitLinearStateBlocksAreBoundedByKvBudget) {
+TEST(KVCacheUtilsTest, ExplicitLinearStateBlocksRejectOverBudgetRequest) {
   LinearStateCacheOptions options;
   options.max_linear_state_cache_slots(1024);
 
-  EXPECT_EQ(calculate_linear_state_blocks(/*cache_size_in_bytes=*/10000,
-                                          /*num_linear_attention_layers=*/1,
-                                          /*linear_slot_size=*/100,
-                                          /*num_full_attention_layers=*/1,
-                                          /*full_attention_block_size=*/100,
-                                          options),
-            51);
+  EXPECT_DEATH(calculate_linear_state_blocks(/*cache_size_in_bytes=*/10000,
+                                             /*num_linear_attention_layers=*/1,
+                                             /*linear_slot_size=*/100,
+                                             /*num_full_attention_layers=*/1,
+                                             /*full_attention_block_size=*/100,
+                                             options),
+               "configured KV cache budget");
 }
 
 TEST(KVCacheUtilsTest, AutoLinearStateBlocksAreBoundedByKvBudget) {
