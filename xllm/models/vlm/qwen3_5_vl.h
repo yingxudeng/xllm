@@ -335,7 +335,8 @@ REGISTER_MODEL_ARGS(qwen3_5_vl, [&] {
   SET_ARG(n_group, -1);
   SET_ARG(topk_group, 0);
   SET_ARG(routed_scaling_factor, 1.0f);
-  SET_ARG(stop_token_ids, std::unordered_set<int32_t>({args->eos_token_id()}));
+  SET_ARG(stop_token_ids,
+          std::unordered_set<int32_t>({args->eos_token_id(), 248046}));
   LOAD_QWEN3_5_VL_TEXT_OR_ROOT(mamba_ssm_dtype, "mamba_ssm_dtype", "float32");
 
   LOAD_ARG_OR(mm_num_hidden_layers, "vision_config.depth", 27);
