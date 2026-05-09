@@ -11,6 +11,7 @@ cc_library(
     chunked_prefill_scheduler.h
     zero_eviction_scheduler.h
     continuous_scheduler.h
+    disagg_pd_chunked_prefill_scheduler.h
     disagg_pd_scheduler.h
     pd_ooc_scheduler.h
     async_response_processor.h
@@ -26,6 +27,7 @@ cc_library(
     chunked_prefill_scheduler.cpp
     zero_eviction_scheduler.cpp
     continuous_scheduler.cpp
+    disagg_pd_chunked_prefill_scheduler.cpp
     disagg_pd_scheduler.cpp
     pd_ooc_scheduler.cpp
     async_response_processor.cpp
@@ -46,8 +48,3 @@ cc_library(
     absl::time
     absl::synchronization
 )
-
-
-
-# Use LINK_GROUP to resolve circular dependency between xtensor and xllm_server
-# This wraps the libraries in --start-group/--end-group
