@@ -94,6 +94,10 @@ AttentionMetadata build_attention_metadata(
     attn_metadata.kv_seq_lens_host =
         torch::tensor(params.kv_seq_lens_vec, torch::kInt);
   }
+  if (!params.q_seq_lens_vec.empty()) {
+    attn_metadata.q_seq_lens_host =
+        torch::tensor(params.q_seq_lens_vec, torch::kInt);
+  }
 #endif
   attn_metadata.is_chunked_prefill =
       params.batch_forward_type.is_mixed() ||
