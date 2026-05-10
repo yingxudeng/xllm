@@ -33,6 +33,13 @@ torch::Tensor get_npu_kv_seq_lens(const AttentionMetadata& attn_metadata) {
   return attn_metadata.kv_seq_lens;
 }
 
+torch::Tensor get_npu_q_seq_lens(const AttentionMetadata& attn_metadata) {
+  if (attn_metadata.q_seq_lens_host.defined()) {
+    return attn_metadata.q_seq_lens_host;
+  }
+  return attn_metadata.q_seq_lens;
+}
+
 bool has_chunked_prefill_history(const torch::Tensor& q_seq_lens,
                                  const torch::Tensor& kv_seq_lens) {
   CHECK(q_seq_lens.defined()) << "chunked prefill requires q_seq_lens.";
@@ -60,6 +67,11 @@ void run_chunked_prefill_paged_attention(const torch::Tensor& query,
                                          float scale,
                                          int64_t num_heads,
                                          int64_t head_size) {
+  CHECK(q_seq_lens.device().is_cpu())
+      << "chunked prefill q_seq_lens must be on CPU for host iteration.";
+  CHECK(kv_seq_lens.device().is_cpu())
+      << "chunked prefill kv_seq_lens must be on CPU for host iteration.";
+
   const int64_t batch_size = q_seq_lens.size(0);
   int64_t query_offset = 0;
   for (int64_t batch_idx = 0; batch_idx < batch_size; ++batch_idx) {
@@ -92,6 +104,8 @@ void run_chunked_prefill_paged_attention(const torch::Tensor& query,
     }
     query_offset += query_len;
   }
+  CHECK_EQ(query_offset, query.size(0))
+      << "chunked prefill q_seq_lens must match query tokens.";
 }
 
 }  // namespace
@@ -172,8 +186,9 @@ void AttentionImpl::prefill_forward(torch::Tensor& query,
                                      scale_,
                                      output);
   } else if (attn_metadata.is_chunked_prefill) {
+    torch::Tensor q_seq_lens = get_npu_q_seq_lens(attn_metadata);
     torch::Tensor kv_seq_lens = get_npu_kv_seq_lens(attn_metadata);
-    if (!has_chunked_prefill_history(attn_metadata.q_seq_lens, kv_seq_lens)) {
+    if (!has_chunked_prefill_history(q_seq_lens, kv_seq_lens)) {
       key = key.view({-1, num_kv_heads_, head_size_});
       value = value.view({-1, num_kv_heads_, head_size_});
       xllm::kernel::npu::batch_prefill(query,
@@ -195,7 +210,7 @@ void AttentionImpl::prefill_forward(torch::Tensor& query,
                                         k_cache,
                                         v_cache.value(),
                                         attn_metadata.block_table,
-                                        attn_metadata.q_seq_lens,
+                                        q_seq_lens,
                                         kv_seq_lens,
                                         scale_,
                                         num_heads_,
