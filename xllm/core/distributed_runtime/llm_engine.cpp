@@ -106,6 +106,24 @@ void record_linear_state_checkpoint_hashes(
                                                             checkpoint_hashes);
 }
 
+void sync_linear_state_checkpoint_hashes(
+    xllm::BlockManagerPool* block_manager_pool,
+    int32_t dp_rank,
+    const xllm::RawForwardOutput& output) {
+  if (block_manager_pool == nullptr) {
+    return;
+  }
+  block_manager_pool->prune_linear_state_checkpoint_hashes(
+      dp_rank,
+      to_linear_state_checkpoint_hashes(
+          output.linear_state_evicted_prefix_hashes));
+  record_linear_state_checkpoint_hashes(
+      block_manager_pool,
+      dp_rank,
+      to_linear_state_checkpoint_hashes(
+          output.linear_state_saved_prefix_hashes));
+}
+
 int64_t get_kv_cache_dtype_size_in_bytes(const std::string& kv_cache_dtype,
                                          int64_t model_dtype_size) {
   if (kv_cache_dtype == "auto") {
@@ -1106,17 +1124,6 @@ ForwardOutput LLMEngine::step(std::vector<Batch>& batch) {
   // wait for the all future to complete
   auto results = folly::collectAll(futures).get();
 
-  if (options_.enable_schedule_overlap()) {
-    LinearStateCheckpointHashes checkpoint_hashes;
-    checkpoint_hashes.reserve(raw_forward_inputs.size());
-    for (const RawForwardInput& input : raw_forward_inputs) {
-      checkpoint_hashes.emplace_back(to_linear_state_checkpoint_hashes(
-          input.linear_state_save_prefix_hashes));
-    }
-    pending_linear_state_checkpoint_hashes_.emplace_back(
-        std::move(checkpoint_hashes));
-  }
-
   if (FLAGS_enable_eplb && !options_.enable_schedule_overlap()) {
     process_eplb_data(results);
   }
@@ -1130,6 +1137,8 @@ ForwardOutput LLMEngine::step(std::vector<Batch>& batch) {
       if (result.value().outputs.empty() && layer_forward_interrupted_) {
         throw ForwardInterruptedException();
       }
+      sync_linear_state_checkpoint_hashes(
+          block_manager_pool(), dp_rank, result.value());
       // if src_seq_idxes is not empty, skip sample output processing and
       // process beam search output instead
       if (result.value().src_seq_idxes.size() == 0) {
@@ -1147,18 +1156,6 @@ ForwardOutput LLMEngine::step(std::vector<Batch>& batch) {
       LOG(FATAL) << "Failed to execute model, result has no value";
     }
     ++dp_rank;
-  }
-
-  if (!options_.enable_schedule_overlap()) {
-    for (int32_t dp_rank = 0;
-         dp_rank < static_cast<int32_t>(raw_forward_inputs.size());
-         ++dp_rank) {
-      record_linear_state_checkpoint_hashes(
-          block_manager_pool(),
-          dp_rank,
-          to_linear_state_checkpoint_hashes(
-              raw_forward_inputs[dp_rank].linear_state_save_prefix_hashes));
-    }
   }
 
   COUNTER_ADD(engine_latency_seconds, timer.elapsed_seconds());
@@ -1207,17 +1204,11 @@ void LLMEngine::update_last_step_result(std::vector<Batch>& last_batch) {
   }
 
   if (options_.enable_schedule_overlap()) {
-    CHECK(!pending_linear_state_checkpoint_hashes_.empty())
-        << "Missing pending linear-state checkpoint metadata.";
-    LinearStateCheckpointHashes checkpoint_hashes =
-        std::move(pending_linear_state_checkpoint_hashes_.front());
-    pending_linear_state_checkpoint_hashes_.pop_front();
-    CHECK_EQ(checkpoint_hashes.size(), raw_forward_outputs.size());
     for (int32_t dp_rank = 0;
-         dp_rank < static_cast<int32_t>(checkpoint_hashes.size());
+         dp_rank < static_cast<int32_t>(raw_forward_outputs.size());
          ++dp_rank) {
-      record_linear_state_checkpoint_hashes(
-          block_manager_pool(), dp_rank, checkpoint_hashes[dp_rank]);
+      sync_linear_state_checkpoint_hashes(
+          block_manager_pool(), dp_rank, raw_forward_outputs[dp_rank]);
     }
   }
 

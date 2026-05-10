@@ -21,7 +21,6 @@ limitations under the License.
 #include <unistd.h>
 
 #include <cstdint>
-#include <deque>
 #include <memory>
 #include <vector>
 
@@ -188,9 +187,6 @@ class LLMEngine : public Engine {
   std::unique_ptr<EplbManager> eplb_manager_ = nullptr;
   void process_eplb_data(
       const std::vector<folly::Try<std::optional<RawForwardOutput>>>& results);
-  using LinearStateCheckpointHashes = std::vector<std::vector<XXH3Key>>;
-  std::deque<LinearStateCheckpointHashes>
-      pending_linear_state_checkpoint_hashes_;
 
   // threadpool for handle forward_input in parallel.
   // Since the batch is created in every step,

@@ -329,6 +329,8 @@ message ForwardOutput {
   repeated int32 out_tokens = 6;
   repeated float out_logprobs = 7;
   DiTForwardOutput dit_forward_output = 8;
+  repeated bytes linear_state_saved_prefix_hashes = 9;
+  repeated bytes linear_state_evicted_prefix_hashes = 10;
 }
 
 // master create Collective service
