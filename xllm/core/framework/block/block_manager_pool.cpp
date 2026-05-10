@@ -230,6 +230,22 @@ void BlockManagerPool::prune_linear_state_checkpoint_hashes(
   }
 }
 
+void BlockManagerPool::prune_linear_state_checkpoint_hashes(
+    int32_t dp_rank,
+    const std::vector<XXH3Key>& checkpoint_hashes) {
+  if (!options_.enable_linear_state() || checkpoint_hashes.empty()) {
+    return;
+  }
+  CHECK_GE(dp_rank, 0);
+  CHECK_LT(static_cast<size_t>(dp_rank),
+           linear_state_checkpoint_hashes_.size());
+
+  auto& checkpoint_hashes_for_rank = linear_state_checkpoint_hashes_[dp_rank];
+  for (const XXH3Key& checkpoint_hash : checkpoint_hashes) {
+    checkpoint_hashes_for_rank.erase(checkpoint_hash);
+  }
+}
+
 bool BlockManagerPool::allocate(Sequence* sequence) {
   DCHECK(sequence != nullptr);
   return allocate(sequence, sequence->num_tokens());

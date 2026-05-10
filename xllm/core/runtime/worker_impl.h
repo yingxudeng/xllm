@@ -210,7 +210,6 @@ class WorkerImpl {
   std::vector<LinearStatePrefixHash> restore_linear_state_snapshots(
       ModelInputParams& input_params);
   void prune_linear_state_snapshots(const ModelInputParams& input_params);
-  void save_linear_state_snapshots(const ModelInputParams& input_params);
 
   void init_hierarchy_kv_cache_transfer();
 
@@ -239,15 +238,25 @@ class WorkerImpl {
     size_t bytes = 0;
   };
 
+  struct LinearStateSnapshotUpdate {
+    std::vector<LinearStatePrefixHash> saved_prefix_hashes;
+    std::vector<LinearStatePrefixHash> evicted_prefix_hashes;
+  };
+
   void initialize_linear_state_checkpoint_slots();
   int32_t acquire_linear_state_checkpoint_slot(
-      const LinearStatePrefixHash& prefix_hash);
+      const LinearStatePrefixHash& prefix_hash,
+      std::vector<LinearStatePrefixHash>* evicted_prefix_hashes);
   void release_linear_state_checkpoint_slot(int32_t checkpoint_slot_id);
   void release_linear_state_snapshot_refs(
       const std::vector<LinearStatePrefixHash>& prefix_hashes);
   void touch_linear_state_snapshot(const LinearStatePrefixHash& prefix_hash);
-  bool save_linear_state_snapshot(const LinearStatePrefixHash& prefix_hash,
-                                  int32_t linear_state_id);
+  LinearStateSnapshotUpdate save_linear_state_snapshots(
+      const ModelInputParams& input_params);
+  bool save_linear_state_snapshot(
+      const LinearStatePrefixHash& prefix_hash,
+      int32_t linear_state_id,
+      std::vector<LinearStatePrefixHash>* evicted_prefix_hashes);
   bool restore_linear_state_snapshot(const LinearStatePrefixHash& prefix_hash,
                                      int32_t linear_state_id);
   static size_t tensor_bytes(const torch::Tensor& tensor);

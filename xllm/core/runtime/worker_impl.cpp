@@ -681,10 +681,11 @@ void WorkerImpl::prune_linear_state_snapshots(
   }
 }
 
-void WorkerImpl::save_linear_state_snapshots(
+WorkerImpl::LinearStateSnapshotUpdate WorkerImpl::save_linear_state_snapshots(
     const ModelInputParams& input_params) {
+  LinearStateSnapshotUpdate update;
   if (!FLAGS_enable_prefix_cache || input_params.linear_state_ids.empty()) {
-    return;
+    return update;
   }
 
   CHECK_EQ(input_params.linear_state_ids.size(),
@@ -696,11 +697,15 @@ void WorkerImpl::save_linear_state_snapshots(
     }
     if (save_linear_state_snapshot(
             input_params.linear_state_save_prefix_hashes[i],
-            input_params.linear_state_ids[i])) {
+            input_params.linear_state_ids[i],
+            &update.evicted_prefix_hashes)) {
+      update.saved_prefix_hashes.emplace_back(
+          input_params.linear_state_save_prefix_hashes[i]);
       VLOG(1) << "Qwen3.5 linear state snapshot saved; linear_state_id="
               << input_params.linear_state_ids[i];
     }
   }
+  return update;
 }
 
 void WorkerImpl::initialize_linear_state_checkpoint_slots() {
@@ -782,7 +787,8 @@ void WorkerImpl::release_linear_state_checkpoint_slot(
 }
 
 int32_t WorkerImpl::acquire_linear_state_checkpoint_slot(
-    const LinearStatePrefixHash& prefix_hash) {
+    const LinearStatePrefixHash& prefix_hash,
+    std::vector<LinearStatePrefixHash>* evicted_prefix_hashes) {
   auto existing_it = linear_state_snapshots_.find(prefix_hash);
   if (existing_it != linear_state_snapshots_.end()) {
     CHECK(!existing_it->second.pending_delete);
@@ -799,6 +805,9 @@ int32_t WorkerImpl::acquire_linear_state_checkpoint_slot(
       auto evict_it = linear_state_snapshots_.find(evict_hash);
       if (evict_it == linear_state_snapshots_.end()) {
         continue;
+      }
+      if (evicted_prefix_hashes != nullptr) {
+        evicted_prefix_hashes->emplace_back(evict_hash);
       }
       if (evict_it->second.ref_count > 0) {
         evict_it->second.pending_delete = true;
@@ -847,7 +856,8 @@ void WorkerImpl::release_linear_state_snapshot_refs(
 
 bool WorkerImpl::save_linear_state_snapshot(
     const LinearStatePrefixHash& prefix_hash,
-    int32_t linear_state_id) {
+    int32_t linear_state_id,
+    std::vector<LinearStatePrefixHash>* evicted_prefix_hashes) {
   if (linear_state_id < 0 || linear_state_id >= linear_state_live_slots_ ||
       linear_state_checkpoint_slots_ <= 0) {
     return false;
@@ -857,7 +867,7 @@ bool WorkerImpl::save_linear_state_snapshot(
       linear_state_snapshots_.find(prefix_hash) !=
       linear_state_snapshots_.end();
   const int32_t checkpoint_slot_id =
-      acquire_linear_state_checkpoint_slot(prefix_hash);
+      acquire_linear_state_checkpoint_slot(prefix_hash, evicted_prefix_hashes);
   if (checkpoint_slot_id < 0) {
     LOG(WARNING) << "No reusable Qwen3.5 linear state checkpoint slot; "
                  << "falling back to recompute.";
@@ -1081,8 +1091,15 @@ folly::SemiFuture<std::optional<ForwardOutput>> WorkerImpl::step_async(
 
     // run the model on the given input in working thread
     if (!enable_schedule_overlap()) {
-      const auto output = this->step(input);
-      this->save_linear_state_snapshots(input.input_params);
+      auto output = this->step(input);
+      auto linear_state_update =
+          this->save_linear_state_snapshots(input.input_params);
+      if (output.has_value()) {
+        output->linear_state_saved_prefix_hashes =
+            std::move(linear_state_update.saved_prefix_hashes);
+        output->linear_state_evicted_prefix_hashes =
+            std::move(linear_state_update.evicted_prefix_hashes);
+      }
       promise.setValue(output);
     } else {
       if (last_step_output_valid_ && input.token_ids.numel() > 0 &&
@@ -1091,8 +1108,15 @@ folly::SemiFuture<std::optional<ForwardOutput>> WorkerImpl::step_async(
         input = update_input_by_last_step_output(input);
       }
 
-      const auto output = this->step(input);
-      this->save_linear_state_snapshots(input.input_params);
+      auto output = this->step(input);
+      auto linear_state_update =
+          this->save_linear_state_snapshots(input.input_params);
+      if (output.has_value()) {
+        output->linear_state_saved_prefix_hashes =
+            std::move(linear_state_update.saved_prefix_hashes);
+        output->linear_state_evicted_prefix_hashes =
+            std::move(linear_state_update.evicted_prefix_hashes);
+      }
       if (output.has_value()) {
         if (is_driver() || FLAGS_enable_eplb) {
           std::unique_lock<std::mutex> lock(mtx_);

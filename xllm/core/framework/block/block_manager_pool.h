@@ -78,6 +78,9 @@ class BlockManagerPool : public KVCacheManager {
       int32_t dp_rank,
       const std::vector<XXH3Key>& checkpoint_hashes);
   void prune_linear_state_checkpoint_hashes(const KvCacheEvent& event);
+  void prune_linear_state_checkpoint_hashes(
+      int32_t dp_rank,
+      const std::vector<XXH3Key>& checkpoint_hashes);
 
   virtual void get_merged_kvcache_event(KvCacheEvent* event) const;
   virtual void drain_prefix_cache_event(KvCacheEvent* event) const;

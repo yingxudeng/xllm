@@ -676,6 +676,10 @@ void proto_to_forward_output(const proto::ForwardOutput& pb_output,
   raw_forward_output.out_logprobs.reserve(pb_output.out_logprobs().size());
   raw_forward_output.out_logprobs.assign(pb_output.out_logprobs().begin(),
                                          pb_output.out_logprobs().end());
+  raw_forward_output.linear_state_saved_prefix_hashes =
+      prefix_hashes_from_proto(pb_output.linear_state_saved_prefix_hashes());
+  raw_forward_output.linear_state_evicted_prefix_hashes =
+      prefix_hashes_from_proto(pb_output.linear_state_evicted_prefix_hashes());
   raw_forward_output.prepared_layer_id = pb_output.prepared_layer_id();
   for (size_t i = 0; i < seq_nums; ++i) {
     proto::SquenceOutput pb_seq_out = pb_output.outputs()[i];
@@ -709,20 +713,25 @@ void proto_to_forward_output(const proto::ForwardOutput& pb_output,
   COUNTER_ADD(proto_latency_seconds_proto2o, timer.elapsed_seconds());
 }
 
-void forward_output_to_proto(const torch::Tensor& next_tokens,
-                             const torch::Tensor& logprobs,
-                             const torch::Tensor& top_tokens,
-                             const torch::Tensor& top_logprobs,
-                             const torch::Tensor& embeddings,
-                             const torch::Tensor& expert_load_data,
-                             int32_t prepared_layer_id,
-                             const torch::Tensor& src_seq_idxes,
-                             const torch::Tensor& out_tokens,
-                             const torch::Tensor& out_logprobs,
-                             const std::vector<torch::Tensor>& dit_images,
-                             proto::ForwardOutput* pb_forward_output) {
+void forward_output_to_proto(
+    const torch::Tensor& next_tokens,
+    const torch::Tensor& logprobs,
+    const torch::Tensor& top_tokens,
+    const torch::Tensor& top_logprobs,
+    const torch::Tensor& embeddings,
+    const torch::Tensor& expert_load_data,
+    int32_t prepared_layer_id,
+    const torch::Tensor& src_seq_idxes,
+    const torch::Tensor& out_tokens,
+    const torch::Tensor& out_logprobs,
+    const std::vector<torch::Tensor>& dit_images,
+    const std::vector<ForwardOutput::LinearStatePrefixHash>&
+        linear_state_saved_prefix_hashes,
+    const std::vector<ForwardOutput::LinearStatePrefixHash>&
+        linear_state_evicted_prefix_hashes,
+    proto::ForwardOutput* pb_forward_output) {
   Timer timer;
-  int32_t num_seqs = next_tokens.size(0);
+  int32_t num_seqs = next_tokens.defined() ? next_tokens.size(0) : 0;
   if (embeddings.defined() && embeddings.numel() > 0) {
     num_seqs = std::max(num_seqs, static_cast<int32_t>(embeddings.size(0)));
   }
@@ -875,6 +884,12 @@ void forward_output_to_proto(const torch::Tensor& next_tokens,
         pb_forward_output->mutable_dit_forward_output()->mutable_tensors(),
         dit_images);
   }
+  prefix_hashes_to_proto(
+      linear_state_saved_prefix_hashes,
+      pb_forward_output->mutable_linear_state_saved_prefix_hashes());
+  prefix_hashes_to_proto(
+      linear_state_evicted_prefix_hashes,
+      pb_forward_output->mutable_linear_state_evicted_prefix_hashes());
   COUNTER_ADD(proto_latency_seconds_o2proto, timer.elapsed_seconds());
   return;
 }

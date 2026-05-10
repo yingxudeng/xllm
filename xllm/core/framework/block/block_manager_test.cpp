@@ -636,4 +636,38 @@ TEST(BlockManagerPoolTest, LinearStateCheckpointHashesArePrunedWithEvictions) {
   EXPECT_EQ(miss_after_prune.kv_state().shared_kv_blocks_num(), 0u);
 }
 
+TEST(BlockManagerPoolTest, LinearStateCheckpointHashesArePrunedByWorkerEvict) {
+  ScopedValue<int32_t> max_seqs_guard(&FLAGS_max_seqs_per_batch, 4);
+
+  BlockManagerPool::Options options;
+  options.num_blocks(5).host_num_blocks(0).block_size(4).enable_prefix_cache(
+      true);
+  ASSERT_TRUE(EnableLinearStateOrFail(options));
+  BlockManagerPool pool(options, /*dp_size=*/1);
+
+  Sequence cached_seq =
+      MakeSequence(0, /*prompt_tokens=*/{1, 2, 3, 4, 5, 6, 7, 8});
+  ASSERT_TRUE(pool.allocate(&cached_seq));
+  cached_seq.kv_state().set_kv_cache_tokens_num(cached_seq.num_tokens());
+  pool.cache(&cached_seq);
+  const XXH3Key checkpoint_hash(
+      cached_seq.kv_state().kv_blocks()[1].get_immutable_hash_value());
+  pool.record_linear_state_checkpoint_hashes(/*dp_rank=*/0, {checkpoint_hash});
+  pool.deallocate_without_cache(&cached_seq);
+
+  Sequence hit_before_prune =
+      MakeSequence(1, /*prompt_tokens=*/{1, 2, 3, 4, 5, 6, 7, 8});
+  ASSERT_TRUE(pool.allocate(&hit_before_prune, hit_before_prune.num_tokens()));
+  EXPECT_GT(hit_before_prune.kv_state().shared_kv_blocks_num(), 0u);
+  pool.deallocate_without_cache(&hit_before_prune);
+
+  pool.prune_linear_state_checkpoint_hashes(/*dp_rank=*/0, {checkpoint_hash});
+
+  Sequence miss_after_worker_evict =
+      MakeSequence(2, /*prompt_tokens=*/{1, 2, 3, 4, 5, 6, 7, 8});
+  ASSERT_TRUE(pool.allocate(&miss_after_worker_evict,
+                            miss_after_worker_evict.num_tokens()));
+  EXPECT_EQ(miss_after_worker_evict.kv_state().shared_kv_blocks_num(), 0u);
+}
+
 }  // namespace xllm
