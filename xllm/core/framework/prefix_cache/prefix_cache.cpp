@@ -22,6 +22,7 @@ limitations under the License.
 
 #include <iostream>
 #include <thread>
+#include <vector>
 
 #include "common/global_flags.h"
 #include "common/metrics.h"
@@ -39,19 +40,20 @@ void xxh3_128bits_hash(const uint8_t* pre_hash_value,
     memcpy(
         hash_value, &xxh3_128bits_hash_value, sizeof(xxh3_128bits_hash_value));
   } else {
-    uint8_t key[1024];
-
-    int32_t data_len =
+    const size_t data_len =
         sizeof(int32_t) * token_ids.size() + XXH3_128BITS_HASH_VALUE_LEN;
-    CHECK_GT(sizeof(key), data_len) << "key size is too small";
+    thread_local std::vector<uint8_t> key;
+    key.resize(data_len);
 
-    memcpy(key, pre_hash_value, XXH3_128BITS_HASH_VALUE_LEN);
-    memcpy(key + XXH3_128BITS_HASH_VALUE_LEN,
+    memcpy(key.data(), pre_hash_value, XXH3_128BITS_HASH_VALUE_LEN);
+    memcpy(key.data() + XXH3_128BITS_HASH_VALUE_LEN,
            reinterpret_cast<const void*>(token_ids.data()),
            sizeof(int32_t) * token_ids.size());
 
-    XXH128_hash_t xxh3_128bits_hash_value = XXH3_128bits_withSeed(
-        reinterpret_cast<const void*>(key), data_len, FLAGS_xxh3_128bits_seed);
+    XXH128_hash_t xxh3_128bits_hash_value =
+        XXH3_128bits_withSeed(reinterpret_cast<const void*>(key.data()),
+                              data_len,
+                              FLAGS_xxh3_128bits_seed);
     memcpy(
         hash_value, &xxh3_128bits_hash_value, sizeof(xxh3_128bits_hash_value));
   }
