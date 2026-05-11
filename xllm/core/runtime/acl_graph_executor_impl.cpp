@@ -869,6 +869,10 @@ bool AclGraph::capture(CausalLM* model,
   // const uint32_t actual_num_tokens = tokens.size(0);
 
   auto& tensor_options = model->options();
+  c10::DeviceIndex device_idx = tensor_options.device().index();
+  std::mutex& capture_lock =
+      ::xllm::npu::DeviceCaptureLock::get_instance().get_lock(device_idx);
+  std::lock_guard<std::mutex> lock_guard(capture_lock);
 
   torch::npu::synchronize();
 
@@ -876,6 +880,7 @@ bool AclGraph::capture(CausalLM* model,
   // Get current NPU stream from libtorch NPU API
   aclrtStream stream =
       c10_npu::getCurrentNPUStream(tensor_options.device().index()).stream();
+  aclrtStream capture_stream = stream;
 
   // For hybrid models (e.g., qwen3_next with mixed GDN/full_attention layers),
   // we need to find the first Full Attention layer to get the correct kv_cache.
@@ -905,58 +910,55 @@ bool AclGraph::capture(CausalLM* model,
   // Synchronize stream to ensure all data is copied to graph persistent buffers
   aclrtSynchronizeStream(stream);
 
-  // Acquire device-level lock to prevent prepare_work_before_execute from
-  // executing simultaneously, which would trigger synchronous operations
-  // that conflict with capture mode
-  auto device_idx = tensor_options.device().index();
-
   // Use cached capture stream for graph capture
   // capture_stream_ is initialized in constructor
   bool need_restore_stream = false;
 
-  // capture lock scope
-  {
-    auto& capture_lock =
-        ::xllm::npu::DeviceCaptureLock::get_instance().get_lock(device_idx);
-    std::lock_guard<std::mutex> lock_guard(capture_lock);
-
-    if (c10_npu::getCurrentNPUStream(device_idx) ==
-        c10_npu::getDefaultNPUStream(device_idx)) {
-      c10_npu::setCurrentNPUStream(capture_stream_.value());
-      aclrtSynchronizeStream(capture_stream_.value().stream());
-      need_restore_stream = true;
-    }
-    LOG(INFO) << "capture begin, bucket_num_tokens: " << bucket_num_tokens
-              << ", actual_num_tokens: " << actual_num_tokens;
-
-    // no mempool id, will create a new one; capture mode is thread local, allow
-    // other threads to execute synchronous operations
-    graph_.capture_begin(
-        {0, 0}, aclmdlRICaptureMode::ACL_MODEL_RI_CAPTURE_MODE_THREAD_LOCAL);
-    // Execute forward pass - NPUGraph mempool manages temporary tensors
-    auto forward_result =
-        model->forward({persistent_param_.persistent_tokens(num_tokens_)},
-                       {persistent_param_.persistent_positions(num_tokens_)},
-                       kv_cache,
-                       {graph_params.value()});
-
-    // Store result in persistent buffer owned by NPUGraph mempool
-    persistent_param_.set_hidden_states(forward_result.hidden_states);
-    if (options.enable_graph_aux_hidden_states() &&
-        forward_result.aux_hidden_states.defined()) {
-      persistent_param_.set_aux_hidden_states(forward_result.aux_hidden_states);
-    }
-    graph_.capture_end();
-    // Lock is automatically released here when lock goes out of scope
-    if (need_restore_stream) {
-      c10_npu::setCurrentNPUStream(
-          c10_npu::getDefaultNPUStream(tensor_options.device().index()));
-    }
+  if (c10_npu::getCurrentNPUStream(device_idx) ==
+      c10_npu::getDefaultNPUStream(device_idx)) {
+    c10_npu::setCurrentNPUStream(capture_stream_.value());
+    capture_stream = capture_stream_.value().stream();
+    aclrtSynchronizeStream(capture_stream);
+    need_restore_stream = true;
   }
-  // Synchronize and test replay to verify graph capture
-  aclrtSynchronizeStream(stream);
+  LOG(INFO) << "capture begin, bucket_num_tokens: " << bucket_num_tokens
+            << ", actual_num_tokens: " << actual_num_tokens;
 
-  graph_.replay();
+  // no mempool id, will create a new one; capture mode is thread local, allow
+  // other threads to execute synchronous operations
+  graph_.capture_begin(
+      {0, 0}, aclmdlRICaptureMode::ACL_MODEL_RI_CAPTURE_MODE_THREAD_LOCAL);
+  // Execute forward pass - NPUGraph mempool manages temporary tensors
+  auto forward_result =
+      model->forward({persistent_param_.persistent_tokens(num_tokens_)},
+                     {persistent_param_.persistent_positions(num_tokens_)},
+                     kv_cache,
+                     {graph_params.value()});
+
+  // Store result in persistent buffer owned by NPUGraph mempool
+  persistent_param_.set_hidden_states(forward_result.hidden_states);
+  if (options.enable_graph_aux_hidden_states() &&
+      forward_result.aux_hidden_states.defined()) {
+    persistent_param_.set_aux_hidden_states(forward_result.aux_hidden_states);
+  }
+  graph_.capture_end();
+  aclError capture_status = aclrtSynchronizeStream(capture_stream);
+  CHECK_EQ(capture_status, ACL_SUCCESS)
+      << "aclrtSynchronizeStream failed after graph capture, error code: "
+      << capture_status;
+  if (need_restore_stream) {
+    c10_npu::setCurrentNPUStream(
+        c10_npu::getDefaultNPUStream(tensor_options.device().index()));
+  }
+
+  if (!has_linear_attention_layers(args)) {
+    graph_.replay();
+    aclError replay_status = aclrtSynchronizeStream(stream);
+    CHECK_EQ(replay_status, ACL_SUCCESS)
+        << "aclrtSynchronizeStream failed after graph capture replay, error "
+           "code: "
+        << replay_status;
+  }
 
   // aclrtSynchronizeStream(stream);
   return true;
@@ -982,6 +984,9 @@ ModelOutput AclGraph::replay(const torch::Tensor& tokens,
   CHECK_LE(actual_num_tokens, num_tokens_)
       << "num_tokens mismatch: expected <= " << num_tokens_ << ", got "
       << actual_num_tokens;
+  std::mutex& capture_lock =
+      ::xllm::npu::DeviceCaptureLock::get_instance().get_lock(device_index_);
+  std::lock_guard<std::mutex> lock_guard(capture_lock);
 
   // Update persistent parameters with new input data
   // Note: tiling_data is updated in update() if needed - for hybrid models
@@ -1005,6 +1010,10 @@ ModelOutput AclGraph::replay(const torch::Tensor& tokens,
   aclrtStream stream = c10_npu::getCurrentNPUStream().stream();
 
   graph_.replay();
+  aclError replay_status = aclrtSynchronizeStream(stream);
+  CHECK_EQ(replay_status, ACL_SUCCESS)
+      << "aclrtSynchronizeStream failed after graph replay, error code: "
+      << replay_status;
 
   // this is necessary to ensure the graph replay is completed
   // aclError st = aclrtSynchronizeStream(stream);
