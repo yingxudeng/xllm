@@ -36,6 +36,7 @@ from scripts.build_support.utils import (
     pre_build,
     read_readme,
 )
+from scripts.logger import logger
 
 BUILD_TEST_FILE: bool = True
 BUILD_EXPORT: bool = True
@@ -60,7 +61,7 @@ def _maybe_compile_tilelang_kernels(device: str) -> None:
         "--output-root",
         output_root,
     ]
-    print("[INFO] compiling TileLang kernels via source-tree launcher")
+    logger.info("compiling TileLang kernels via source-tree launcher")
     subprocess.check_call(cmd, cwd=base_dir, env=env)
 
 
@@ -149,9 +150,8 @@ class ExtBuild(build_ext):
             # build extensions
             for ext in self.extensions:
                 self.build_extension(ext)
-        except Exception as e:
-            print("ERROR: Build failed.")
-            print(f"Details: {e}")
+        except Exception:
+            logger.exception("Build failed.")
             exit(1)
 
     def build_extension(self, ext: CMakeExtension) -> None:
@@ -247,8 +247,8 @@ class ExtBuild(build_ext):
 
         env: dict[str, str] = os.environ.copy()
         env["VCPKG_MAX_CONCURRENCY"] = str(max_jobs)
-        print("CMake Args: ", cmake_args)
-        print("Env: ", env)
+        logger.info(f"CMake Args: {cmake_args}")
+        logger.info(f"Env: {env}")
 
         self.build_cmake_targets(ext, cmake_args, build_args, env, extdir, product)
 
@@ -347,25 +347,24 @@ class ExtBuildSingleTest(ExtBuild):
         
         if not test_executable:
             # If not found, try using ctest to run
-            print(f"⚠️  Warning: Could not find test executable {self.test_name}, trying ctest...")
+            logger.warning(f"⚠️  Could not find test executable {self.test_name}, trying ctest...")
             try:
                 subprocess.check_call(
                     ["ctest", "-R", self.test_name, "--verbose"],
                     cwd=cmake_dir,
                     env=env
                 )
-                print(f"✅ Test {self.test_name} passed!")
-            except subprocess.CalledProcessError as e:
-                print(f"❌ Failed to run test {self.test_name}")
+                logger.info(f"✅ Test {self.test_name} passed!")
+            except subprocess.CalledProcessError:
+                logger.exception(f"❌ Failed to run test {self.test_name}")
                 raise
         else:
-            # Run test executable directly
-            print(f"🚀 Running test: {test_executable}")
+            logger.info(f"🚀 Running test: {test_executable}")
             try:
                 subprocess.check_call([test_executable], cwd=os.path.dirname(test_executable), env=env)
-                print(f"✅ Test {self.test_name} passed!")
+                logger.info(f"✅ Test {self.test_name} passed!")
             except subprocess.CalledProcessError as e:
-                print(f"❌ Test {self.test_name} failed with exit code {e.returncode}")
+                logger.exception(f"❌ Test {self.test_name} failed with exit code {e.returncode}")
                 raise
 
 class BuildDistWheel(bdist_wheel):
@@ -410,10 +409,10 @@ class BuildDistWheel(bdist_wheel):
         build_ext_cmd.device = self.device
         build_ext_cmd.arch = self.arch
 
-        print("🔨 build project...")
+        logger.info("🔨 build project...")
         self.run_command('build')
 
-        print("🧪 testing UT...")
+        logger.info("🧪 testing UT...")
         self.run_command('test')
 
         if self.arch == 'arm':
@@ -421,7 +420,7 @@ class BuildDistWheel(bdist_wheel):
         else:
             ext_path = get_base_dir() + f"/build/lib.linux-x86_64-cpython-{get_python_version()}/"
         if len(ext_path) == 0:
-            print("❌ Build wheel failed, not found path.")
+            logger.error("❌ Build wheel failed, not found path.")
             exit(1)
         tmp_path = os.path.join(ext_path, 'xllm')
         for root, dirs, files in os.walk(tmp_path):
@@ -476,7 +475,9 @@ class TestUT(Command):
 
             output_lines: list[str] = []
             for line in iter(process.stdout.readline, ''):
-                print(line, end='')
+                # Stream raw subprocess output as-is to preserve ctest formatting.
+                sys.stdout.write(line)
+                sys.stdout.flush()
                 output_lines.append(line)
             
             return_code: int = process.wait()
@@ -485,28 +486,28 @@ class TestUT(Command):
             if warn_if_no_tests and return_code == 0:
                 output_text: str = ''.join(output_lines)
                 if 'No tests were found' in output_text:
-                    print(f"No tests matched the pattern (this is OK for some backends).")
+                    logger.warning("No tests matched the pattern (this is OK for some backends).")
                     return
             
             if return_code != 0:
-                print(error_message)
-                exit(1)
+                logger.error(error_message)
+                raise subprocess.CalledProcessError(return_code, cmd)
         
         try:
             # Step 1: Run all tests EXCEPT sequential ones in parallel
             if self.SEQUENTIAL_TESTS:
                 exclude_pattern = '|'.join(self.SEQUENTIAL_TESTS)
-                print("=" * 80)
-                print(f"Running tests in parallel (excluding: {', '.join(self.SEQUENTIAL_TESTS)})...")
-                print("=" * 80)
+                logger.info("=" * 80)
+                logger.info(f"Running tests in parallel (excluding: {', '.join(self.SEQUENTIAL_TESTS)})...")
+                logger.info("=" * 80)
                 run_subprocess_with_streaming(
                     ['ctest', '--parallel', '8', '--repeat', 'until-pass:5', '-E', exclude_pattern],
                     "Parallel tests failed."
                 )
             else:
-                print("=" * 80)
-                print("Running all tests in parallel...")
-                print("=" * 80)
+                logger.info("=" * 80)
+                logger.info("Running all tests in parallel...")
+                logger.info("=" * 80)
                 run_subprocess_with_streaming(
                     ['ctest', '--parallel', '8', '--repeat', 'until-pass:5'],
                     "Parallel tests failed."
@@ -514,9 +515,9 @@ class TestUT(Command):
             
             # Step 2: Run sequential tests one by one
             for idx, test_name in enumerate(self.SEQUENTIAL_TESTS, start=2):
-                print("\n" + "=" * 80)
-                print(f"Step {idx}: Running {test_name} sequentially...")
-                print("=" * 80)
+                logger.info("=" * 80)
+                logger.info(f"Step {idx}: Running {test_name} sequentially...")
+                logger.info("=" * 80)
                 # Use pattern matching to include all test cases under the test class
                 # e.g., ReduceScatterMultiDeviceTest matches ReduceScatterMultiDeviceTest.BasicTest, etc.
                 run_subprocess_with_streaming(
@@ -525,12 +526,12 @@ class TestUT(Command):
                     warn_if_no_tests=True
                 )
             
-            print("\n" + "=" * 80)
-            print("All tests passed!")
-            print("=" * 80)
+            logger.info("=" * 80)
+            logger.info("All tests passed!")
+            logger.info("=" * 80)
             return 0
         except subprocess.CalledProcessError as e:
-            print(e.stderr)
+            logger.exception(f"ctest failed: {e.stderr}")
             exit(1)
 
     def run(self) -> None:
@@ -630,7 +631,7 @@ if __name__ == "__main__":
     device = config['device']
     if device == 'auto':
         device = get_device_type()
-    print(f"🚀 Build xllm with CPU arch: {arch} and target device: {device}")
+    logger.info(f"🚀 Build xllm with CPU arch: {arch} and target device: {device}")
 
     pre_build()
 

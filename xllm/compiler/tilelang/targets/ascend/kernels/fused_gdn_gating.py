@@ -6,6 +6,8 @@ from pathlib import Path
 import tilelang
 import tilelang.language as T
 
+from scripts.logger import logger
+
 from compiler.tilelang.targets.ascend.kernels.utils import (
     DEFAULT_ASCEND_PASS_CONFIGS,
     detect_vec_core_num,
@@ -524,7 +526,7 @@ def _run_ref_check(
     import torch
 
     if not hasattr(torch, "npu") or not torch.npu.is_available():
-        print("[WARN] Skip fused_gdn_gating reference check: NPU is not available")
+        logger.warning("Skip fused_gdn_gating reference check: NPU is not available")
         return
 
     if num_batches <= 0:
@@ -579,7 +581,7 @@ def _run_ref_check(
         rtol=1e-2,
         atol=1e-2,
     )
-    print(f"[INFO] fused_gdn_gating output matches torch reference for num_heads={num_heads}")
+    logger.info(f"fused_gdn_gating output matches torch reference for num_heads={num_heads}")
 
 
 def _run_ref_suite(

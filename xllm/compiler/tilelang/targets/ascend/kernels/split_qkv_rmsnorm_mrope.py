@@ -21,6 +21,8 @@ from pathlib import Path
 import tilelang
 import tilelang.language as T
 
+from scripts.logger import logger
+
 from compiler.tilelang.common.spec import (
     DispatchField,
     TilelangKernel,
@@ -927,8 +929,8 @@ def _run_ref_check(
     import torch
 
     if not hasattr(torch, "npu") or not torch.npu.is_available():
-        print(
-            "[WARN] Skip split_qkv_rmsnorm_mrope reference check: "
+        logger.warning(
+            "Skip split_qkv_rmsnorm_mrope reference check: "
             "NPU is not available"
         )
         return
@@ -1025,8 +1027,8 @@ def _run_ref_check(
     torch.testing.assert_close(v_out, v_ref, rtol=0, atol=0)
     torch.testing.assert_close(gate_out, gate_ref, rtol=0, atol=0)
     il_tag = "interleaved" if is_interleaved else "non-interleaved"
-    print(
-        "[INFO] split_qkv_rmsnorm_mrope output matches torch reference for "
+    logger.info(
+        "split_qkv_rmsnorm_mrope output matches torch reference for "
         f"num_tokens={num_tokens}, num_q_heads={num_q_heads}, "
         f"num_kv_heads={num_kv_heads}, {il_tag}"
     )

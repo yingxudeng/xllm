@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from scripts.logger import logger
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -67,8 +69,8 @@ def main(argv: list[str] | None = None) -> None:
     else:
         raise ValueError(f"Unsupported target: {args.target}")
     for manifest in manifests:
-        print(f"[INFO] built {manifest.target}:{manifest.kernel_name}")
-        print(f"[INFO] manifest: {Path(manifest.output_dir) / 'manifest.json'}")
+        logger.info(f"built {manifest.target}:{manifest.kernel_name}")
+        logger.info(f"manifest: {Path(manifest.output_dir) / 'manifest.json'}")
 
 
 if __name__ == "__main__":

@@ -8,6 +8,8 @@ import shlex
 from pathlib import Path
 from typing import Optional
 
+from scripts.logger import logger
+
 # get cpu architecture
 def get_cpu_arch() -> str:
     arch = platform.machine()
@@ -50,7 +52,7 @@ def get_device_type() -> str:
     except ImportError:
         pass
 
-    print("❌ Unsupported device type, please check what device you are using.")
+    logger.error("❌ Unsupported device type, please check what device you are using.")
     exit(1)
 
 def get_base_dir() -> str:
@@ -121,7 +123,7 @@ def check_and_install_pre_commit() -> None:
     if not os.path.exists(".git/hooks/pre-commit"):
         ok, _, _ = _run_command(["pre-commit", "install"], check=True)
         if not ok:
-            print("❌ Run 'pre-commit install' failed. Please install pre-commit: pip install pre-commit")
+            logger.error("❌ Run 'pre-commit install' failed. Please install pre-commit: pip install pre-commit")
             exit(1)
 
 def _run_command(
@@ -163,9 +165,9 @@ def _run_command(
     return result.returncode == 0, result.stdout.strip(), (result.stderr or "").strip()
 
 def _print_manual_check_commands(commands: list[str]) -> None:
-    print("🔎 You can run these commands to inspect manually:")
+    logger.info("🔎 You can run these commands to inspect manually:")
     for cmd in commands:
-        print(f"   {cmd}")
+        logger.info(f"   {cmd}")
 
 def _run_shell_command(
     command: str,
@@ -180,27 +182,27 @@ def _run_shell_command(
         passthrough_output=passthrough_output,
     )
     if not ok:
-        print(f"❌ Run shell command '{command}' failed: {err}")
+        logger.error(f"❌ Run shell command '{command}' failed: {err}")
         return False
     return True
 
 def _run_git_command(repo_root: str, args: list[str]) -> tuple[bool, str]:
     ok, output, err = _run_command(["git"] + args, cwd=repo_root, check=True)
     if not ok and "No such file or directory" in err:
-        print(f"❌ Failed to run git command in {repo_root}: git {' '.join(args)}")
-        print(f"   {err}")
+        logger.error(f"❌ Failed to run git command in {repo_root}: git {' '.join(args)}")
+        logger.error(f"   {err}")
         return False, ""
     if not ok:
-        print(f"❌ Git command failed in {repo_root}: git {' '.join(args)}")
+        logger.error(f"❌ Git command failed in {repo_root}: git {' '.join(args)}")
         if err:
-            print(f"   {err}")
+            logger.error(f"   {err}")
         return False, ""
     return True, output
 
 def _collect_submodule_init_issues(repo_root: str) -> dict[str, str]:
     ok, output = _run_git_command(repo_root, ["submodule", "status"])
     if not ok:
-        print("❌ Failed to inspect submodule status.")
+        logger.error("❌ Failed to inspect submodule status.")
         _print_manual_check_commands([
             f"cd {repo_root}",
             "git submodule status",
@@ -288,7 +290,7 @@ def _export_cmake_prefix_paths(prefix_paths: list[str]) -> None:
         return
 
     os.environ["CMAKE_PREFIX_PATH"] = os.pathsep.join(merged_paths)
-    print(f"✅ Export CMAKE_PREFIX_PATH to environment: {os.environ['CMAKE_PREFIX_PATH']}")
+    logger.info(f"✅ Export CMAKE_PREFIX_PATH to environment: {os.environ['CMAKE_PREFIX_PATH']}")
 
 
 def _run_dependencies_script_or_exit(script_path: str) -> None:
@@ -297,7 +299,7 @@ def _run_dependencies_script_or_exit(script_path: str) -> None:
         cwd=script_path,
         passthrough_output=True,
     ):
-        print("❌ Run shell command 'sh third_party/dependencies.sh' failed!")
+        logger.error("❌ Run shell command 'sh third_party/dependencies.sh' failed!")
         _print_manual_check_commands([
             f"cd {script_path}",
             "sh third_party/dependencies.sh",
@@ -309,11 +311,11 @@ def _validate_submodules_or_exit(repo_root: str) -> None:
     issues = _collect_submodule_init_issues(repo_root)
 
     if issues:
-        print("❌ Submodule commit check failed. Repositories not correctly initialized:")
+        logger.error("❌ Submodule commit check failed. Repositories not correctly initialized:")
         for path in sorted(issues):
-            print(f"   - {path}: {issues[path]}")
-        print("\nPlease align submodules and try again:")
-        print("   git submodule update --init --recursive [-f|--force]")
+            logger.error(f"   - {path}: {issues[path]}")
+        logger.error("Please align submodules and try again:")
+        logger.error("   git submodule update --init --recursive [-f|--force]")
         exit(1)
 
 
@@ -322,17 +324,17 @@ def _ensure_prebuild_dependencies_installed(script_path: str) -> None:
     missing_dependencies = _collect_missing_dependencies(dependency_files)
     if missing_dependencies:
         missing_names = ", ".join(sorted(missing_dependencies))
-        print(f"ℹ️ Missing third-party dependencies: {missing_names}. Running dependencies.sh ...")
+        logger.info(f"ℹ️ Missing third-party dependencies: {missing_names}. Running dependencies.sh ...")
         _run_dependencies_script_or_exit(script_path)
 
         missing_dependencies = _collect_missing_dependencies(dependency_files)
         if missing_dependencies:
-            print("❌ Some third-party dependencies are still missing after running dependencies.sh:")
+            logger.error("❌ Some third-party dependencies are still missing after running dependencies.sh:")
             manual_commands = [f"cd {script_path}", "sh third_party/dependencies.sh"]
             for name in sorted(missing_dependencies):
-                print(f"   - {name}")
+                logger.error(f"   - {name}")
                 for file_path in missing_dependencies[name]:
-                    print(f"     missing file: {file_path}")
+                    logger.error(f"     missing file: {file_path}")
                     manual_commands.append(f"test -f {file_path}")
             _print_manual_check_commands(manual_commands)
             exit(1)
@@ -378,7 +380,7 @@ def _ensure_xllm_ops_rebuild_on_missing_marker() -> None:
 
     cmake_cache_path = _get_cmake_cache_path()
     if _clear_xllm_ops_cache_git_head(cmake_cache_path):
-        print("✅ Cleared XLLM_OPS_GIT_HEAD_CACHED from CMake cache to trigger xllm_ops rebuild.")
+        logger.info("✅ Cleared XLLM_OPS_GIT_HEAD_CACHED from CMake cache to trigger xllm_ops rebuild.")
         return
 
 def pre_build() -> None:

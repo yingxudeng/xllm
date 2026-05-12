@@ -20,11 +20,15 @@ import argparse
 import json
 import os
 import shutil
+import sys
 
 import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
 from transformers import AutoConfig
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from scripts.logger import logger
 
 
 def detect_model_type(config):
@@ -126,7 +130,7 @@ def copy_non_safetensors_files(input_dir, output_dir):
         ):
             dst_file_path = os.path.join(output_dir, filename)
             shutil.copy2(src_file_path, dst_file_path)
-    print(f"All non-safetensors files have been copied to {output_dir}")
+    logger.info(f"All non-safetensors files have been copied to {output_dir}")
 
 def block_dequant(
     x_q_block: torch.Tensor,
@@ -167,14 +171,14 @@ def export_mtp_layer_parameters(input_dir, output_dir, mtp_layer_id, model_type)
             continue
 
         file_path = os.path.join(input_dir, filename)
-        print(f"Processing: {filename}")
+        logger.info(f"Processing: {filename}")
 
         try:
             with safe_open(file_path, framework="pt") as f:
                 matching_keys = [k for k in f.keys() if (k.startswith(prefix) or k == "rot.weight")]
 
                 if not matching_keys:
-                    print(f"  No parameters starting with '{prefix}' found")
+                    logger.info(f"  No parameters starting with '{prefix}' found")
                     continue
 
                 for key in matching_keys:
@@ -188,8 +192,8 @@ def export_mtp_layer_parameters(input_dir, output_dir, mtp_layer_id, model_type)
                         new_key = key.replace(prefix, "model.layers.0")
                     params[new_key] = f.get_tensor(key)
 
-        except Exception as e:
-            print(f"  Error processing {filename}: {str(e)}")
+        except Exception:
+            logger.exception(f"  Error processing {filename}")
 
     if params:
         new_params = {}
@@ -205,22 +209,22 @@ def export_mtp_layer_parameters(input_dir, output_dir, mtp_layer_id, model_type)
             elif key not in new_params:
                 new_params[key] = params[key]
         params = new_params
-        print(f"Saving {len(params)} parameters to {output_path}")
+        logger.info(f"Saving {len(params)} parameters to {output_path}")
         save_file(params, output_path)
     else:
-        print("No matching parameters found.")
+        logger.error("No matching parameters found.")
         raise ValueError(f"No MTP layer parameters found at layer {mtp_layer_id}")
 
     # Update safetensors index
     index_path = os.path.join(output_dir, "model.safetensors.index.json")
-    print(f"Updating safetensors index to {index_path}")
+    logger.info(f"Updating safetensors index to {index_path}")
     index_data = {"weight_map": {}}
     for key in params:
         index_data["weight_map"][key] = "mtp_layer_parameters.safetensors"
     with open(index_path, "w") as f:
         json.dump(index_data, f, indent=4)
 
-    print("All done.")
+    logger.info("All done.")
 
 
 if __name__ == "__main__":
@@ -256,7 +260,7 @@ if __name__ == "__main__":
     else:
         model_type = detect_model_type(config)
     
-    print(f"Detected model type: {model_type}")
+    logger.info(f"Detected model type: {model_type}")
     
     # Verify MTP support
     if not hasattr(config, "num_nextn_predict_layers"):
@@ -266,7 +270,7 @@ if __name__ == "__main__":
     
     # Get MTP layer ID
     mtp_layer_id = get_mtp_layer_id(config, model_type)
-    print(f"MTP layer ID: {mtp_layer_id}")
+    logger.info(f"MTP layer ID: {mtp_layer_id}")
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
@@ -280,4 +284,4 @@ if __name__ == "__main__":
     # Export MTP layer parameters
     export_mtp_layer_parameters(args.input_dir, args.output_dir, mtp_layer_id, model_type)
     
-    print(f"\nMTP model exported successfully to: {args.output_dir}")
+    logger.info(f"MTP model exported successfully to: {args.output_dir}")
