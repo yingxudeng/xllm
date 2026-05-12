@@ -24,6 +24,7 @@ limitations under the License.
 #if defined(USE_NPU)
 #include "acl/acl.h"
 #include "kernels/npu/xllm_ops/xllm_ops_api.h"
+#include "torch_npu/csrc/core/npu/NPUStream.h"
 #elif defined(USE_MLU)
 #include <framework/core/caching_allocator.h>
 #elif defined(USE_CUDA) || defined(USE_ILU)
@@ -82,6 +83,18 @@ bool is_zero_prefix_hash(
     return value == 0;
   });
 }
+
+#if defined(USE_NPU)
+void synchronize_current_npu_stream(c10::DeviceIndex device_index,
+                                    const char* action) {
+  aclrtStream current_stream =
+      c10_npu::getCurrentNPUStream(device_index).stream();
+  aclError status = aclrtSynchronizeStream(current_stream);
+  CHECK_EQ(status, ACL_SUCCESS)
+      << "aclrtSynchronizeStream failed after Qwen3.5 linear state snapshot "
+      << action << ", error code: " << status;
+}
+#endif
 
 // During TP model initialization, each rank loads weights concurrently.
 // MoE weight assembly (especially stack/cat on large expert tensors) runs on
@@ -650,6 +663,11 @@ WorkerImpl::restore_linear_state_snapshots(ModelInputParams& input_params) {
                  << linear_state_id;
     active_linear_state_requests_.erase(linear_state_id);
   }
+#if defined(USE_NPU)
+  if (!restored_prefix_hashes.empty()) {
+    synchronize_current_npu_stream(device_.index(), "restore");
+  }
+#endif
   return restored_prefix_hashes;
 }
 
@@ -690,6 +708,15 @@ WorkerImpl::LinearStateSnapshotUpdate WorkerImpl::save_linear_state_snapshots(
 
   CHECK_EQ(input_params.linear_state_ids.size(),
            input_params.linear_state_save_prefix_hashes.size());
+#if defined(USE_NPU)
+  std::optional<std::unique_lock<std::mutex>> capture_lock_guard;
+  if (FLAGS_enable_graph) {
+    auto& capture_lock =
+        ::xllm::npu::DeviceCaptureLock::get_instance().get_lock(
+            device_.index());
+    capture_lock_guard.emplace(capture_lock);
+  }
+#endif
   std::lock_guard<std::mutex> lock(linear_state_snapshots_mutex_);
   for (size_t i = 0; i < input_params.linear_state_ids.size(); ++i) {
     if (is_zero_prefix_hash(input_params.linear_state_save_prefix_hashes[i])) {
@@ -890,6 +917,11 @@ bool WorkerImpl::save_linear_state_snapshot(
                       tensor_bytes(ssm_cache.select(0, checkpoint_slot_id));
     copied_snapshot = true;
   }
+#if defined(USE_NPU)
+  if (copied_snapshot) {
+    synchronize_current_npu_stream(device_.index(), "save");
+  }
+#endif
 
   if (!copied_snapshot) {
     if (!had_existing_snapshot) {
