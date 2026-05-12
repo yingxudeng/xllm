@@ -23,7 +23,9 @@ cc_library(
     npu_moe_token_unpermute.cpp
     rope.cpp
     npu_recurrent_gated_delta_rule.cpp
+    rec_constrained_topk.cpp
   DEPS
     :torch_npu_kernels
     :tilelang_kernels
+    xllm_ops
 )
