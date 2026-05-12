@@ -256,20 +256,21 @@ class AclGraph {
   }
 
   // Capture computation graph for given bucket num_tokens
-  bool capture(CausalLM* model,
-               const ModelArgs& args,
-               const runtime::Options& options,
-               const torch::Tensor& tokens,
-               const torch::Tensor& positions,
-               const ModelInputParams& params,
-               std::vector<KVCache>& kv_cache,
-               uint32_t bucket_num_tokens);
+  std::optional<ModelOutput> capture(CausalLM* model,
+                                     const ModelArgs& args,
+                                     const runtime::Options& options,
+                                     const torch::Tensor& tokens,
+                                     const torch::Tensor& positions,
+                                     const ModelInputParams& params,
+                                     std::vector<KVCache>& kv_cache,
+                                     uint32_t bucket_num_tokens);
 
   // Replay captured graph with new input data
   ModelOutput replay(const torch::Tensor& tokens,
                      const torch::Tensor& positions,
                      std::vector<KVCache>& kv_cache,
-                     const ModelInputParams& params);
+                     const ModelInputParams& params,
+                     bool include_aux_hidden_states);
 
   // Get the hidden states from the last capture
   torch::Tensor get_hidden_states(uint32_t actual_num_tokens = 0) const {

@@ -62,6 +62,36 @@ std::pair<torch::Tensor, torch::Tensor> find_attention_plan_kv_cache(
   return {torch::Tensor(), torch::Tensor()};
 }
 
+torch::Tensor clone_if_defined(const torch::Tensor& tensor) {
+  if (tensor.defined() && tensor.numel() > 0) {
+    return tensor.clone();
+  }
+  return tensor;
+}
+
+torch::Tensor clone_graph_output(const torch::Tensor& tensor) {
+  auto output = clone_if_defined(tensor);
+  if (output.defined() && output.numel() > 0) {
+    torch::npu::synchronize();
+  }
+  return output;
+}
+
+ModelOutput make_isolated_graph_output(
+    const ModelOutput& output,
+    const torch::Tensor& aux_hidden_states = torch::Tensor()) {
+  if (aux_hidden_states.defined() && aux_hidden_states.numel() > 0) {
+    return ModelOutput(clone_graph_output(output.hidden_states),
+                       clone_graph_output(output.residual),
+                       clone_graph_output(aux_hidden_states));
+  }
+  if (output.residual.defined() && output.residual.numel() > 0) {
+    return ModelOutput(clone_graph_output(output.hidden_states),
+                       clone_graph_output(output.residual));
+  }
+  return ModelOutput(clone_graph_output(output.hidden_states));
+}
+
 int64_t get_decode_graph_capacity(const runtime::Options& options) {
   CHECK_GT(options.num_decoding_tokens(), 0)
       << "num_decoding_tokens must be > 0 for graph capacity";
@@ -854,14 +884,14 @@ void GraphPersistentParam::update_attention_mask(
   }
 }
 
-bool AclGraph::capture(CausalLM* model,
-                       const ModelArgs& args,
-                       const runtime::Options& options,
-                       const torch::Tensor& tokens,
-                       const torch::Tensor& positions,
-                       const ModelInputParams& params,
-                       std::vector<KVCache>& kv_cache,
-                       uint32_t bucket_num_tokens) {
+std::optional<ModelOutput> AclGraph::capture(CausalLM* model,
+                                             const ModelArgs& args,
+                                             const runtime::Options& options,
+                                             const torch::Tensor& tokens,
+                                             const torch::Tensor& positions,
+                                             const ModelInputParams& params,
+                                             std::vector<KVCache>& kv_cache,
+                                             uint32_t bucket_num_tokens) {
   // Save bucket num_tokens for this graph instance
   num_tokens_ = bucket_num_tokens;
 
@@ -960,8 +990,19 @@ bool AclGraph::capture(CausalLM* model,
         << replay_status;
   }
 
-  // aclrtSynchronizeStream(stream);
-  return true;
+  // Copy the visible output while the graph lock is still held. The underlying
+  // persistent buffer is reused by later graph replays.
+  auto output = make_isolated_graph_output(
+      ModelOutput(get_hidden_states(actual_num_tokens)));
+  if (options.enable_graph_aux_hidden_states()) {
+    auto aux_hidden_states =
+        persistent_param_.aux_hidden_states(actual_num_tokens);
+    if (aux_hidden_states.defined() && aux_hidden_states.numel() > 0) {
+      output = make_isolated_graph_output(
+          ModelOutput(get_hidden_states(actual_num_tokens)), aux_hidden_states);
+    }
+  }
+  return output;
 }
 
 void AclGraph::initialize_capture_stream(c10::DeviceIndex device_index) {
@@ -979,7 +1020,8 @@ void AclGraph::initialize_capture_stream(c10::DeviceIndex device_index) {
 ModelOutput AclGraph::replay(const torch::Tensor& tokens,
                              const torch::Tensor& positions,
                              std::vector<KVCache>& kv_cache,
-                             const ModelInputParams& params) {
+                             const ModelInputParams& params,
+                             bool include_aux_hidden_states) {
   const uint32_t actual_num_tokens = tokens.size(0);
   CHECK_LE(actual_num_tokens, num_tokens_)
       << "num_tokens mismatch: expected <= " << num_tokens_ << ", got "
@@ -1020,10 +1062,18 @@ ModelOutput AclGraph::replay(const torch::Tensor& tokens,
   // CHECK_EQ(st, ACL_SUCCESS)
   // << "aclrtSynchronizeStream failed, error code: " << st;
 
-  // Return the actual num_tokens portion of ModelOutput
-  // Note: aux_hidden_states handling is done in AclGraphExecutorImpl::run()
-  // since replay() doesn't have access to options
-  return ModelOutput(get_hidden_states(actual_num_tokens));
+  // Copy the visible output while the graph lock is still held. The underlying
+  // persistent buffer is reused by later graph replays.
+  if (include_aux_hidden_states) {
+    auto aux_hidden_states =
+        persistent_param_.aux_hidden_states(actual_num_tokens);
+    if (aux_hidden_states.defined() && aux_hidden_states.numel() > 0) {
+      return make_isolated_graph_output(
+          ModelOutput(get_hidden_states(actual_num_tokens)), aux_hidden_states);
+    }
+  }
+  return make_isolated_graph_output(
+      ModelOutput(get_hidden_states(actual_num_tokens)));
 }
 
 AclGraphExecutorImpl::AclGraphExecutorImpl(CausalLM* model,
@@ -1098,33 +1148,27 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
     // Replay the existing graph
     VLOG(kGraphExecutorLogVerboseLevel)
         << "AclGraphExecutorImpl::run() in replay mode";
-    auto result = it->second->replay(
-        tokens_tensor, positions_tensor, kv_caches, params_single);
-    // Handle aux_hidden_states based on options
-    if (options_.enable_graph_aux_hidden_states()) {
-      auto aux_hidden_states = persistent_param_->aux_hidden_states(n_tokens);
-      if (aux_hidden_states.defined() && aux_hidden_states.numel() > 0) {
-        return ModelOutput(
-            result.hidden_states, torch::Tensor(), aux_hidden_states);
-      }
-    }
-    return result;
+    return it->second->replay(tokens_tensor,
+                              positions_tensor,
+                              kv_caches,
+                              params_single,
+                              options_.enable_graph_aux_hidden_states());
   }
 
   // Graph doesn't exist for this bucket num_tokens, try to create it lazily
   auto graph = std::make_unique<AclGraph>(*persistent_param_, device_.index());
   VLOG(kGraphExecutorLogVerboseLevel)
       << "AclGraphExecutorImpl::run() in capture mode";
-  bool capture_success = graph->capture(model_,
-                                        args_,
-                                        options_,
-                                        tokens_tensor,
-                                        positions_tensor,
-                                        params_single,
-                                        kv_caches,
-                                        bucket_num_tokens);
+  auto capture_output = graph->capture(model_,
+                                       args_,
+                                       options_,
+                                       tokens_tensor,
+                                       positions_tensor,
+                                       params_single,
+                                       kv_caches,
+                                       bucket_num_tokens);
 
-  if (capture_success) {
+  if (capture_output.has_value()) {
     LOG(INFO) << "Lazy capturing ACL graph for bucket num_tokens: "
               << bucket_num_tokens << " (actual num_tokens: " << n_tokens
               << ") done";
@@ -1132,17 +1176,9 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
     // Save the graph for future reuse
     graphs_[bucket_num_tokens] = std::move(graph);
 
-    // Return the output from capture (no need to replay since capture
-    // already executed)
-    auto hidden_states =
-        graphs_[bucket_num_tokens]->get_hidden_states(n_tokens);
-    if (options_.enable_graph_aux_hidden_states()) {
-      auto aux_hidden_states = persistent_param_->aux_hidden_states(n_tokens);
-      if (aux_hidden_states.defined() && aux_hidden_states.numel() > 0) {
-        return ModelOutput(hidden_states, torch::Tensor(), aux_hidden_states);
-      }
-    }
-    return ModelOutput(hidden_states);
+    // Return the isolated output from capture (no need to replay since capture
+    // already executed).
+    return capture_output.value();
   }
 
   // Fallback to eager mode if capture fails
