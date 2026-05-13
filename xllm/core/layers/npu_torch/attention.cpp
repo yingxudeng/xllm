@@ -75,6 +75,13 @@ torch::Tensor get_fia_split_fuse_attn_mask(const torch::Tensor& query) {
   return mask;
 }
 
+torch::Tensor get_npu_kv_seq_lens(const AttentionMetadata& attn_metadata) {
+  if (attn_metadata.kv_seq_lens_host.defined()) {
+    return attn_metadata.kv_seq_lens_host;
+  }
+  return attn_metadata.kv_seq_lens;
+}
+
 }  // namespace
 
 AttentionImpl::AttentionImpl(int64_t num_heads,
@@ -194,13 +201,7 @@ void AttentionImpl::decoder_forward(torch::Tensor& query,
   query = query.view({-1, 1, num_heads_, head_size_});
   output = output.view({-1, 1, num_heads_, head_size_});
 
-  torch::Tensor kv_seq_lens;
-  if (attn_metadata.kv_seq_lens_host.defined()) {
-    kv_seq_lens = attn_metadata.kv_seq_lens_host;
-  } else {
-    // Fallback if host tensor isn't prepared.
-    kv_seq_lens = attn_metadata.kv_seq_lens;
-  }
+  torch::Tensor kv_seq_lens = get_npu_kv_seq_lens(attn_metadata);
 
   if (attn_metadata.paged_attention_tiling_data.defined()) {
     // Use CustomPagedAttention for ACL graph mode to avoid .to(kCPU) operations

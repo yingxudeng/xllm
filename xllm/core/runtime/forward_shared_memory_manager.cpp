@@ -15,6 +15,7 @@ limitations under the License.
 
 #include <gflags/gflags.h>
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -51,6 +52,8 @@ namespace xllm {
 namespace {
 template <typename T>
 constexpr size_t type_size = sizeof(T);
+
+using LinearStatePrefixHash = std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>;
 
 constexpr size_t sampling_param_fixed_size() {
   return 5 * type_size<float>      // frequency_penalty, presence_penalty,
@@ -175,6 +178,33 @@ void normalize_linear_state_ids(std::vector<int32_t>& linear_state_ids,
   CHECK_EQ(linear_state_ids.size(), static_cast<size_t>(num_sequences))
       << "linear_state_ids size (" << linear_state_ids.size()
       << ") must match num_sequences (" << num_sequences << ")";
+}
+
+void normalize_linear_state_metadata(
+    const std::vector<int32_t>& linear_state_ids,
+    const std::vector<std::string>& request_ids,
+    std::vector<std::string>& linear_state_request_ids,
+    std::vector<LinearStatePrefixHash>& linear_state_prefix_hashes,
+    std::vector<LinearStatePrefixHash>& linear_state_save_prefix_hashes) {
+  const size_t num_sequences = linear_state_ids.size();
+  if (linear_state_request_ids.empty()) {
+    linear_state_request_ids = request_ids;
+  }
+  if (linear_state_request_ids.empty()) {
+    linear_state_request_ids.assign(num_sequences, "");
+  }
+  CHECK_EQ(linear_state_request_ids.size(), num_sequences);
+
+  if (linear_state_prefix_hashes.empty()) {
+    linear_state_prefix_hashes.assign(num_sequences, LinearStatePrefixHash{});
+  }
+  CHECK_EQ(linear_state_prefix_hashes.size(), num_sequences);
+
+  if (linear_state_save_prefix_hashes.empty()) {
+    linear_state_save_prefix_hashes.assign(num_sequences,
+                                           LinearStatePrefixHash{});
+  }
+  CHECK_EQ(linear_state_save_prefix_hashes.size(), num_sequences);
 }
 
 inline size_t get_instance_info_size(const InstanceInfo& info) {
@@ -2026,7 +2056,16 @@ inline void deserialize_raw_forward_input(const char*& buffer,
   read_vector(context, input_params.linear_state_ids);
   normalize_linear_state_ids(input_params.linear_state_ids,
                              input_params.num_sequences);
+  read_string_vector(context, input_params.linear_state_request_ids);
+  read_vector(context, input_params.linear_state_prefix_hashes);
+  read_vector(context, input_params.linear_state_save_prefix_hashes);
+  read_vector(context, input_params.linear_state_evict_prefix_hashes);
   read_string_vector(context, input_params.request_ids);
+  normalize_linear_state_metadata(input_params.linear_state_ids,
+                                  input_params.request_ids,
+                                  input_params.linear_state_request_ids,
+                                  input_params.linear_state_prefix_hashes,
+                                  input_params.linear_state_save_prefix_hashes);
   read_vector(context, input_params.extra_token_ids);
   read_swap_blocks(context, input_params.swap_blocks);
   read_tensor(context, input_params.src_block_indices, stream);
@@ -2133,6 +2172,10 @@ inline void serialize_raw_forward_input_sections(
   write_vector(context.descriptor, input.dp_is_decode);
   write_vector(context.descriptor, input.embedding_ids);
   write_vector(context.descriptor, input.linear_state_ids);
+  write_string_vector(context.descriptor, input.linear_state_request_ids);
+  write_vector(context.descriptor, input.linear_state_prefix_hashes);
+  write_vector(context.descriptor, input.linear_state_save_prefix_hashes);
+  write_vector(context.descriptor, input.linear_state_evict_prefix_hashes);
   write_string_vector(context.descriptor, input.request_ids);
   write_vector(context.descriptor, input.extra_token_ids);
   write_swap_blocks(context, input.swap_blocks);
@@ -2265,6 +2308,8 @@ size_t calculate_raw_forward_output_size(const RawForwardOutput& output) {
   size += get_vector_size(output.src_seq_idxes);
   size += get_vector_size(output.out_tokens);
   size += get_vector_size(output.out_logprobs);
+  size += get_vector_size(output.linear_state_saved_prefix_hashes);
+  size += get_vector_size(output.linear_state_evicted_prefix_hashes);
   size += type_size<int32_t>;  // prepared_layer_id
   // dit output data
   size += get_dit_forward_output_size(output.dit_forward_output);
@@ -2332,6 +2377,9 @@ void deserialize_raw_forward_output(const char* buffer,
 
   read_data(buffer, output.prepared_layer_id);
 
+  read_vector(buffer, output.linear_state_saved_prefix_hashes);
+  read_vector(buffer, output.linear_state_evicted_prefix_hashes);
+
   read_vector_tensor(buffer, output.mm_embeddings);
   // read dit output
   read_dit_forward_output(buffer, output.dit_forward_output);
@@ -2347,6 +2395,9 @@ void serialize_raw_forward_output(const RawForwardOutput& output,
   write_vector(buffer, output.expert_load_data);
 
   write_data(buffer, output.prepared_layer_id);
+
+  write_vector(buffer, output.linear_state_saved_prefix_hashes);
+  write_vector(buffer, output.linear_state_evicted_prefix_hashes);
 
   write_vector_tensor(buffer, output.mm_embeddings);
   // write dit output
@@ -2377,7 +2428,22 @@ void convert_raw_forward_input_to_forward_input(RawForwardInput& raw_input,
   input_params.q_max_seq_len = raw_input.q_max_seq_len;
   input_params.embedding_ids = std::move(raw_input.embedding_ids);
   input_params.linear_state_ids = std::move(raw_input.linear_state_ids);
+  input_params.linear_state_request_ids =
+      std::move(raw_input.linear_state_request_ids);
+  input_params.linear_state_prefix_hashes =
+      std::move(raw_input.linear_state_prefix_hashes);
+  input_params.linear_state_save_prefix_hashes =
+      std::move(raw_input.linear_state_save_prefix_hashes);
+  input_params.linear_state_evict_prefix_hashes =
+      std::move(raw_input.linear_state_evict_prefix_hashes);
   input_params.request_ids = std::move(raw_input.request_ids);
+  normalize_linear_state_ids(input_params.linear_state_ids,
+                             input_params.num_sequences);
+  normalize_linear_state_metadata(input_params.linear_state_ids,
+                                  input_params.request_ids,
+                                  input_params.linear_state_request_ids,
+                                  input_params.linear_state_prefix_hashes,
+                                  input_params.linear_state_save_prefix_hashes);
   input_params.dp_global_token_nums = std::move(raw_input.dp_global_token_nums);
   input_params.dp_is_decode = std::move(raw_input.dp_is_decode);
 
@@ -2390,6 +2456,7 @@ void convert_raw_forward_input_to_forward_input(RawForwardInput& raw_input,
 
   input_params.new_cache_slots =
       torch::tensor(std::move(raw_input.new_token_slot_ids), tensor_options);
+  input_params.kv_cache_tokens_nums_host = raw_input.kv_cache_tokens_nums;
   input_params.kv_cache_tokens_nums =
       torch::tensor(std::move(raw_input.kv_cache_tokens_nums), tensor_options);
 
@@ -2658,7 +2725,11 @@ bool ForwardSharedMemoryManager::raw_output_write(
     int32_t prepared_layer_id,
     const torch::Tensor& src_seq_idxes,
     const torch::Tensor& out_tokens,
-    const torch::Tensor& out_logprobs) {
+    const torch::Tensor& out_logprobs,
+    const std::vector<ForwardOutput::LinearStatePrefixHash>&
+        linear_state_saved_prefix_hashes,
+    const std::vector<ForwardOutput::LinearStatePrefixHash>&
+        linear_state_evicted_prefix_hashes) {
   RawForwardOutput output;
   convert_tensor_to_raw_output(next_tokens,
                                logprobs,
@@ -2673,6 +2744,9 @@ bool ForwardSharedMemoryManager::raw_output_write(
                                out_tokens,
                                out_logprobs,
                                output);
+  output.linear_state_saved_prefix_hashes = linear_state_saved_prefix_hashes;
+  output.linear_state_evicted_prefix_hashes =
+      linear_state_evicted_prefix_hashes;
   uint64_t total_size = sizeof(ControlMetadata);
   total_size += calculate_raw_forward_output_size(output);
   if (unlikely(total_size > size())) {

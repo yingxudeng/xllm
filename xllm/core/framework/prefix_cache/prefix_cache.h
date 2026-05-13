@@ -21,6 +21,7 @@ limitations under the License.
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -98,6 +99,8 @@ class PrefixCache {
 
   virtual KvCacheEvent* get_upload_kvcache_events() { return nullptr; }
 
+  void drain_kvcache_events(KvCacheEvent* event) const;
+
   static uint32_t compute_hash_keys(const Slice<int32_t>& token_ids,
                                     std::vector<Block>& blocks,
                                     const size_t cached_blocks = 0);
@@ -111,6 +114,8 @@ class PrefixCache {
   size_t insert(Slice<Block>& blocks, std::vector<XXH3Key>* insert_keys);
 
   size_t evict(size_t n_blocks, std::vector<XXH3Key>* evict_keys);
+
+  void record_kvcache_event(bool is_insert, const std::vector<XXH3Key>& keys);
 
   struct Node {
     Block block;
@@ -207,6 +212,9 @@ class PrefixCache {
 
   std::unordered_map<XXH3Key, Node*, FixedStringKeyHash, FixedStringKeyEqual>
       cached_blocks_;
+
+  mutable std::mutex kvcache_event_mutex_;
+  mutable KvCacheEvent kvcache_events_;
 
   std::atomic<uint64_t> total_blocks_{0}, matched_blocks_{0};
 };

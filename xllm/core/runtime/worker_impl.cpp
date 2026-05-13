@@ -24,6 +24,7 @@ limitations under the License.
 #if defined(USE_NPU)
 #include "acl/acl.h"
 #include "kernels/npu/xllm_ops/xllm_ops_api.h"
+#include "torch_npu/csrc/core/npu/NPUStream.h"
 #elif defined(USE_MLU)
 #include <framework/core/caching_allocator.h>
 #elif defined(USE_CUDA) || defined(USE_ILU)
@@ -48,6 +49,7 @@ limitations under the License.
 #endif
 #include "core/distributed_runtime/master.h"
 #include "framework/kv_cache/kv_cache.h"
+#include "framework/kv_cache/kv_cache_utils.h"
 #include "framework/model/model_input_params.h"
 #include "framework/model/npu_cp_ep_padding.h"
 #include "framework/model_loader.h"
@@ -74,6 +76,25 @@ constexpr uint32_t TIMEOUT_S = 60;      // second
 constexpr uint32_t TIMEOUT_MS = 60000;  // millisecond
 
 namespace {
+
+bool is_zero_prefix_hash(
+    const std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>& prefix_hash) {
+  return std::all_of(prefix_hash.begin(), prefix_hash.end(), [](uint8_t value) {
+    return value == 0;
+  });
+}
+
+#if defined(USE_NPU)
+void synchronize_current_npu_stream(c10::DeviceIndex device_index,
+                                    const char* action) {
+  aclrtStream current_stream =
+      c10_npu::getCurrentNPUStream(device_index).stream();
+  aclError status = aclrtSynchronizeStream(current_stream);
+  CHECK_EQ(status, ACL_SUCCESS)
+      << "aclrtSynchronizeStream failed after Qwen3.5 linear state snapshot "
+      << action << ", error code: " << status;
+}
+#endif
 
 // During TP model initialization, each rank loads weights concurrently.
 // MoE weight assembly (especially stack/cat on large expert tensors) runs on
@@ -125,14 +146,28 @@ void prepare_input_params_for_linear_attention(ModelInputParams& input_params) {
         input_params.query_start_loc[i] + seq_len;
   }
 
-  torch::Tensor has_initial_state_tensor =
-      input_params.kv_cache_tokens_nums > 0;
-  torch::Tensor has_initial_state_int64 =
-      has_initial_state_tensor.contiguous().to(torch::kCPU).to(torch::kInt64);
-  input_params.has_initial_state =
-      std::vector<int64_t>(has_initial_state_int64.data_ptr<int64_t>(),
-                           has_initial_state_int64.data_ptr<int64_t>() +
-                               has_initial_state_int64.size(0));
+  if (input_params.kv_cache_tokens_nums_host.empty() &&
+      input_params.kv_cache_tokens_nums.defined()) {
+    torch::Tensor kv_cache_tokens_nums_cpu =
+        input_params.kv_cache_tokens_nums.to(torch::kCPU).to(torch::kInt32);
+    const int32_t* data_ptr = kv_cache_tokens_nums_cpu.data_ptr<int32_t>();
+    input_params.kv_cache_tokens_nums_host.assign(
+        data_ptr, data_ptr + kv_cache_tokens_nums_cpu.numel());
+  }
+
+  CHECK(input_params.has_initial_state.empty() ||
+        input_params.has_initial_state.size() == batch_size);
+  if (input_params.has_initial_state.empty()) {
+    if (!input_params.kv_cache_tokens_nums_host.empty()) {
+      input_params.has_initial_state.reserve(batch_size);
+      for (int64_t i = 0; i < batch_size; ++i) {
+        input_params.has_initial_state.emplace_back(
+            input_params.kv_cache_tokens_nums_host[i] > 0 ? 1 : 0);
+      }
+    } else {
+      input_params.has_initial_state.assign(batch_size, 0);
+    }
+  }
 }
 
 }  // namespace
@@ -242,6 +277,7 @@ bool WorkerImpl::allocate_kv_cache(const KVCacheShape& kv_cache_shape) {
       .enable_kv_cache_quant(enable_kv_cache_quant);
 
   allocate_kv_caches(kv_caches_, kv_cache_shape, create_options);
+  initialize_linear_state_checkpoint_slots();
 
 #if defined(USE_CUDA)
   refresh_cuda_block_copy_runtime_state();
@@ -302,6 +338,7 @@ bool WorkerImpl::allocate_kv_cache_with_transfer(
     kv_cache_transfer_->allocate_kv_cache(
         kv_caches_, num_layers, kv_cache_shape, dtype_);
   }
+  initialize_linear_state_checkpoint_slots();
 
   init_hierarchy_kv_cache_transfer();
   status_ = Status::READY;
@@ -486,6 +523,7 @@ void WorkerImpl::prepare_work_before_execute(const ForwardInput& input,
   auto prepare_input_on_current_stream = [&]() {
     processed_input = input.to(device_, dtype_);
     auto& input_params = processed_input.input_params;
+    std::vector<LinearStatePrefixHash> restored_linear_state_prefix_hashes;
 
 #if defined(USE_NPU)
     CpPrefillInputs tmp_cp_inputs;
@@ -543,20 +581,410 @@ void WorkerImpl::prepare_work_before_execute(const ForwardInput& input,
 
     if (has_linear_attention_layers(context_.get_model_args())) {
       prepare_input_params_for_linear_attention(processed_input.input_params);
+      prune_linear_state_snapshots(processed_input.input_params);
+      restored_linear_state_prefix_hashes =
+          restore_linear_state_snapshots(processed_input.input_params);
     }
 #endif
+    return restored_linear_state_prefix_hashes;
   };
 
+  std::vector<LinearStatePrefixHash> restored_linear_state_prefix_hashes;
   if (use_default_stream) {
-    prepare_input_on_current_stream();
+    restored_linear_state_prefix_hashes = prepare_input_on_current_stream();
   } else {
     c10::StreamGuard stream_guard = prepare_stream_->set_stream_guard();
-    prepare_input_on_current_stream();
+    restored_linear_state_prefix_hashes = prepare_input_on_current_stream();
   }
 
   if (!use_default_stream) {
     prepare_stream_->synchronize();
   }
+  release_linear_state_snapshot_refs(restored_linear_state_prefix_hashes);
+}
+
+std::vector<WorkerImpl::LinearStatePrefixHash>
+WorkerImpl::restore_linear_state_snapshots(ModelInputParams& input_params) {
+  std::vector<LinearStatePrefixHash> restored_prefix_hashes;
+  if (input_params.linear_state_ids.empty()) {
+    return restored_prefix_hashes;
+  }
+
+  CHECK_EQ(input_params.linear_state_ids.size(),
+           input_params.linear_state_request_ids.size());
+  CHECK_EQ(input_params.linear_state_ids.size(),
+           input_params.linear_state_prefix_hashes.size());
+
+  input_params.has_initial_state.assign(input_params.linear_state_ids.size(),
+                                        0);
+  restored_prefix_hashes.reserve(input_params.linear_state_ids.size());
+  std::lock_guard<std::mutex> lock(linear_state_snapshots_mutex_);
+  for (size_t i = 0; i < input_params.linear_state_ids.size(); ++i) {
+    const int32_t linear_state_id = input_params.linear_state_ids[i];
+    if (linear_state_id < 0) {
+      continue;
+    }
+
+    const std::string& request_id = input_params.linear_state_request_ids[i];
+    auto active_it = active_linear_state_requests_.find(linear_state_id);
+    if (!request_id.empty() &&
+        active_it != active_linear_state_requests_.end() &&
+        active_it->second == request_id) {
+      input_params.has_initial_state[i] = 1;
+      continue;
+    }
+
+    if (is_zero_prefix_hash(input_params.linear_state_prefix_hashes[i])) {
+      const bool has_cached_kv =
+          input_params.kv_cache_tokens_nums_host.size() > i &&
+          input_params.kv_cache_tokens_nums_host[i] > 0;
+      if (has_cached_kv) {
+        LOG(WARNING)
+            << "Qwen3.5 prefix cache hit lacks linear state prefix hash; "
+            << "falling back to recompute, linear_state_id=" << linear_state_id;
+      }
+      active_linear_state_requests_[linear_state_id] = request_id;
+      continue;
+    }
+
+    if (restore_linear_state_snapshot(
+            input_params.linear_state_prefix_hashes[i], linear_state_id)) {
+      VLOG(1) << "Qwen3.5 linear state snapshot restored; linear_state_id="
+              << linear_state_id;
+      input_params.has_initial_state[i] = 1;
+      active_linear_state_requests_[linear_state_id] = request_id;
+      restored_prefix_hashes.emplace_back(
+          input_params.linear_state_prefix_hashes[i]);
+      continue;
+    }
+
+    LOG(WARNING) << "Qwen3.5 prefix cache hit lacks linear state snapshot; "
+                 << "falling back to recompute, linear_state_id="
+                 << linear_state_id;
+    active_linear_state_requests_.erase(linear_state_id);
+  }
+#if defined(USE_NPU)
+  if (!restored_prefix_hashes.empty()) {
+    synchronize_current_npu_stream(device_.index(), "restore");
+  }
+#endif
+  return restored_prefix_hashes;
+}
+
+void WorkerImpl::prune_linear_state_snapshots(
+    const ModelInputParams& input_params) {
+  std::lock_guard<std::mutex> lock(linear_state_snapshots_mutex_);
+  for (const LinearStatePrefixHash& prefix_hash :
+       input_params.linear_state_evict_prefix_hashes) {
+    if (is_zero_prefix_hash(prefix_hash)) {
+      continue;
+    }
+    auto snapshot_it = linear_state_snapshots_.find(prefix_hash);
+    if (snapshot_it == linear_state_snapshots_.end()) {
+      continue;
+    }
+    auto lru_it = linear_state_snapshot_lru_iters_.find(prefix_hash);
+    if (lru_it != linear_state_snapshot_lru_iters_.end()) {
+      linear_state_snapshot_lru_.erase(lru_it->second);
+      linear_state_snapshot_lru_iters_.erase(lru_it);
+    }
+    if (snapshot_it->second.ref_count > 0) {
+      snapshot_it->second.pending_delete = true;
+      continue;
+    }
+    linear_state_snapshot_bytes_ -= snapshot_it->second.bytes;
+    release_linear_state_checkpoint_slot(
+        snapshot_it->second.checkpoint_slot_id);
+    linear_state_snapshots_.erase(snapshot_it);
+  }
+}
+
+WorkerImpl::LinearStateSnapshotUpdate WorkerImpl::save_linear_state_snapshots(
+    const ModelInputParams& input_params) {
+  LinearStateSnapshotUpdate update;
+  if (!FLAGS_enable_prefix_cache || input_params.linear_state_ids.empty()) {
+    return update;
+  }
+
+  CHECK_EQ(input_params.linear_state_ids.size(),
+           input_params.linear_state_save_prefix_hashes.size());
+#if defined(USE_NPU)
+  std::optional<std::unique_lock<std::mutex>> capture_lock_guard;
+  if (FLAGS_enable_graph) {
+    auto& capture_lock =
+        ::xllm::npu::DeviceCaptureLock::get_instance().get_lock(
+            device_.index());
+    capture_lock_guard.emplace(capture_lock);
+  }
+#endif
+  std::lock_guard<std::mutex> lock(linear_state_snapshots_mutex_);
+  for (size_t i = 0; i < input_params.linear_state_ids.size(); ++i) {
+    if (is_zero_prefix_hash(input_params.linear_state_save_prefix_hashes[i])) {
+      continue;
+    }
+    if (save_linear_state_snapshot(
+            input_params.linear_state_save_prefix_hashes[i],
+            input_params.linear_state_ids[i],
+            &update.evicted_prefix_hashes)) {
+      update.saved_prefix_hashes.emplace_back(
+          input_params.linear_state_save_prefix_hashes[i]);
+      VLOG(1) << "Qwen3.5 linear state snapshot saved; linear_state_id="
+              << input_params.linear_state_ids[i];
+    }
+  }
+  return update;
+}
+
+void WorkerImpl::initialize_linear_state_checkpoint_slots() {
+  free_linear_state_checkpoint_slots_.clear();
+  linear_state_checkpoint_slot_free_.clear();
+  linear_state_live_slots_ = 0;
+  linear_state_checkpoint_slots_ = 0;
+  linear_state_snapshot_bytes_ = 0;
+  linear_state_snapshots_.clear();
+  linear_state_snapshot_lru_.clear();
+  linear_state_snapshot_lru_iters_.clear();
+  active_linear_state_requests_.clear();
+
+  int64_t num_linear_state_blocks = 0;
+  for (const auto& kv_cache : kv_caches_) {
+    torch::Tensor conv_cache = kv_cache.get_conv_cache();
+    torch::Tensor ssm_cache = kv_cache.get_ssm_cache();
+    if (!conv_cache.defined() || !ssm_cache.defined()) {
+      continue;
+    }
+    CHECK_EQ(conv_cache.size(0), ssm_cache.size(0));
+    if (num_linear_state_blocks == 0) {
+      num_linear_state_blocks = conv_cache.size(0);
+      continue;
+    }
+    CHECK_EQ(num_linear_state_blocks, conv_cache.size(0));
+  }
+
+  if (num_linear_state_blocks == 0) {
+    return;
+  }
+
+  linear_state_live_slots_ =
+      static_cast<int32_t>(calculate_linear_state_live_slots(
+          num_linear_state_blocks, options_.max_seqs_per_batch()));
+  CHECK_GT(linear_state_live_slots_, 0);
+  CHECK_LE(linear_state_live_slots_, num_linear_state_blocks);
+
+  linear_state_checkpoint_slots_ =
+      static_cast<int32_t>(num_linear_state_blocks) - linear_state_live_slots_;
+  free_linear_state_checkpoint_slots_.reserve(linear_state_checkpoint_slots_);
+  linear_state_checkpoint_slot_free_.assign(linear_state_checkpoint_slots_, 1);
+  for (int32_t slot_id = static_cast<int32_t>(num_linear_state_blocks) - 1;
+       slot_id >= linear_state_live_slots_;
+       --slot_id) {
+    free_linear_state_checkpoint_slots_.emplace_back(slot_id);
+  }
+  LOG(INFO) << "Qwen3.5 linear state cache slots initialized; live_slots="
+            << linear_state_live_slots_
+            << ", checkpoint_slots=" << linear_state_checkpoint_slots_;
+}
+
+void WorkerImpl::touch_linear_state_snapshot(
+    const LinearStatePrefixHash& prefix_hash) {
+  auto lru_it = linear_state_snapshot_lru_iters_.find(prefix_hash);
+  if (lru_it != linear_state_snapshot_lru_iters_.end()) {
+    linear_state_snapshot_lru_.erase(lru_it->second);
+  }
+  linear_state_snapshot_lru_.emplace_back(prefix_hash);
+  auto tail_it = linear_state_snapshot_lru_.end();
+  --tail_it;
+  linear_state_snapshot_lru_iters_[prefix_hash] = tail_it;
+}
+
+void WorkerImpl::release_linear_state_checkpoint_slot(
+    int32_t checkpoint_slot_id) {
+  if (checkpoint_slot_id < linear_state_live_slots_) {
+    return;
+  }
+  CHECK_LT(checkpoint_slot_id,
+           linear_state_live_slots_ + linear_state_checkpoint_slots_);
+  const size_t free_state_index = checkpoint_slot_id - linear_state_live_slots_;
+  CHECK_LT(free_state_index, linear_state_checkpoint_slot_free_.size());
+  CHECK_EQ(linear_state_checkpoint_slot_free_[free_state_index], 0)
+      << "duplicate Qwen3.5 linear state checkpoint slot release: "
+      << checkpoint_slot_id;
+  linear_state_checkpoint_slot_free_[free_state_index] = 1;
+  free_linear_state_checkpoint_slots_.emplace_back(checkpoint_slot_id);
+}
+
+int32_t WorkerImpl::acquire_linear_state_checkpoint_slot(
+    const LinearStatePrefixHash& prefix_hash,
+    std::vector<LinearStatePrefixHash>* evicted_prefix_hashes) {
+  auto existing_it = linear_state_snapshots_.find(prefix_hash);
+  if (existing_it != linear_state_snapshots_.end()) {
+    CHECK(!existing_it->second.pending_delete);
+    touch_linear_state_snapshot(prefix_hash);
+    return existing_it->second.checkpoint_slot_id;
+  }
+
+  if (free_linear_state_checkpoint_slots_.empty()) {
+    while (!linear_state_snapshot_lru_.empty()) {
+      const LinearStatePrefixHash evict_hash =
+          linear_state_snapshot_lru_.front();
+      linear_state_snapshot_lru_.pop_front();
+      linear_state_snapshot_lru_iters_.erase(evict_hash);
+      auto evict_it = linear_state_snapshots_.find(evict_hash);
+      if (evict_it == linear_state_snapshots_.end()) {
+        continue;
+      }
+      if (evicted_prefix_hashes != nullptr) {
+        evicted_prefix_hashes->emplace_back(evict_hash);
+      }
+      if (evict_it->second.ref_count > 0) {
+        evict_it->second.pending_delete = true;
+        continue;
+      }
+      const int32_t checkpoint_slot_id = evict_it->second.checkpoint_slot_id;
+      linear_state_snapshot_bytes_ -= evict_it->second.bytes;
+      linear_state_snapshots_.erase(evict_it);
+      return checkpoint_slot_id;
+    }
+    return -1;
+  }
+
+  const int32_t checkpoint_slot_id = free_linear_state_checkpoint_slots_.back();
+  free_linear_state_checkpoint_slots_.pop_back();
+  const size_t free_state_index = checkpoint_slot_id - linear_state_live_slots_;
+  CHECK_LT(free_state_index, linear_state_checkpoint_slot_free_.size());
+  CHECK_EQ(linear_state_checkpoint_slot_free_[free_state_index], 1);
+  linear_state_checkpoint_slot_free_[free_state_index] = 0;
+  return checkpoint_slot_id;
+}
+
+void WorkerImpl::release_linear_state_snapshot_refs(
+    const std::vector<LinearStatePrefixHash>& prefix_hashes) {
+  if (prefix_hashes.empty()) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> lock(linear_state_snapshots_mutex_);
+  for (const LinearStatePrefixHash& prefix_hash : prefix_hashes) {
+    auto snapshot_it = linear_state_snapshots_.find(prefix_hash);
+    if (snapshot_it == linear_state_snapshots_.end()) {
+      continue;
+    }
+    CHECK_GT(snapshot_it->second.ref_count, 0);
+    --snapshot_it->second.ref_count;
+    if (snapshot_it->second.ref_count == 0 &&
+        snapshot_it->second.pending_delete) {
+      linear_state_snapshot_bytes_ -= snapshot_it->second.bytes;
+      release_linear_state_checkpoint_slot(
+          snapshot_it->second.checkpoint_slot_id);
+      linear_state_snapshots_.erase(snapshot_it);
+    }
+  }
+}
+
+bool WorkerImpl::save_linear_state_snapshot(
+    const LinearStatePrefixHash& prefix_hash,
+    int32_t linear_state_id,
+    std::vector<LinearStatePrefixHash>* evicted_prefix_hashes) {
+  if (linear_state_id < 0 || linear_state_id >= linear_state_live_slots_ ||
+      linear_state_checkpoint_slots_ <= 0) {
+    return false;
+  }
+
+  const bool had_existing_snapshot =
+      linear_state_snapshots_.find(prefix_hash) !=
+      linear_state_snapshots_.end();
+  const int32_t checkpoint_slot_id =
+      acquire_linear_state_checkpoint_slot(prefix_hash, evicted_prefix_hashes);
+  if (checkpoint_slot_id < 0) {
+    LOG(WARNING) << "No reusable Qwen3.5 linear state checkpoint slot; "
+                 << "falling back to recompute.";
+    return false;
+  }
+
+  size_t snapshot_bytes = 0;
+  bool copied_snapshot = false;
+  for (const auto& kv_cache : kv_caches_) {
+    torch::Tensor conv_cache = kv_cache.get_conv_cache();
+    torch::Tensor ssm_cache = kv_cache.get_ssm_cache();
+    if (!conv_cache.defined() || !ssm_cache.defined()) {
+      continue;
+    }
+    conv_cache.select(0, checkpoint_slot_id)
+        .copy_(conv_cache.select(0, linear_state_id));
+    ssm_cache.select(0, checkpoint_slot_id)
+        .copy_(ssm_cache.select(0, linear_state_id));
+    snapshot_bytes += tensor_bytes(conv_cache.select(0, checkpoint_slot_id)) +
+                      tensor_bytes(ssm_cache.select(0, checkpoint_slot_id));
+    copied_snapshot = true;
+  }
+#if defined(USE_NPU)
+  if (copied_snapshot) {
+    synchronize_current_npu_stream(device_.index(), "save");
+  }
+#endif
+
+  if (!copied_snapshot) {
+    if (!had_existing_snapshot) {
+      release_linear_state_checkpoint_slot(checkpoint_slot_id);
+    }
+    return false;
+  }
+
+  auto old_snapshot_it = linear_state_snapshots_.find(prefix_hash);
+  if (old_snapshot_it != linear_state_snapshots_.end()) {
+    linear_state_snapshot_bytes_ -= old_snapshot_it->second.bytes;
+  }
+  LinearStateSnapshot snapshot;
+  snapshot.checkpoint_slot_id = checkpoint_slot_id;
+  snapshot.bytes = snapshot_bytes;
+  linear_state_snapshot_bytes_ += snapshot.bytes;
+  linear_state_snapshots_[prefix_hash] = snapshot;
+  touch_linear_state_snapshot(prefix_hash);
+  return true;
+}
+
+size_t WorkerImpl::tensor_bytes(const torch::Tensor& tensor) {
+  if (!tensor.defined()) {
+    return 0;
+  }
+  return static_cast<size_t>(tensor.numel()) * tensor.element_size();
+}
+
+bool WorkerImpl::restore_linear_state_snapshot(
+    const LinearStatePrefixHash& prefix_hash,
+    int32_t linear_state_id) {
+  if (linear_state_id < 0 || linear_state_id >= linear_state_live_slots_) {
+    return false;
+  }
+
+  auto snapshot_it = linear_state_snapshots_.find(prefix_hash);
+  if (snapshot_it == linear_state_snapshots_.end()) {
+    return false;
+  }
+
+  const auto& snapshot = snapshot_it->second;
+  if (snapshot.pending_delete || snapshot.checkpoint_slot_id < 0) {
+    return false;
+  }
+  bool copied_snapshot = false;
+  for (auto& kv_cache : kv_caches_) {
+    torch::Tensor conv_cache = kv_cache.get_conv_cache();
+    torch::Tensor ssm_cache = kv_cache.get_ssm_cache();
+    if (!conv_cache.defined() || !ssm_cache.defined()) {
+      continue;
+    }
+    conv_cache.select(0, linear_state_id)
+        .copy_(conv_cache.select(0, snapshot.checkpoint_slot_id));
+    ssm_cache.select(0, linear_state_id)
+        .copy_(ssm_cache.select(0, snapshot.checkpoint_slot_id));
+    copied_snapshot = true;
+  }
+  if (!copied_snapshot) {
+    return false;
+  }
+  ++snapshot_it->second.ref_count;
+  touch_linear_state_snapshot(prefix_hash);
+  return true;
 }
 
 void WorkerImpl::apply_kv_block_swaps(const ModelInputParams& input_params) {
@@ -695,7 +1123,15 @@ folly::SemiFuture<std::optional<ForwardOutput>> WorkerImpl::step_async(
 
     // run the model on the given input in working thread
     if (!enable_schedule_overlap()) {
-      const auto output = this->step(input);
+      auto output = this->step(input);
+      auto linear_state_update =
+          this->save_linear_state_snapshots(input.input_params);
+      if (output.has_value()) {
+        output->linear_state_saved_prefix_hashes =
+            std::move(linear_state_update.saved_prefix_hashes);
+        output->linear_state_evicted_prefix_hashes =
+            std::move(linear_state_update.evicted_prefix_hashes);
+      }
       promise.setValue(output);
     } else {
       if (last_step_output_valid_ && input.token_ids.numel() > 0 &&
@@ -704,7 +1140,15 @@ folly::SemiFuture<std::optional<ForwardOutput>> WorkerImpl::step_async(
         input = update_input_by_last_step_output(input);
       }
 
-      const auto output = this->step(input);
+      auto output = this->step(input);
+      auto linear_state_update =
+          this->save_linear_state_snapshots(input.input_params);
+      if (output.has_value()) {
+        output->linear_state_saved_prefix_hashes =
+            std::move(linear_state_update.saved_prefix_hashes);
+        output->linear_state_evicted_prefix_hashes =
+            std::move(linear_state_update.evicted_prefix_hashes);
+      }
       if (output.has_value()) {
         if (is_driver() || FLAGS_enable_eplb) {
           std::unique_lock<std::mutex> lock(mtx_);

@@ -19,6 +19,7 @@ limitations under the License.
 #include <torch/torch.h>
 
 #include <algorithm>
+#include <array>
 #include <nlohmann/json.hpp>
 #include <numeric>
 #include <optional>
@@ -34,6 +35,7 @@ limitations under the License.
 #include "framework/sampling/sampling_params.h"
 #include "platform/device.h"
 #include "runtime/dit_forward_params.h"
+#include "util/hash_util.h"
 
 namespace xllm {
 
@@ -186,6 +188,9 @@ struct ForwardInput {
 
 // output after forward execution
 struct ForwardOutput {
+  using LinearStatePrefixHash =
+      std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>;
+
   // sample parameters for speculative decoding
   torch::Tensor do_sample;
   // whether to return logprobs
@@ -207,6 +212,9 @@ struct ForwardOutput {
 
   // dit output data
   DiTForwardOutput dit_forward_output;
+
+  std::vector<LinearStatePrefixHash> linear_state_saved_prefix_hashes;
+  std::vector<LinearStatePrefixHash> linear_state_evicted_prefix_hashes;
 };
 
 // Model input with raw data, which will be
@@ -245,6 +253,13 @@ struct RawForwardInput {
   std::vector<int> embedding_ids;
   // linear state ids of each sequence
   std::vector<int> linear_state_ids;
+  std::vector<std::string> linear_state_request_ids;
+  std::vector<std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>>
+      linear_state_prefix_hashes;
+  std::vector<std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>>
+      linear_state_save_prefix_hashes;
+  std::vector<std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>>
+      linear_state_evict_prefix_hashes;
   // request ids of each sequence
   std::vector<std::string> request_ids;
   // swap
@@ -502,6 +517,9 @@ struct RawSampleOutput {
 };
 
 struct RawForwardOutput {
+  using LinearStatePrefixHash =
+      std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>;
+
   std::vector<RawSampleOutput> outputs;  // num seqs
   std::vector<int64_t> expert_load_data;
   int32_t prepared_layer_id;
@@ -516,6 +534,9 @@ struct RawForwardOutput {
   std::vector<torch::Tensor> mm_embeddings;
   // dit output data
   DiTForwardOutput dit_forward_output;
+
+  std::vector<LinearStatePrefixHash> linear_state_saved_prefix_hashes;
+  std::vector<LinearStatePrefixHash> linear_state_evicted_prefix_hashes;
 };
 
 struct BatchedForwardInputs {
