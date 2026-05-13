@@ -82,6 +82,8 @@ struct AttentionMetadata {
   // Whether to apply causal mask. Default: true.
   bool is_causal = true;
 
+  std::vector<int32_t> kv_seq_lens_vec;
+  std::vector<int32_t> q_seq_lens_vec;
   // for mrope
   torch::Tensor mrope_cos;
   torch::Tensor mrope_sin;
