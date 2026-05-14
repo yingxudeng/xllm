@@ -362,8 +362,11 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
       q_cu_seq_lens_ = torch::zeros({max_seqs_per_batch + 1},
                                     torch::dtype(torch::kInt).device(device_));
     }
-    // Copy data
-    q_cu_seq_lens_.slice(/*dim=*/0, /*start=*/0, /*end=*/actual_batch_size)
+    const int64_t q_cu_seq_lens_size = params.q_cu_seq_lens.size(0);
+    CHECK_LE(q_cu_seq_lens_size, q_cu_seq_lens_.size(0))
+        << "q_cu_seq_lens size exceeds graph persistent buffer capacity: "
+        << q_cu_seq_lens_size << " > " << q_cu_seq_lens_.size(0);
+    q_cu_seq_lens_.slice(/*dim=*/0, /*start=*/0, /*end=*/q_cu_seq_lens_size)
         .copy_(params.q_cu_seq_lens, /*non_blocking=*/true);
   }
 
@@ -428,10 +431,11 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
     }
     // Set q_cu_seq_lens if available
     if (params.q_cu_seq_lens.defined()) {
+      const int64_t q_cu_seq_lens_size = params.q_cu_seq_lens.size(0);
       params_for_capture->q_cu_seq_lens =
           q_cu_seq_lens_.slice(/*dim=*/0,
                                /*start=*/0,
-                               /*end=*/actual_batch_size);
+                               /*end=*/q_cu_seq_lens_size);
     }
 
     return params_for_capture;
@@ -981,14 +985,11 @@ std::optional<ModelOutput> AclGraph::capture(CausalLM* model,
         c10_npu::getDefaultNPUStream(tensor_options.device().index()));
   }
 
-  if (!has_linear_attention_layers(args)) {
-    graph_.replay();
-    aclError replay_status = aclrtSynchronizeStream(stream);
-    CHECK_EQ(replay_status, ACL_SUCCESS)
-        << "aclrtSynchronizeStream failed after graph capture replay, error "
-           "code: "
-        << replay_status;
-  }
+  graph_.replay();
+  aclError replay_status = aclrtSynchronizeStream(stream);
+  CHECK_EQ(replay_status, ACL_SUCCESS) << "aclrtSynchronizeStream failed after "
+                                          "graph capture replay, error code: "
+                                       << replay_status;
 
   // Copy the visible output while the graph lock is still held. The underlying
   // persistent buffer is reused by later graph replays.
@@ -1120,27 +1121,40 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
   // Only use acl graph in decode phase for performance optimization
   // Get actual num_tokens from tokens shape
   const uint32_t n_tokens = tokens_tensor.size(/*dim=*/0);
-  const uint32_t actual_batch_size = n_tokens / options_.num_decoding_tokens();
+  const uint32_t decode_graph_capacity =
+      static_cast<uint32_t>(get_decode_graph_capacity(options_));
   const uint32_t bucket_num_tokens = get_bucket_num_tokens(n_tokens);
 
   // Check if conditions are suitable for graph execution (replay or capture)
   const auto max_seq_len = args_.max_position_embeddings();
   const bool seq_len_supported = params_single.kv_max_seq_len <= max_seq_len;
+  const bool token_capacity_supported = n_tokens <= decode_graph_capacity;
 
   // Combined condition for graph capture support
   // ACL graph executor only supports single tensor inputs (no micro-batching)
-  const bool capture_supported = seq_len_supported;
+  const bool capture_supported = seq_len_supported && token_capacity_supported;
 
   // Early return if conditions are not suitable for graph operations
   if (!capture_supported) {
-    LOG_FIRST_N(WARNING, 1)
-        << "Falling back to eager mode because kv_max_seq_len ("
-        << params_single.kv_max_seq_len << ") > max_seq_len (" << max_seq_len
-        << "). This message is logged only once. "
-        << "Monitor counter 'num_model_execution_total_eager' for frequency.";
+    if (!seq_len_supported) {
+      LOG_FIRST_N(WARNING, 1)
+          << "Falling back to eager mode because kv_max_seq_len ("
+          << params_single.kv_max_seq_len << ") > max_seq_len (" << max_seq_len
+          << "). This message is logged only once. "
+          << "Monitor counter 'num_model_execution_total_eager' for "
+             "frequency.";
+    } else if (!token_capacity_supported) {
+      LOG_FIRST_N(WARNING, 1)
+          << "Falling back to eager mode because n_tokens (" << n_tokens
+          << ") > decode_graph_capacity (" << decode_graph_capacity
+          << "). This message is logged only once. Monitor counter "
+             "'num_model_execution_total_eager' for frequency.";
+    }
     COUNTER_INC(num_model_execution_total_eager);
     return model_->forward(tokens, positions, kv_caches, params);
   }
+
+  std::lock_guard<std::mutex> graph_execution_lock(graph_execution_mutex_);
 
   // Check if captured graph exists for this bucket num_tokens
   auto it = graphs_.find(bucket_num_tokens);

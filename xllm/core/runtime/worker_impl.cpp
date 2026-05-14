@@ -615,8 +615,9 @@ WorkerImpl::restore_linear_state_snapshots(ModelInputParams& input_params) {
   CHECK_EQ(input_params.linear_state_ids.size(),
            input_params.linear_state_prefix_hashes.size());
 
-  input_params.has_initial_state.assign(input_params.linear_state_ids.size(),
-                                        0);
+  CHECK_EQ(input_params.has_initial_state.size(),
+           input_params.linear_state_ids.size())
+      << "has_initial_state must be initialized before linear state restore.";
   restored_prefix_hashes.reserve(input_params.linear_state_ids.size());
   std::lock_guard<std::mutex> lock(linear_state_snapshots_mutex_);
   for (size_t i = 0; i < input_params.linear_state_ids.size(); ++i) {
@@ -635,14 +636,6 @@ WorkerImpl::restore_linear_state_snapshots(ModelInputParams& input_params) {
     }
 
     if (is_zero_prefix_hash(input_params.linear_state_prefix_hashes[i])) {
-      const bool has_cached_kv =
-          input_params.kv_cache_tokens_nums_host.size() > i &&
-          input_params.kv_cache_tokens_nums_host[i] > 0;
-      if (has_cached_kv) {
-        LOG(WARNING)
-            << "Qwen3.5 prefix cache hit lacks linear state prefix hash; "
-            << "falling back to recompute, linear_state_id=" << linear_state_id;
-      }
       active_linear_state_requests_[linear_state_id] = request_id;
       continue;
     }
