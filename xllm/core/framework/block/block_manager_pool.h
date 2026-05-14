@@ -16,7 +16,7 @@ limitations under the License.
 #pragma once
 
 #include <queue>
-#include <unordered_set>
+#include <unordered_map>
 #include <vector>
 
 #include "block_manager.h"
@@ -74,6 +74,18 @@ class BlockManagerPool : public KVCacheManager {
   virtual std::vector<std::vector<BlockTransferInfo>>*
   get_swap_block_transfer_infos() override;
   virtual void reset_transfer_infos() override;
+  using LinearStateCheckpointHandle = int64_t;
+  static constexpr LinearStateCheckpointHandle
+      kInvalidLinearStateCheckpointHandle = -1;
+  struct LinearStateCheckpointEntry {
+    XXH3Key checkpoint_hash;
+    int32_t dp_rank = -1;
+    LinearStateCheckpointHandle handle = kInvalidLinearStateCheckpointHandle;
+    bool valid = false;
+  };
+  std::vector<LinearStateCheckpointHandle> record_linear_state_checkpoints(
+      int32_t dp_rank,
+      const std::vector<XXH3Key>& checkpoint_hashes);
   void record_linear_state_checkpoint_hashes(
       int32_t dp_rank,
       const std::vector<XXH3Key>& checkpoint_hashes);
@@ -81,6 +93,10 @@ class BlockManagerPool : public KVCacheManager {
   void prune_linear_state_checkpoint_hashes(
       int32_t dp_rank,
       const std::vector<XXH3Key>& checkpoint_hashes);
+  LinearStateCheckpointHandle get_linear_state_checkpoint_handle(
+      int32_t dp_rank,
+      const XXH3Key& checkpoint_hash) const;
+  size_t num_linear_state_checkpoints(int32_t dp_rank) const;
 
   virtual void get_merged_kvcache_event(KvCacheEvent* event) const;
   virtual void drain_prefix_cache_event(KvCacheEvent* event) const;
@@ -121,9 +137,13 @@ class BlockManagerPool : public KVCacheManager {
 
   std::vector<std::vector<BlockTransferInfo>> swap_block_transfer_infos_;
   std::vector<std::unique_ptr<SingleBlockManager>> single_block_managers_;
-  using LinearStateCheckpointHashSet =
-      std::unordered_set<XXH3Key, FixedStringKeyHash, FixedStringKeyEqual>;
-  std::vector<LinearStateCheckpointHashSet> linear_state_checkpoint_hashes_;
+  using LinearStateCheckpointEntryMap =
+      std::unordered_map<XXH3Key,
+                         LinearStateCheckpointEntry,
+                         FixedStringKeyHash,
+                         FixedStringKeyEqual>;
+  std::vector<LinearStateCheckpointEntryMap> linear_state_checkpoint_entries_;
+  LinearStateCheckpointHandle next_linear_state_checkpoint_handle_ = 1;
 
  protected:
   // the options for the block manager

@@ -86,7 +86,7 @@ BlockManagerPool::BlockManagerPool(const Options& options, int32_t dp_size)
         /*resource_name=*/"single block",
         /*exhaustion_message=*/"No more single-block ids available"));
   }
-  linear_state_checkpoint_hashes_.resize(dp_size);
+  linear_state_checkpoint_entries_.resize(dp_size);
   reset_transfer_infos();
 }
 
@@ -201,20 +201,43 @@ void BlockManagerPool::reset_transfer_infos() {
   swap_block_transfer_infos_.resize(block_managers_.size());
 }
 
+std::vector<BlockManagerPool::LinearStateCheckpointHandle>
+BlockManagerPool::record_linear_state_checkpoints(
+    int32_t dp_rank,
+    const std::vector<XXH3Key>& checkpoint_hashes) {
+  std::vector<LinearStateCheckpointHandle> handles;
+  handles.reserve(checkpoint_hashes.size());
+  if (!options_.enable_linear_state() || checkpoint_hashes.empty()) {
+    return handles;
+  }
+  CHECK_GE(dp_rank, 0);
+  CHECK_LT(static_cast<size_t>(dp_rank),
+           linear_state_checkpoint_entries_.size());
+
+  auto& checkpoint_entries_for_rank = linear_state_checkpoint_entries_[dp_rank];
+  for (const XXH3Key& checkpoint_hash : checkpoint_hashes) {
+    auto entry_it = checkpoint_entries_for_rank.find(checkpoint_hash);
+    if (entry_it == checkpoint_entries_for_rank.end()) {
+      LinearStateCheckpointEntry entry;
+      entry.checkpoint_hash = checkpoint_hash;
+      entry.dp_rank = dp_rank;
+      entry.handle = next_linear_state_checkpoint_handle_++;
+      entry.valid = true;
+      entry_it =
+          checkpoint_entries_for_rank.emplace(checkpoint_hash, entry).first;
+    }
+    handles.emplace_back(entry_it->second.handle);
+  }
+  return handles;
+}
+
 void BlockManagerPool::record_linear_state_checkpoint_hashes(
     int32_t dp_rank,
     const std::vector<XXH3Key>& checkpoint_hashes) {
   if (!options_.enable_linear_state() || checkpoint_hashes.empty()) {
     return;
   }
-  CHECK_GE(dp_rank, 0);
-  CHECK_LT(static_cast<size_t>(dp_rank),
-           linear_state_checkpoint_hashes_.size());
-
-  auto& checkpoint_hashes_for_rank = linear_state_checkpoint_hashes_[dp_rank];
-  for (const XXH3Key& checkpoint_hash : checkpoint_hashes) {
-    checkpoint_hashes_for_rank.insert(checkpoint_hash);
-  }
+  (void)record_linear_state_checkpoints(dp_rank, checkpoint_hashes);
 }
 
 void BlockManagerPool::prune_linear_state_checkpoint_hashes(
@@ -223,9 +246,9 @@ void BlockManagerPool::prune_linear_state_checkpoint_hashes(
     return;
   }
 
-  for (auto& checkpoint_hashes_for_rank : linear_state_checkpoint_hashes_) {
+  for (auto& checkpoint_entries_for_rank : linear_state_checkpoint_entries_) {
     for (const XXH3Key& evicted_hash : event.removed_cache) {
-      checkpoint_hashes_for_rank.erase(evicted_hash);
+      checkpoint_entries_for_rank.erase(evicted_hash);
     }
   }
 }
@@ -238,12 +261,42 @@ void BlockManagerPool::prune_linear_state_checkpoint_hashes(
   }
   CHECK_GE(dp_rank, 0);
   CHECK_LT(static_cast<size_t>(dp_rank),
-           linear_state_checkpoint_hashes_.size());
+           linear_state_checkpoint_entries_.size());
 
-  auto& checkpoint_hashes_for_rank = linear_state_checkpoint_hashes_[dp_rank];
+  auto& checkpoint_entries_for_rank = linear_state_checkpoint_entries_[dp_rank];
   for (const XXH3Key& checkpoint_hash : checkpoint_hashes) {
-    checkpoint_hashes_for_rank.erase(checkpoint_hash);
+    checkpoint_entries_for_rank.erase(checkpoint_hash);
   }
+}
+
+BlockManagerPool::LinearStateCheckpointHandle
+BlockManagerPool::get_linear_state_checkpoint_handle(
+    int32_t dp_rank,
+    const XXH3Key& checkpoint_hash) const {
+  if (!options_.enable_linear_state()) {
+    return kInvalidLinearStateCheckpointHandle;
+  }
+  CHECK_GE(dp_rank, 0);
+  CHECK_LT(static_cast<size_t>(dp_rank),
+           linear_state_checkpoint_entries_.size());
+
+  const auto& checkpoint_entries_for_rank =
+      linear_state_checkpoint_entries_[dp_rank];
+  auto entry_it = checkpoint_entries_for_rank.find(checkpoint_hash);
+  if (entry_it == checkpoint_entries_for_rank.end()) {
+    return kInvalidLinearStateCheckpointHandle;
+  }
+  return entry_it->second.handle;
+}
+
+size_t BlockManagerPool::num_linear_state_checkpoints(int32_t dp_rank) const {
+  if (!options_.enable_linear_state()) {
+    return 0;
+  }
+  CHECK_GE(dp_rank, 0);
+  CHECK_LT(static_cast<size_t>(dp_rank),
+           linear_state_checkpoint_entries_.size());
+  return linear_state_checkpoint_entries_[dp_rank].size();
 }
 
 bool BlockManagerPool::allocate(Sequence* sequence) {
@@ -540,16 +593,16 @@ size_t BlockManagerPool::get_linear_state_prefix_match_blocks(
     size_t existed_shared_blocks_num) const {
   CHECK_GE(dp_rank, 0);
   CHECK_LT(static_cast<size_t>(dp_rank),
-           linear_state_checkpoint_hashes_.size());
+           linear_state_checkpoint_entries_.size());
 
-  const auto& checkpoint_hashes = linear_state_checkpoint_hashes_[dp_rank];
+  const auto& checkpoint_entries = linear_state_checkpoint_entries_[dp_rank];
   size_t safe_blocks =
       std::min(existed_shared_blocks_num, shared_blocks.size());
   for (size_t block_idx = safe_blocks; block_idx < shared_blocks.size();
        ++block_idx) {
     const XXH3Key prefix_hash(
         shared_blocks[block_idx].get_immutable_hash_value());
-    if (checkpoint_hashes.count(prefix_hash) != 0) {
+    if (checkpoint_entries.find(prefix_hash) != checkpoint_entries.end()) {
       safe_blocks = block_idx + 1;
     }
   }

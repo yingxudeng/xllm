@@ -577,7 +577,18 @@ TEST(BlockManagerPoolTest, LinearStatePrefixCacheMatchesOnlyCheckpointHashes) {
   pool.deallocate_without_cache(&miss_seq);
   EXPECT_EQ(pool.num_used_blocks(), used_blocks_before_miss);
 
-  pool.record_linear_state_checkpoint_hashes(/*dp_rank=*/0, {checkpoint_hash});
+  const auto handles =
+      pool.record_linear_state_checkpoints(/*dp_rank=*/0, {checkpoint_hash});
+  ASSERT_EQ(handles.size(), 1u);
+  EXPECT_NE(handles[0], BlockManagerPool::kInvalidLinearStateCheckpointHandle);
+  EXPECT_EQ(
+      pool.get_linear_state_checkpoint_handle(/*dp_rank=*/0, checkpoint_hash),
+      handles[0]);
+  const auto duplicate_handles =
+      pool.record_linear_state_checkpoints(/*dp_rank=*/0, {checkpoint_hash});
+  ASSERT_EQ(duplicate_handles.size(), 1u);
+  EXPECT_EQ(duplicate_handles[0], handles[0]);
+  EXPECT_EQ(pool.num_linear_state_checkpoints(/*dp_rank=*/0), 1u);
 
   Sequence hit_seq =
       MakeSequence(2,
@@ -604,6 +615,7 @@ TEST(BlockManagerPoolTest, LinearStateCheckpointHashesArePrunedWithEvictions) {
   const XXH3Key checkpoint_hash(
       cached_seq.kv_state().kv_blocks()[1].get_immutable_hash_value());
   pool.record_linear_state_checkpoint_hashes(/*dp_rank=*/0, {checkpoint_hash});
+  EXPECT_EQ(pool.num_linear_state_checkpoints(/*dp_rank=*/0), 1u);
   pool.deallocate_without_cache(&cached_seq);
 
   KvCacheEvent insert_event;
@@ -622,6 +634,10 @@ TEST(BlockManagerPoolTest, LinearStateCheckpointHashesArePrunedWithEvictions) {
   pool.drain_prefix_cache_event(&evict_event);
   ASSERT_FALSE(evict_event.removed_cache.empty());
   pool.prune_linear_state_checkpoint_hashes(evict_event);
+  EXPECT_EQ(pool.num_linear_state_checkpoints(/*dp_rank=*/0), 0u);
+  EXPECT_EQ(
+      pool.get_linear_state_checkpoint_handle(/*dp_rank=*/0, checkpoint_hash),
+      BlockManagerPool::kInvalidLinearStateCheckpointHandle);
 
   Sequence recached_seq =
       MakeSequence(2, /*prompt_tokens=*/{1, 2, 3, 4, 5, 6, 7, 8});
@@ -652,7 +668,10 @@ TEST(BlockManagerPoolTest, LinearStateCheckpointHashesArePrunedByWorkerEvict) {
   pool.cache(&cached_seq);
   const XXH3Key checkpoint_hash(
       cached_seq.kv_state().kv_blocks()[1].get_immutable_hash_value());
-  pool.record_linear_state_checkpoint_hashes(/*dp_rank=*/0, {checkpoint_hash});
+  const auto handles =
+      pool.record_linear_state_checkpoints(/*dp_rank=*/0, {checkpoint_hash});
+  ASSERT_EQ(handles.size(), 1u);
+  EXPECT_NE(handles[0], BlockManagerPool::kInvalidLinearStateCheckpointHandle);
   pool.deallocate_without_cache(&cached_seq);
 
   Sequence hit_before_prune =
@@ -662,12 +681,20 @@ TEST(BlockManagerPoolTest, LinearStateCheckpointHashesArePrunedByWorkerEvict) {
   pool.deallocate_without_cache(&hit_before_prune);
 
   pool.prune_linear_state_checkpoint_hashes(/*dp_rank=*/0, {checkpoint_hash});
+  EXPECT_EQ(
+      pool.get_linear_state_checkpoint_handle(/*dp_rank=*/0, checkpoint_hash),
+      BlockManagerPool::kInvalidLinearStateCheckpointHandle);
 
   Sequence miss_after_worker_evict =
       MakeSequence(2, /*prompt_tokens=*/{1, 2, 3, 4, 5, 6, 7, 8});
   ASSERT_TRUE(pool.allocate(&miss_after_worker_evict,
                             miss_after_worker_evict.num_tokens()));
   EXPECT_EQ(miss_after_worker_evict.kv_state().shared_kv_blocks_num(), 0u);
+
+  const auto handles_after_prune =
+      pool.record_linear_state_checkpoints(/*dp_rank=*/0, {checkpoint_hash});
+  ASSERT_EQ(handles_after_prune.size(), 1u);
+  EXPECT_NE(handles_after_prune[0], handles[0]);
 }
 
 }  // namespace xllm
