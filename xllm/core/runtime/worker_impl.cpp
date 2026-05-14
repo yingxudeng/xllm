@@ -118,6 +118,30 @@ class ScopedAtenLoadThreads {
   bool active_ = false;
 };
 
+#if defined(USE_NPU)
+void prepare_input_params_for_linear_attention(ModelInputParams& input_params) {
+  int64_t batch_size = input_params.block_tables.size(0);
+  input_params.query_start_loc.resize(batch_size + 1, 0);
+  int64_t max_seq_len = 0;
+  for (int64_t i = 0; i < batch_size; ++i) {
+    int64_t seq_len = static_cast<int64_t>(input_params.q_seq_lens_vec[i]);
+    max_seq_len = std::max(max_seq_len, seq_len);
+  }
+
+  for (int64_t i = 0; i < batch_size; ++i) {
+    input_params.query_start_loc[i + 1] = max_seq_len * (i + 1);
+  }
+
+  torch::Tensor has_initial_state_tensor = input_params.kv_seq_lens > 0;
+  torch::Tensor has_initial_state_int64 =
+      has_initial_state_tensor.contiguous().to(torch::kCPU).to(torch::kInt64);
+  input_params.has_initial_state =
+      std::vector<int64_t>(has_initial_state_int64.data_ptr<int64_t>(),
+                           has_initial_state_int64.data_ptr<int64_t>() +
+                               has_initial_state_int64.size(0));
+}
+#endif
+
 }  // namespace
 
 WorkerImpl::WorkerImpl(const ParallelArgs& parallel_args,
@@ -497,6 +521,10 @@ void WorkerImpl::prepare_work_before_execute(const ForwardInput& input,
         // expert_load_data_.fill_(0);
         processed_input.input_params.expert_load_data = expert_load_data_;
       }
+    }
+
+    if (has_linear_attention_layers(context_.get_model_args())) {
+      prepare_input_params_for_linear_attention(processed_input.input_params);
     }
 #endif
   };
