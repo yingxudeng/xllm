@@ -400,6 +400,11 @@ struct ModelInputParams {
 #if defined(USE_NPU) || defined(USE_MLU)
     params.layer_synchronizer = layer_synchronizer;
 #endif
+#if defined(USE_NPU)
+    params.query_start_loc = query_start_loc;
+    params.has_initial_state = has_initial_state;
+    params.linear_state_indices_host = linear_state_indices_host;
+#endif
     params.expert_load_data = expert_load_data;
     params.expert_array = expert_array;
 
@@ -621,6 +626,8 @@ struct ModelInputParams {
   std::vector<int64_t> query_start_loc;
   // if each sequencce has initial conv state, for conv1d
   std::vector<int64_t> has_initial_state;
+  // Stable int64 host linear state ids for kernels that take IntArrayRef.
+  std::vector<int64_t> linear_state_indices_host;
 #endif
 
   DpEpPaddingData dp_ep_padding_data;

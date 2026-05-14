@@ -16,6 +16,7 @@ limitations under the License.
 #pragma once
 
 #include <absl/container/flat_hash_map.h>
+#include <absl/hash/hash.h>
 #include <acl/acl.h>
 #include <torch/torch.h>
 
@@ -23,6 +24,7 @@ limitations under the License.
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <vector>
 
 #include "core/common/macros.h"
 #include "core/framework/kv_cache/kv_cache.h"
@@ -53,6 +55,21 @@ struct TilingBufferInfo;
 }  // namespace atb
 
 namespace xllm::npu {
+
+struct AclGraphKey {
+  uint32_t bucket_num_tokens = 0;
+  std::vector<int32_t> linear_state_ids;
+};
+
+inline bool operator==(const AclGraphKey& lhs, const AclGraphKey& rhs) {
+  return lhs.bucket_num_tokens == rhs.bucket_num_tokens &&
+         lhs.linear_state_ids == rhs.linear_state_ids;
+}
+
+template <typename H>
+H AbslHashValue(H h, const AclGraphKey& key) {
+  return H::combine(std::move(h), key.bucket_num_tokens, key.linear_state_ids);
+}
 
 // Helper class to hold persistent parameters for graph execution
 // Multiple AclGraph instances can share the same GraphPersistentParam object
@@ -293,6 +310,7 @@ class AclGraph {
   // instances)
   GraphPersistentParam& persistent_param_;
   int32_t padding_linear_state_id_ = -1;
+  ModelInputParams captured_params_;
 
   // Cached capture stream, initialized on first capture
   std::optional<c10_npu::NPUStream> capture_stream_;
@@ -330,7 +348,7 @@ class AclGraphExecutorImpl : public ExecutorImpl {
   runtime::Options options_;
 
   // Lazy-loaded ACL graphs for different num_tokens
-  absl::flat_hash_map<uint32_t, std::unique_ptr<AclGraph>> graphs_;
+  absl::flat_hash_map<AclGraphKey, std::unique_ptr<AclGraph>> graphs_;
 
   // Persistent parameters shared across all AclGraph instances
   std::unique_ptr<GraphPersistentParam> persistent_param_;

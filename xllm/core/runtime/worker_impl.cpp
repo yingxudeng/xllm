@@ -168,6 +168,10 @@ void prepare_input_params_for_linear_attention(ModelInputParams& input_params) {
       input_params.has_initial_state.assign(batch_size, 0);
     }
   }
+
+  input_params.linear_state_indices_host.assign(
+      input_params.linear_state_ids.begin(),
+      input_params.linear_state_ids.end());
 }
 
 }  // namespace

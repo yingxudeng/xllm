@@ -22,6 +22,7 @@ limitations under the License.
 #include <torch_npu/csrc/libs/init_npu.h>
 #include <torch_npu/torch_npu.h>
 
+#include <algorithm>
 #include <numeric>
 
 #include "core/common/global_flags.h"
@@ -115,6 +116,142 @@ int32_t get_padding_linear_state_id(const std::vector<KVCache>& kv_caches,
   }
   return static_cast<int32_t>(std::max<int64_t>(max_running_requests, 0));
 }
+
+class LinearStateCacheSnapshot final {
+ public:
+  struct LayerRows {
+    torch::Tensor conv_cache;
+    torch::Tensor ssm_cache;
+    std::vector<int64_t> linear_state_ids;
+    std::vector<torch::Tensor> conv_rows;
+    std::vector<torch::Tensor> ssm_rows;
+  };
+
+  void add_layer(LayerRows layer) { layers_.push_back(std::move(layer)); }
+
+  bool empty() const { return layers_.empty(); }
+
+  void restore() const {
+    for (const LayerRows& layer : layers_) {
+      for (size_t i = 0; i < layer.linear_state_ids.size(); ++i) {
+        const int64_t linear_state_id = layer.linear_state_ids[i];
+        if (layer.conv_cache.defined() && layer.conv_cache.numel() > 0) {
+          layer.conv_cache.select(0, linear_state_id).copy_(layer.conv_rows[i]);
+        }
+        if (layer.ssm_cache.defined() && layer.ssm_cache.numel() > 0) {
+          layer.ssm_cache.select(0, linear_state_id).copy_(layer.ssm_rows[i]);
+        }
+      }
+    }
+  }
+
+ private:
+  std::vector<LayerRows> layers_;
+};
+
+std::vector<int64_t> get_valid_linear_state_ids(
+    const std::vector<int32_t>& linear_state_ids,
+    int32_t padding_linear_state_id) {
+  std::vector<int64_t> valid_ids;
+  valid_ids.reserve(linear_state_ids.size() + 1);
+  auto append_valid_id = [&valid_ids](int32_t linear_state_id) {
+    if (linear_state_id < 0) {
+      return;
+    }
+    const int64_t id = static_cast<int64_t>(linear_state_id);
+    if (std::find(valid_ids.begin(), valid_ids.end(), id) == valid_ids.end()) {
+      valid_ids.push_back(id);
+    }
+  };
+
+  for (const int32_t linear_state_id : linear_state_ids) {
+    append_valid_id(linear_state_id);
+  }
+  append_valid_id(padding_linear_state_id);
+  return valid_ids;
+}
+
+LinearStateCacheSnapshot snapshot_linear_state_cache(
+    const std::vector<KVCache>& kv_caches,
+    const std::vector<int32_t>& linear_state_ids,
+    int32_t padding_linear_state_id) {
+  LinearStateCacheSnapshot snapshot;
+  const std::vector<int64_t> valid_ids =
+      get_valid_linear_state_ids(linear_state_ids, padding_linear_state_id);
+  if (valid_ids.empty()) {
+    return snapshot;
+  }
+
+  for (const KVCache& kv_cache : kv_caches) {
+    LinearStateCacheSnapshot::LayerRows layer;
+    layer.conv_cache = kv_cache.get_conv_cache();
+    layer.ssm_cache = kv_cache.get_ssm_cache();
+    if ((!layer.conv_cache.defined() || layer.conv_cache.numel() == 0) &&
+        (!layer.ssm_cache.defined() || layer.ssm_cache.numel() == 0)) {
+      continue;
+    }
+
+    for (const int64_t linear_state_id : valid_ids) {
+      if (layer.conv_cache.defined() && layer.conv_cache.numel() > 0 &&
+          linear_state_id >= layer.conv_cache.size(0)) {
+        continue;
+      }
+      if (layer.ssm_cache.defined() && layer.ssm_cache.numel() > 0 &&
+          linear_state_id >= layer.ssm_cache.size(0)) {
+        continue;
+      }
+      layer.linear_state_ids.push_back(linear_state_id);
+      if (layer.conv_cache.defined() && layer.conv_cache.numel() > 0) {
+        layer.conv_rows.push_back(
+            layer.conv_cache.select(0, linear_state_id).clone());
+      }
+      if (layer.ssm_cache.defined() && layer.ssm_cache.numel() > 0) {
+        layer.ssm_rows.push_back(
+            layer.ssm_cache.select(0, linear_state_id).clone());
+      }
+    }
+
+    if (!layer.linear_state_ids.empty()) {
+      snapshot.add_layer(std::move(layer));
+    }
+  }
+  return snapshot;
+}
+
+AclGraphKey make_acl_graph_key(uint32_t bucket_num_tokens,
+                               const ModelArgs& args,
+                               const ModelInputParams& params) {
+  AclGraphKey key;
+  key.bucket_num_tokens = bucket_num_tokens;
+  if (has_linear_attention_layers(args)) {
+    key.linear_state_ids = params.linear_state_ids;
+  }
+  return key;
+}
+
+ModelInputParams make_stable_capture_params(const ModelInputParams& params) {
+  ModelInputParams stable_params(params);
+  const int64_t num_sequences = stable_params.num_sequences;
+  if (!stable_params.linear_state_ids.empty()) {
+    stable_params.linear_state_indices_host.assign(
+        stable_params.linear_state_ids.begin(),
+        stable_params.linear_state_ids.end());
+  }
+  if (stable_params.query_start_loc.size() !=
+      static_cast<size_t>(num_sequences + 1)) {
+    stable_params.query_start_loc.resize(num_sequences + 1, 0);
+    for (int64_t i = 0; i < num_sequences; ++i) {
+      const int64_t q_seq_len =
+          i < static_cast<int64_t>(stable_params.q_seq_lens_vec.size())
+              ? stable_params.q_seq_lens_vec[i]
+              : 1;
+      stable_params.query_start_loc[i + 1] =
+          stable_params.query_start_loc[i] + q_seq_len;
+    }
+  }
+  return stable_params;
+}
+
 }  // namespace
 
 // GraphPersistentParam implementation
@@ -927,6 +1064,11 @@ std::optional<ModelOutput> AclGraph::capture(CausalLM* model,
   const uint32_t actual_num_tokens = tokens.size(0);
   CHECK_GE(num_tokens_, actual_num_tokens)
       << "num_tokens_ >= actual_num_tokens";
+  const LinearStateCacheSnapshot linear_state_snapshot =
+      has_linear_attention_layers(args)
+          ? snapshot_linear_state_cache(
+                kv_cache, params.linear_state_ids, padding_linear_state_id_)
+          : LinearStateCacheSnapshot();
   auto graph_params = persistent_param_.update(tokens,
                                                k_cache,
                                                v_cache,
@@ -940,6 +1082,7 @@ std::optional<ModelOutput> AclGraph::capture(CausalLM* model,
   CHECK(graph_params.has_value())
       << "update() should return ModelInputParams when "
          "return_capture_params=true";
+  captured_params_ = make_stable_capture_params(graph_params.value());
 
   // Synchronize stream to ensure all data is copied to graph persistent buffers
   aclrtSynchronizeStream(stream);
@@ -967,7 +1110,7 @@ std::optional<ModelOutput> AclGraph::capture(CausalLM* model,
       model->forward({persistent_param_.persistent_tokens(num_tokens_)},
                      {persistent_param_.persistent_positions(num_tokens_)},
                      kv_cache,
-                     {graph_params.value()});
+                     {captured_params_});
 
   // Store result in persistent buffer owned by NPUGraph mempool
   persistent_param_.set_hidden_states(forward_result.hidden_states);
@@ -985,11 +1128,21 @@ std::optional<ModelOutput> AclGraph::capture(CausalLM* model,
         c10_npu::getDefaultNPUStream(tensor_options.device().index()));
   }
 
+  if (!linear_state_snapshot.empty()) {
+    linear_state_snapshot.restore();
+    aclError restore_status = aclrtSynchronizeStream(stream);
+    CHECK_EQ(restore_status, ACL_SUCCESS)
+        << "aclrtSynchronizeStream failed after restoring linear state cache, "
+           "error code: "
+        << restore_status;
+  }
+
   graph_.replay();
   aclError replay_status = aclrtSynchronizeStream(stream);
-  CHECK_EQ(replay_status, ACL_SUCCESS) << "aclrtSynchronizeStream failed after "
-                                          "graph capture replay, error code: "
-                                       << replay_status;
+  CHECK_EQ(replay_status, ACL_SUCCESS)
+      << "aclrtSynchronizeStream failed after graph capture replay, error "
+         "code: "
+      << replay_status;
 
   // Copy the visible output while the graph lock is still held. The underlying
   // persistent buffer is reused by later graph replays.
@@ -1157,7 +1310,9 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
   std::lock_guard<std::mutex> graph_execution_lock(graph_execution_mutex_);
 
   // Check if captured graph exists for this bucket num_tokens
-  auto it = graphs_.find(bucket_num_tokens);
+  const AclGraphKey graph_key =
+      make_acl_graph_key(bucket_num_tokens, args_, params_single);
+  auto it = graphs_.find(graph_key);
   if (it != graphs_.end()) {
     // Replay the existing graph
     VLOG(kGraphExecutorLogVerboseLevel)
@@ -1188,7 +1343,7 @@ ModelOutput AclGraphExecutorImpl::run(const torch::Tensor& tokens,
               << ") done";
 
     // Save the graph for future reuse
-    graphs_[bucket_num_tokens] = std::move(graph);
+    graphs_[graph_key] = std::move(graph);
 
     // Return the isolated output from capture (no need to replay since capture
     // already executed).
