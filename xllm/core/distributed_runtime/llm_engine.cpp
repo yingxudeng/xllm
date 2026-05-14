@@ -106,6 +106,27 @@ void record_linear_state_checkpoint_hashes(
                                                             checkpoint_hashes);
 }
 
+void populate_linear_state_restore_checkpoint_handles(
+    xllm::BlockManagerPool* block_manager_pool,
+    int32_t dp_rank,
+    xllm::RawForwardInput* input) {
+  if (block_manager_pool == nullptr || input == nullptr ||
+      input->linear_state_cache_ops.empty()) {
+    return;
+  }
+  for (xllm::LinearStateCacheOp& op : input->linear_state_cache_ops) {
+    if (op.restore_checkpoint_handle !=
+            xllm::kInvalidLinearStateCheckpointHandle ||
+        is_zero_prefix_hash(op.restore_prefix_hash)) {
+      continue;
+    }
+    const xllm::XXH3Key checkpoint_hash(op.restore_prefix_hash.data());
+    op.restore_checkpoint_handle =
+        block_manager_pool->get_linear_state_checkpoint_handle(dp_rank,
+                                                               checkpoint_hash);
+  }
+}
+
 void sync_linear_state_checkpoint_hashes(
     xllm::BlockManagerPool* block_manager_pool,
     int32_t dp_rank,
@@ -1322,6 +1343,10 @@ std::vector<RawForwardInput> LLMEngine::prepare_inputs(
   block_manager_pool()->prune_linear_state_checkpoint_hashes(
       prefix_cache_event);
   append_removed_prefix_hashes(prefix_cache_event, &batched_inputs);
+  for (auto dp_rank = 0; dp_rank < dp_size_; ++dp_rank) {
+    populate_linear_state_restore_checkpoint_handles(
+        block_manager_pool(), dp_rank, &batched_inputs[dp_rank]);
+  }
 
   return batched_inputs;
 }

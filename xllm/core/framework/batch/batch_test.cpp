@@ -50,12 +50,16 @@ LinearStatePrefixHash make_linear_state_prefix_hash(uint8_t base) {
 LinearStateCacheOp make_linear_state_cache_op(int32_t linear_state_id,
                                               const std::string& request_id,
                                               uint8_t restore_base,
-                                              uint8_t save_base) {
+                                              uint8_t save_base,
+                                              int64_t restore_handle = 1000,
+                                              int64_t save_handle = 2000) {
   LinearStateCacheOp op;
   op.linear_state_id = linear_state_id;
   op.request_id = request_id;
   op.restore_prefix_hash = make_linear_state_prefix_hash(restore_base);
   op.save_prefix_hash = make_linear_state_prefix_hash(save_base);
+  op.restore_checkpoint_handle = restore_handle;
+  op.save_checkpoint_handle = save_handle;
   return op;
 }
 }  // namespace
@@ -588,11 +592,15 @@ TEST(BatchTest, ProtoRoundTripPreservesAndDefaultsLinearStateMetadata) {
       make_linear_state_cache_op(/*linear_state_id=*/7,
                                  "request-0",
                                  /*restore_base=*/1,
-                                 /*save_base=*/33),
+                                 /*save_base=*/33,
+                                 /*restore_handle=*/7001,
+                                 /*save_handle=*/7002),
       make_linear_state_cache_op(/*linear_state_id=*/9,
                                  "request-1",
                                  /*restore_base=*/17,
-                                 /*save_base=*/49)};
+                                 /*save_base=*/49,
+                                 /*restore_handle=*/9001,
+                                 /*save_handle=*/9002)};
   raw_input.linear_state_evict_prefix_hashes = {
       make_linear_state_prefix_hash(/*base=*/113)};
   raw_input.request_ids = {"fallback-0", "fallback-1"};
@@ -622,6 +630,12 @@ TEST(BatchTest, ProtoRoundTripPreservesAndDefaultsLinearStateMetadata) {
       raw_input.linear_state_prefix_hashes[0]);
   EXPECT_EQ(round_trip.input_params.linear_state_cache_ops[0].save_prefix_hash,
             raw_input.linear_state_save_prefix_hashes[0]);
+  EXPECT_EQ(round_trip.input_params.linear_state_cache_ops[0]
+                .restore_checkpoint_handle,
+            7001);
+  EXPECT_EQ(
+      round_trip.input_params.linear_state_cache_ops[0].save_checkpoint_handle,
+      7002);
   EXPECT_EQ(round_trip.input_params.linear_state_evict_prefix_hashes,
             raw_input.linear_state_evict_prefix_hashes);
 
@@ -651,10 +665,15 @@ TEST(BatchTest, ProtoRoundTripPreservesAndDefaultsLinearStateMetadata) {
       -1);
   EXPECT_EQ(legacy_round_trip.input_params.linear_state_cache_ops[0].request_id,
             "fallback-0");
-  EXPECT_EQ(
-      legacy_round_trip.input_params.linear_state_cache_ops[0]
-          .restore_prefix_hash,
-      LinearStatePrefixHash{});
+  EXPECT_EQ(legacy_round_trip.input_params.linear_state_cache_ops[0]
+                .restore_prefix_hash,
+            LinearStatePrefixHash{});
+  EXPECT_EQ(legacy_round_trip.input_params.linear_state_cache_ops[0]
+                .restore_checkpoint_handle,
+            kInvalidLinearStateCheckpointHandle);
+  EXPECT_EQ(legacy_round_trip.input_params.linear_state_cache_ops[0]
+                .save_checkpoint_handle,
+            kInvalidLinearStateCheckpointHandle);
   EXPECT_TRUE(
       legacy_round_trip.input_params.linear_state_evict_prefix_hashes.empty());
 }
@@ -684,11 +703,15 @@ TEST(BatchTest, SharedMemoryRoundTripPreservesAndDefaultsLinearStateMetadata) {
       make_linear_state_cache_op(/*linear_state_id=*/4,
                                  "request-4",
                                  /*restore_base=*/65,
-                                 /*save_base=*/97),
+                                 /*save_base=*/97,
+                                 /*restore_handle=*/4001,
+                                 /*save_handle=*/4002),
       make_linear_state_cache_op(/*linear_state_id=*/6,
                                  "request-6",
                                  /*restore_base=*/81,
-                                 /*save_base=*/113)};
+                                 /*save_base=*/113,
+                                 /*restore_handle=*/6001,
+                                 /*save_handle=*/6002)};
   raw_input.linear_state_evict_prefix_hashes = {
       make_linear_state_prefix_hash(/*base=*/129)};
   raw_input.request_ids = {"fallback-4", "fallback-6"};
@@ -724,6 +747,12 @@ TEST(BatchTest, SharedMemoryRoundTripPreservesAndDefaultsLinearStateMetadata) {
             raw_input.linear_state_prefix_hashes[1]);
   EXPECT_EQ(from_shm.input_params.linear_state_cache_ops[1].save_prefix_hash,
             raw_input.linear_state_save_prefix_hashes[1]);
+  EXPECT_EQ(
+      from_shm.input_params.linear_state_cache_ops[1].restore_checkpoint_handle,
+      6001);
+  EXPECT_EQ(
+      from_shm.input_params.linear_state_cache_ops[1].save_checkpoint_handle,
+      6002);
   EXPECT_EQ(from_shm.input_params.linear_state_evict_prefix_hashes,
             raw_input.linear_state_evict_prefix_hashes);
 
@@ -754,6 +783,12 @@ TEST(BatchTest, SharedMemoryRoundTripPreservesAndDefaultsLinearStateMetadata) {
   EXPECT_EQ(
       legacy_from_shm.input_params.linear_state_cache_ops[1].save_prefix_hash,
       LinearStatePrefixHash{});
+  EXPECT_EQ(legacy_from_shm.input_params.linear_state_cache_ops[1]
+                .restore_checkpoint_handle,
+            kInvalidLinearStateCheckpointHandle);
+  EXPECT_EQ(legacy_from_shm.input_params.linear_state_cache_ops[1]
+                .save_checkpoint_handle,
+            kInvalidLinearStateCheckpointHandle);
   EXPECT_TRUE(
       legacy_from_shm.input_params.linear_state_evict_prefix_hashes.empty());
 }

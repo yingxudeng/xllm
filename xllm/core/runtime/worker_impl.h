@@ -233,6 +233,8 @@ class WorkerImpl {
   class LinearStateSnapshot {
    public:
     int32_t checkpoint_slot_id = -1;
+    LinearStateCheckpointHandle checkpoint_handle =
+        kInvalidLinearStateCheckpointHandle;
     int32_t ref_count = 0;
     bool pending_delete = false;
     size_t bytes = 0;
@@ -251,11 +253,20 @@ class WorkerImpl {
   void release_linear_state_snapshot_refs(
       const std::vector<LinearStatePrefixHash>& prefix_hashes);
   void touch_linear_state_snapshot(const LinearStatePrefixHash& prefix_hash);
+  void erase_linear_state_snapshot_handle(
+      const LinearStatePrefixHash& prefix_hash,
+      const LinearStateSnapshot& snapshot);
+  void record_linear_state_snapshot_handle(
+      LinearStateCheckpointHandle checkpoint_handle,
+      const LinearStatePrefixHash& prefix_hash);
+  std::optional<LinearStatePrefixHash> get_linear_state_snapshot_prefix_hash(
+      LinearStateCheckpointHandle checkpoint_handle) const;
   LinearStateSnapshotUpdate save_linear_state_snapshots(
       const ModelInputParams& input_params);
   bool save_linear_state_snapshot(
       const LinearStatePrefixHash& prefix_hash,
       int32_t linear_state_id,
+      LinearStateCheckpointHandle checkpoint_handle,
       std::vector<LinearStatePrefixHash>* evicted_prefix_hashes);
   bool restore_linear_state_snapshot(const LinearStatePrefixHash& prefix_hash,
                                      int32_t linear_state_id);
@@ -271,6 +282,8 @@ class WorkerImpl {
                      std::list<LinearStatePrefixHash>::iterator,
                      LinearStatePrefixHashHasher>
       linear_state_snapshot_lru_iters_;
+  std::unordered_map<LinearStateCheckpointHandle, LinearStatePrefixHash>
+      linear_state_snapshot_handles_;
   std::vector<int32_t> free_linear_state_checkpoint_slots_;
   std::vector<uint8_t> linear_state_checkpoint_slot_free_;
   int32_t linear_state_live_slots_ = 0;

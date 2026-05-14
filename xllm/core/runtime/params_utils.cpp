@@ -133,9 +133,15 @@ std::vector<LinearStateCacheOp> linear_state_cache_ops_from_proto(
     LinearStateCacheOp op;
     op.linear_state_id = pb_op.linear_state_id();
     op.request_id = pb_op.request_id();
-    op.restore_prefix_hash = prefix_hash_from_proto(
-        pb_op.restore_prefix_hash());
+    op.restore_prefix_hash =
+        prefix_hash_from_proto(pb_op.restore_prefix_hash());
     op.save_prefix_hash = prefix_hash_from_proto(pb_op.save_prefix_hash());
+    op.restore_checkpoint_handle = pb_op.has_restore_checkpoint_handle()
+                                       ? pb_op.restore_checkpoint_handle()
+                                       : kInvalidLinearStateCheckpointHandle;
+    op.save_checkpoint_handle = pb_op.has_save_checkpoint_handle()
+                                    ? pb_op.save_checkpoint_handle()
+                                    : kInvalidLinearStateCheckpointHandle;
     ops.emplace_back(std::move(op));
   }
   return ops;
@@ -149,9 +155,11 @@ void linear_state_cache_ops_to_proto(
     proto::LinearStateCacheOp* pb_op = pb_ops->Add();
     pb_op->set_linear_state_id(op.linear_state_id);
     pb_op->set_request_id(op.request_id);
-    pb_op->set_restore_prefix_hash(prefix_hash_to_proto(
-        op.restore_prefix_hash));
+    pb_op->set_restore_prefix_hash(
+        prefix_hash_to_proto(op.restore_prefix_hash));
     pb_op->set_save_prefix_hash(prefix_hash_to_proto(op.save_prefix_hash));
+    pb_op->set_restore_checkpoint_handle(op.restore_checkpoint_handle);
+    pb_op->set_save_checkpoint_handle(op.save_checkpoint_handle);
   }
 }
 

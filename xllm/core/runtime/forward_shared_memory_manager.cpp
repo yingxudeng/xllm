@@ -502,10 +502,12 @@ inline void write_linear_state_cache_ops(
   for (const LinearStateCacheOp& op : ops) {
     write_data(cursor, op.linear_state_id);
     write_string(cursor, op.request_id);
-    write_bytes(cursor,
-                op.restore_prefix_hash.data(),
-                XXH3_128BITS_HASH_VALUE_LEN);
-    write_bytes(cursor, op.save_prefix_hash.data(), XXH3_128BITS_HASH_VALUE_LEN);
+    write_bytes(
+        cursor, op.restore_prefix_hash.data(), XXH3_128BITS_HASH_VALUE_LEN);
+    write_bytes(
+        cursor, op.save_prefix_hash.data(), XXH3_128BITS_HASH_VALUE_LEN);
+    write_data(cursor, op.restore_checkpoint_handle);
+    write_data(cursor, op.save_checkpoint_handle);
   }
 }
 
@@ -1247,9 +1249,8 @@ inline void read_string_vector(ReadContext& context,
   }
 }
 
-inline void read_linear_state_cache_ops(
-    ReadContext& context,
-    std::vector<LinearStateCacheOp>& ops) {
+inline void read_linear_state_cache_ops(ReadContext& context,
+                                        std::vector<LinearStateCacheOp>& ops) {
   uint64_t size;
   read_data(context, size);
   ops.resize(size);
@@ -1264,6 +1265,8 @@ inline void read_linear_state_cache_ops(
                 context.descriptor_cursor,
                 XXH3_128BITS_HASH_VALUE_LEN);
     advance_descriptor_cursor(context, XXH3_128BITS_HASH_VALUE_LEN);
+    read_data(context, ops[i].restore_checkpoint_handle);
+    read_data(context, ops[i].save_checkpoint_handle);
   }
 }
 

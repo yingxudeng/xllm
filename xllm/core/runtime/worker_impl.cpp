@@ -627,15 +627,15 @@ WorkerImpl::restore_linear_state_snapshots(ModelInputParams& input_params) {
            cache_ops.empty() ? input_params.linear_state_ids.size()
                              : cache_ops.size())
       << "has_initial_state must be initialized before linear state restore.";
-  const size_t num_ops =
-      cache_ops.empty() ? input_params.linear_state_ids.size()
-                        : cache_ops.size();
+  const size_t num_ops = cache_ops.empty()
+                             ? input_params.linear_state_ids.size()
+                             : cache_ops.size();
   restored_prefix_hashes.reserve(num_ops);
   std::lock_guard<std::mutex> lock(linear_state_snapshots_mutex_);
   for (size_t i = 0; i < num_ops; ++i) {
-    const int32_t linear_state_id =
-        cache_ops.empty() ? input_params.linear_state_ids[i]
-                          : cache_ops[i].linear_state_id;
+    const int32_t linear_state_id = cache_ops.empty()
+                                        ? input_params.linear_state_ids[i]
+                                        : cache_ops[i].linear_state_id;
     if (linear_state_id < 0) {
       continue;
     }
@@ -651,20 +651,46 @@ WorkerImpl::restore_linear_state_snapshots(ModelInputParams& input_params) {
       continue;
     }
 
-    const LinearStatePrefixHash& restore_prefix_hash =
+    const LinearStatePrefixHash& requested_restore_prefix_hash =
         cache_ops.empty() ? input_params.linear_state_prefix_hashes[i]
                           : cache_ops[i].restore_prefix_hash;
+    const LinearStateCheckpointHandle restore_checkpoint_handle =
+        cache_ops.empty() ? kInvalidLinearStateCheckpointHandle
+                          : cache_ops[i].restore_checkpoint_handle;
+    LinearStatePrefixHash restore_prefix_hash = requested_restore_prefix_hash;
+    if (restore_checkpoint_handle != kInvalidLinearStateCheckpointHandle) {
+      std::optional<LinearStatePrefixHash> handle_prefix_hash =
+          get_linear_state_snapshot_prefix_hash(restore_checkpoint_handle);
+      if (handle_prefix_hash.has_value()) {
+        restore_prefix_hash = handle_prefix_hash.value();
+      }
+    }
     if (is_zero_prefix_hash(restore_prefix_hash)) {
       active_linear_state_requests_[linear_state_id] = request_id;
       continue;
     }
 
     if (restore_linear_state_snapshot(restore_prefix_hash, linear_state_id)) {
+      record_linear_state_snapshot_handle(restore_checkpoint_handle,
+                                          restore_prefix_hash);
       VLOG(1) << "Qwen3.5 linear state snapshot restored; linear_state_id="
               << linear_state_id;
       input_params.has_initial_state[i] = 1;
       active_linear_state_requests_[linear_state_id] = request_id;
       restored_prefix_hashes.emplace_back(restore_prefix_hash);
+      continue;
+    }
+    if (restore_prefix_hash != requested_restore_prefix_hash &&
+        !is_zero_prefix_hash(requested_restore_prefix_hash) &&
+        restore_linear_state_snapshot(requested_restore_prefix_hash,
+                                      linear_state_id)) {
+      record_linear_state_snapshot_handle(restore_checkpoint_handle,
+                                          requested_restore_prefix_hash);
+      VLOG(1) << "Qwen3.5 linear state snapshot restored by fallback hash; "
+              << "linear_state_id=" << linear_state_id;
+      input_params.has_initial_state[i] = 1;
+      active_linear_state_requests_[linear_state_id] = request_id;
+      restored_prefix_hashes.emplace_back(requested_restore_prefix_hash);
       continue;
     }
 
@@ -699,12 +725,14 @@ void WorkerImpl::prune_linear_state_snapshots(
       linear_state_snapshot_lru_iters_.erase(lru_it);
     }
     if (snapshot_it->second.ref_count > 0) {
+      erase_linear_state_snapshot_handle(prefix_hash, snapshot_it->second);
       snapshot_it->second.pending_delete = true;
       continue;
     }
     linear_state_snapshot_bytes_ -= snapshot_it->second.bytes;
     release_linear_state_checkpoint_slot(
         snapshot_it->second.checkpoint_slot_id);
+    erase_linear_state_snapshot_handle(prefix_hash, snapshot_it->second);
     linear_state_snapshots_.erase(snapshot_it);
   }
 }
@@ -734,9 +762,9 @@ WorkerImpl::LinearStateSnapshotUpdate WorkerImpl::save_linear_state_snapshots(
     capture_lock_guard.emplace(capture_lock);
   }
 #endif
-  const size_t num_ops =
-      cache_ops.empty() ? input_params.linear_state_ids.size()
-                        : cache_ops.size();
+  const size_t num_ops = cache_ops.empty()
+                             ? input_params.linear_state_ids.size()
+                             : cache_ops.size();
   std::lock_guard<std::mutex> lock(linear_state_snapshots_mutex_);
   for (size_t i = 0; i < num_ops; ++i) {
     const LinearStatePrefixHash& save_prefix_hash =
@@ -745,11 +773,15 @@ WorkerImpl::LinearStateSnapshotUpdate WorkerImpl::save_linear_state_snapshots(
     if (is_zero_prefix_hash(save_prefix_hash)) {
       continue;
     }
-    const int32_t linear_state_id =
-        cache_ops.empty() ? input_params.linear_state_ids[i]
-                          : cache_ops[i].linear_state_id;
+    const int32_t linear_state_id = cache_ops.empty()
+                                        ? input_params.linear_state_ids[i]
+                                        : cache_ops[i].linear_state_id;
+    const LinearStateCheckpointHandle save_checkpoint_handle =
+        cache_ops.empty() ? kInvalidLinearStateCheckpointHandle
+                          : cache_ops[i].save_checkpoint_handle;
     if (save_linear_state_snapshot(save_prefix_hash,
                                    linear_state_id,
+                                   save_checkpoint_handle,
                                    &update.evicted_prefix_hashes)) {
       update.saved_prefix_hashes.emplace_back(save_prefix_hash);
       VLOG(1) << "Qwen3.5 linear state snapshot saved; linear_state_id="
@@ -768,6 +800,7 @@ void WorkerImpl::initialize_linear_state_checkpoint_slots() {
   linear_state_snapshots_.clear();
   linear_state_snapshot_lru_.clear();
   linear_state_snapshot_lru_iters_.clear();
+  linear_state_snapshot_handles_.clear();
   active_linear_state_requests_.clear();
 
   int64_t num_linear_state_blocks = 0;
@@ -821,6 +854,43 @@ void WorkerImpl::touch_linear_state_snapshot(
   linear_state_snapshot_lru_iters_[prefix_hash] = tail_it;
 }
 
+void WorkerImpl::erase_linear_state_snapshot_handle(
+    const LinearStatePrefixHash& prefix_hash,
+    const LinearStateSnapshot& snapshot) {
+  if (snapshot.checkpoint_handle == kInvalidLinearStateCheckpointHandle) {
+    return;
+  }
+  auto handle_it =
+      linear_state_snapshot_handles_.find(snapshot.checkpoint_handle);
+  if (handle_it != linear_state_snapshot_handles_.end() &&
+      handle_it->second == prefix_hash) {
+    linear_state_snapshot_handles_.erase(handle_it);
+  }
+}
+
+void WorkerImpl::record_linear_state_snapshot_handle(
+    LinearStateCheckpointHandle checkpoint_handle,
+    const LinearStatePrefixHash& prefix_hash) {
+  if (checkpoint_handle == kInvalidLinearStateCheckpointHandle ||
+      is_zero_prefix_hash(prefix_hash)) {
+    return;
+  }
+  linear_state_snapshot_handles_[checkpoint_handle] = prefix_hash;
+}
+
+std::optional<WorkerImpl::LinearStatePrefixHash>
+WorkerImpl::get_linear_state_snapshot_prefix_hash(
+    LinearStateCheckpointHandle checkpoint_handle) const {
+  if (checkpoint_handle == kInvalidLinearStateCheckpointHandle) {
+    return std::nullopt;
+  }
+  auto handle_it = linear_state_snapshot_handles_.find(checkpoint_handle);
+  if (handle_it == linear_state_snapshot_handles_.end()) {
+    return std::nullopt;
+  }
+  return handle_it->second;
+}
+
 void WorkerImpl::release_linear_state_checkpoint_slot(
     int32_t checkpoint_slot_id) {
   if (checkpoint_slot_id < linear_state_live_slots_) {
@@ -861,11 +931,13 @@ int32_t WorkerImpl::acquire_linear_state_checkpoint_slot(
         evicted_prefix_hashes->emplace_back(evict_hash);
       }
       if (evict_it->second.ref_count > 0) {
+        erase_linear_state_snapshot_handle(evict_hash, evict_it->second);
         evict_it->second.pending_delete = true;
         continue;
       }
       const int32_t checkpoint_slot_id = evict_it->second.checkpoint_slot_id;
       linear_state_snapshot_bytes_ -= evict_it->second.bytes;
+      erase_linear_state_snapshot_handle(evict_hash, evict_it->second);
       linear_state_snapshots_.erase(evict_it);
       return checkpoint_slot_id;
     }
@@ -900,6 +972,7 @@ void WorkerImpl::release_linear_state_snapshot_refs(
       linear_state_snapshot_bytes_ -= snapshot_it->second.bytes;
       release_linear_state_checkpoint_slot(
           snapshot_it->second.checkpoint_slot_id);
+      erase_linear_state_snapshot_handle(prefix_hash, snapshot_it->second);
       linear_state_snapshots_.erase(snapshot_it);
     }
   }
@@ -908,6 +981,7 @@ void WorkerImpl::release_linear_state_snapshot_refs(
 bool WorkerImpl::save_linear_state_snapshot(
     const LinearStatePrefixHash& prefix_hash,
     int32_t linear_state_id,
+    LinearStateCheckpointHandle checkpoint_handle,
     std::vector<LinearStatePrefixHash>* evicted_prefix_hashes) {
   if (linear_state_id < 0 || linear_state_id >= linear_state_live_slots_ ||
       linear_state_checkpoint_slots_ <= 0) {
@@ -957,12 +1031,15 @@ bool WorkerImpl::save_linear_state_snapshot(
   auto old_snapshot_it = linear_state_snapshots_.find(prefix_hash);
   if (old_snapshot_it != linear_state_snapshots_.end()) {
     linear_state_snapshot_bytes_ -= old_snapshot_it->second.bytes;
+    erase_linear_state_snapshot_handle(prefix_hash, old_snapshot_it->second);
   }
   LinearStateSnapshot snapshot;
   snapshot.checkpoint_slot_id = checkpoint_slot_id;
+  snapshot.checkpoint_handle = checkpoint_handle;
   snapshot.bytes = snapshot_bytes;
   linear_state_snapshot_bytes_ += snapshot.bytes;
   linear_state_snapshots_[prefix_hash] = snapshot;
+  record_linear_state_snapshot_handle(checkpoint_handle, prefix_hash);
   touch_linear_state_snapshot(prefix_hash);
   return true;
 }

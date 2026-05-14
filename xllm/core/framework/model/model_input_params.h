@@ -19,6 +19,7 @@ limitations under the License.
 #include <torch/torch.h>
 
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -336,11 +337,18 @@ struct BlockTransferInfo {
   }
 };
 
+using LinearStateCheckpointHandle = int64_t;
+constexpr LinearStateCheckpointHandle kInvalidLinearStateCheckpointHandle = -1;
+
 struct LinearStateCacheOp {
   int32_t linear_state_id = -1;
   std::string request_id;
   std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN> restore_prefix_hash{};
   std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN> save_prefix_hash{};
+  LinearStateCheckpointHandle restore_checkpoint_handle =
+      kInvalidLinearStateCheckpointHandle;
+  LinearStateCheckpointHandle save_checkpoint_handle =
+      kInvalidLinearStateCheckpointHandle;
 };
 
 struct ModelInputParams {

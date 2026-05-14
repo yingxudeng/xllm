@@ -304,6 +304,8 @@ message LinearStateCacheOp {
   string request_id = 2;
   bytes restore_prefix_hash = 3;
   bytes save_prefix_hash = 4;
+  optional int64 restore_checkpoint_handle = 5;
+  optional int64 save_checkpoint_handle = 6;
 }
 
  message BatchedForwardInputs {
