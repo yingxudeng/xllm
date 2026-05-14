@@ -28,6 +28,7 @@ limitations under the License.
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <unordered_map>
 
 #include "common/device_monitor.h"
 #include "common/global_flags.h"
@@ -53,6 +54,11 @@ limitations under the License.
 namespace {
 using LinearStatePrefixHash =
     std::array<uint8_t, xllm::XXH3_128BITS_HASH_VALUE_LEN>;
+using LinearStateSaveCheckpointMap =
+    std::unordered_map<xllm::XXH3Key,
+                       xllm::LinearStateCheckpointHandle,
+                       xllm::FixedStringKeyHash,
+                       xllm::FixedStringKeyEqual>;
 
 void append_removed_prefix_hashes(const xllm::KvCacheEvent& event,
                                   std::vector<xllm::RawForwardInput>* inputs) {
@@ -106,6 +112,48 @@ void record_linear_state_checkpoint_hashes(
                                                             checkpoint_hashes);
 }
 
+LinearStateSaveCheckpointMap populate_linear_state_save_checkpoint_handles(
+    xllm::BlockManagerPool* block_manager_pool,
+    int32_t dp_rank,
+    xllm::RawForwardInput* input) {
+  LinearStateSaveCheckpointMap reserved_handles;
+  if (block_manager_pool == nullptr || input == nullptr ||
+      input->linear_state_cache_ops.empty()) {
+    return reserved_handles;
+  }
+
+  std::vector<xllm::XXH3Key> checkpoint_hashes;
+  checkpoint_hashes.reserve(input->linear_state_cache_ops.size());
+  for (const xllm::LinearStateCacheOp& op : input->linear_state_cache_ops) {
+    if (op.save_checkpoint_handle !=
+            xllm::kInvalidLinearStateCheckpointHandle ||
+        is_zero_prefix_hash(op.save_prefix_hash)) {
+      continue;
+    }
+    checkpoint_hashes.emplace_back(op.save_prefix_hash.data());
+  }
+  const std::vector<xllm::LinearStateCheckpointHandle> checkpoint_handles =
+      block_manager_pool->reserve_linear_state_checkpoints(dp_rank,
+                                                           checkpoint_hashes);
+  CHECK_EQ(checkpoint_handles.size(), checkpoint_hashes.size());
+
+  for (size_t i = 0; i < checkpoint_hashes.size(); ++i) {
+    reserved_handles.emplace(checkpoint_hashes[i], checkpoint_handles[i]);
+  }
+  for (xllm::LinearStateCacheOp& op : input->linear_state_cache_ops) {
+    if (op.save_checkpoint_handle !=
+            xllm::kInvalidLinearStateCheckpointHandle ||
+        is_zero_prefix_hash(op.save_prefix_hash)) {
+      continue;
+    }
+    const xllm::XXH3Key checkpoint_hash(op.save_prefix_hash.data());
+    auto handle_it = reserved_handles.find(checkpoint_hash);
+    CHECK(handle_it != reserved_handles.end());
+    op.save_checkpoint_handle = handle_it->second;
+  }
+  return reserved_handles;
+}
+
 void populate_linear_state_restore_checkpoint_handles(
     xllm::BlockManagerPool* block_manager_pool,
     int32_t dp_rank,
@@ -130,7 +178,8 @@ void populate_linear_state_restore_checkpoint_handles(
 void sync_linear_state_checkpoint_hashes(
     xllm::BlockManagerPool* block_manager_pool,
     int32_t dp_rank,
-    const xllm::RawForwardOutput& output) {
+    const xllm::RawForwardOutput& output,
+    const LinearStateSaveCheckpointMap& reserved_save_handles = {}) {
   if (block_manager_pool == nullptr) {
     return;
   }
@@ -138,6 +187,32 @@ void sync_linear_state_checkpoint_hashes(
       dp_rank,
       to_linear_state_checkpoint_hashes(
           output.linear_state_evicted_prefix_hashes));
+  if (!reserved_save_handles.empty()) {
+    std::vector<xllm::LinearStateCheckpointHandle> saved_handles;
+    saved_handles.reserve(output.linear_state_saved_prefix_hashes.size());
+    for (const LinearStatePrefixHash& prefix_hash :
+         output.linear_state_saved_prefix_hashes) {
+      if (is_zero_prefix_hash(prefix_hash)) {
+        continue;
+      }
+      const xllm::XXH3Key checkpoint_hash(prefix_hash.data());
+      auto handle_it = reserved_save_handles.find(checkpoint_hash);
+      if (handle_it != reserved_save_handles.end()) {
+        saved_handles.emplace_back(handle_it->second);
+      }
+    }
+    block_manager_pool->commit_linear_state_checkpoint_handles(dp_rank,
+                                                               saved_handles);
+
+    std::vector<xllm::LinearStateCheckpointHandle> unsaved_handles;
+    unsaved_handles.reserve(reserved_save_handles.size());
+    for (const auto& reserved_save_handle : reserved_save_handles) {
+      unsaved_handles.emplace_back(reserved_save_handle.second);
+    }
+    block_manager_pool->discard_linear_state_checkpoint_handles(
+        dp_rank, unsaved_handles);
+    return;
+  }
   record_linear_state_checkpoint_hashes(
       block_manager_pool,
       dp_rank,
@@ -1111,6 +1186,14 @@ ForwardOutput LLMEngine::step(std::vector<Batch>& batch) {
   futures.reserve(worker_clients_num_);
 
   std::vector<std::vector<RawForwardInput>> cp_partitioned_inputs(dp_size_);
+  std::vector<LinearStateSaveCheckpointMap> reserved_save_handles(dp_size_);
+  if (!options_.enable_schedule_overlap()) {
+    for (int32_t dp_rank = 0; dp_rank < dp_size_; ++dp_rank) {
+      reserved_save_handles[dp_rank] =
+          populate_linear_state_save_checkpoint_handles(
+              block_manager_pool(), dp_rank, &raw_forward_inputs[dp_rank]);
+    }
+  }
 
   if (cp_size_ > 1) {
     for (int32_t dp_rank = 0; dp_rank < dp_size_; ++dp_rank) {
@@ -1158,8 +1241,10 @@ ForwardOutput LLMEngine::step(std::vector<Batch>& batch) {
       if (result.value().outputs.empty() && layer_forward_interrupted_) {
         throw ForwardInterruptedException();
       }
-      sync_linear_state_checkpoint_hashes(
-          block_manager_pool(), dp_rank, result.value());
+      sync_linear_state_checkpoint_hashes(block_manager_pool(),
+                                          dp_rank,
+                                          result.value(),
+                                          reserved_save_handles[dp_rank]);
       // if src_seq_idxes is not empty, skip sample output processing and
       // process beam search output instead
       if (result.value().src_seq_idxes.size() == 0) {

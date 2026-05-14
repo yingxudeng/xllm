@@ -697,4 +697,85 @@ TEST(BlockManagerPoolTest, LinearStateCheckpointHashesArePrunedByWorkerEvict) {
   EXPECT_NE(handles_after_prune[0], handles[0]);
 }
 
+TEST(BlockManagerPoolTest, ReservedLinearStateCheckpointsNeedCommit) {
+  ScopedValue<int32_t> max_seqs_guard(&FLAGS_max_seqs_per_batch, 4);
+
+  BlockManagerPool::Options options;
+  options.num_blocks(5).host_num_blocks(0).block_size(4).enable_prefix_cache(
+      true);
+  ASSERT_TRUE(EnableLinearStateOrFail(options));
+  BlockManagerPool pool(options, /*dp_size=*/1);
+
+  Sequence cached_seq =
+      MakeSequence(0, /*prompt_tokens=*/{1, 2, 3, 4, 5, 6, 7, 8});
+  ASSERT_TRUE(pool.allocate(&cached_seq));
+  cached_seq.kv_state().set_kv_cache_tokens_num(cached_seq.num_tokens());
+  pool.cache(&cached_seq);
+  const XXH3Key checkpoint_hash(
+      cached_seq.kv_state().kv_blocks()[1].get_immutable_hash_value());
+  pool.deallocate_without_cache(&cached_seq);
+
+  const auto reserved_handles =
+      pool.reserve_linear_state_checkpoints(/*dp_rank=*/0, {checkpoint_hash});
+  ASSERT_EQ(reserved_handles.size(), 1u);
+  EXPECT_NE(reserved_handles[0],
+            BlockManagerPool::kInvalidLinearStateCheckpointHandle);
+  EXPECT_EQ(
+      pool.get_linear_state_checkpoint_handle(/*dp_rank=*/0, checkpoint_hash),
+      BlockManagerPool::kInvalidLinearStateCheckpointHandle);
+
+  Sequence pending_seq =
+      MakeSequence(1, /*prompt_tokens=*/{1, 2, 3, 4, 5, 6, 7, 8});
+  ASSERT_TRUE(pool.allocate(&pending_seq, pending_seq.num_tokens()));
+  EXPECT_EQ(pending_seq.kv_state().shared_kv_blocks_num(), 0u);
+  pool.deallocate_without_cache(&pending_seq);
+
+  pool.commit_linear_state_checkpoint_handles(/*dp_rank=*/0, reserved_handles);
+  EXPECT_EQ(
+      pool.get_linear_state_checkpoint_handle(/*dp_rank=*/0, checkpoint_hash),
+      reserved_handles[0]);
+
+  Sequence committed_seq =
+      MakeSequence(2, /*prompt_tokens=*/{1, 2, 3, 4, 5, 6, 7, 8});
+  ASSERT_TRUE(pool.allocate(&committed_seq, committed_seq.num_tokens()));
+  EXPECT_EQ(committed_seq.kv_state().shared_kv_blocks_num(), 2u);
+  pool.deallocate_without_cache(&committed_seq);
+}
+
+TEST(BlockManagerPoolTest, DiscardsOnlyPendingLinearStateCheckpoints) {
+  BlockManagerPool::Options options;
+  options.num_blocks(5).host_num_blocks(0).block_size(4).enable_prefix_cache(
+      true);
+  ASSERT_TRUE(EnableLinearStateOrFail(options));
+  BlockManagerPool pool(options, /*dp_size=*/1);
+
+  XXH3Key pending_hash{};
+  pending_hash.data[0] = 1;
+  XXH3Key committed_hash{};
+  committed_hash.data[0] = 2;
+
+  const auto pending_handles =
+      pool.reserve_linear_state_checkpoints(/*dp_rank=*/0, {pending_hash});
+  ASSERT_EQ(pending_handles.size(), 1u);
+  const auto committed_handles =
+      pool.record_linear_state_checkpoints(/*dp_rank=*/0, {committed_hash});
+  ASSERT_EQ(committed_handles.size(), 1u);
+  ASSERT_EQ(pool.num_linear_state_checkpoints(/*dp_rank=*/0), 2u);
+
+  std::vector<BlockManagerPool::LinearStateCheckpointHandle> handles_to_discard;
+  handles_to_discard.reserve(2);
+  handles_to_discard.emplace_back(pending_handles[0]);
+  handles_to_discard.emplace_back(committed_handles[0]);
+  pool.discard_linear_state_checkpoint_handles(/*dp_rank=*/0,
+                                               handles_to_discard);
+
+  EXPECT_EQ(
+      pool.get_linear_state_checkpoint_handle(/*dp_rank=*/0, pending_hash),
+      BlockManagerPool::kInvalidLinearStateCheckpointHandle);
+  EXPECT_EQ(
+      pool.get_linear_state_checkpoint_handle(/*dp_rank=*/0, committed_hash),
+      committed_handles[0]);
+  EXPECT_EQ(pool.num_linear_state_checkpoints(/*dp_rank=*/0), 1u);
+}
+
 }  // namespace xllm

@@ -784,6 +784,7 @@ WorkerImpl::LinearStateSnapshotUpdate WorkerImpl::save_linear_state_snapshots(
                                    save_checkpoint_handle,
                                    &update.evicted_prefix_hashes)) {
       update.saved_prefix_hashes.emplace_back(save_prefix_hash);
+      update.saved_checkpoint_handles.emplace_back(save_checkpoint_handle);
       VLOG(1) << "Qwen3.5 linear state snapshot saved; linear_state_id="
               << linear_state_id;
     }

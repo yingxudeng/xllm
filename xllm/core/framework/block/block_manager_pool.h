@@ -86,6 +86,15 @@ class BlockManagerPool : public KVCacheManager {
   std::vector<LinearStateCheckpointHandle> record_linear_state_checkpoints(
       int32_t dp_rank,
       const std::vector<XXH3Key>& checkpoint_hashes);
+  std::vector<LinearStateCheckpointHandle> reserve_linear_state_checkpoints(
+      int32_t dp_rank,
+      const std::vector<XXH3Key>& checkpoint_hashes);
+  void commit_linear_state_checkpoint_handles(
+      int32_t dp_rank,
+      const std::vector<LinearStateCheckpointHandle>& checkpoint_handles);
+  void discard_linear_state_checkpoint_handles(
+      int32_t dp_rank,
+      const std::vector<LinearStateCheckpointHandle>& checkpoint_handles);
   void record_linear_state_checkpoint_hashes(
       int32_t dp_rank,
       const std::vector<XXH3Key>& checkpoint_hashes);
@@ -142,7 +151,10 @@ class BlockManagerPool : public KVCacheManager {
                          LinearStateCheckpointEntry,
                          FixedStringKeyHash,
                          FixedStringKeyEqual>;
+  using LinearStateCheckpointHandleMap =
+      std::unordered_map<LinearStateCheckpointHandle, XXH3Key>;
   std::vector<LinearStateCheckpointEntryMap> linear_state_checkpoint_entries_;
+  std::vector<LinearStateCheckpointHandleMap> linear_state_checkpoint_handles_;
   LinearStateCheckpointHandle next_linear_state_checkpoint_handle_ = 1;
 
  protected:

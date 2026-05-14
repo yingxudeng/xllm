@@ -87,6 +87,7 @@ BlockManagerPool::BlockManagerPool(const Options& options, int32_t dp_size)
         /*exhaustion_message=*/"No more single-block ids available"));
   }
   linear_state_checkpoint_entries_.resize(dp_size);
+  linear_state_checkpoint_handles_.resize(dp_size);
   reset_transfer_infos();
 }
 
@@ -215,6 +216,7 @@ BlockManagerPool::record_linear_state_checkpoints(
            linear_state_checkpoint_entries_.size());
 
   auto& checkpoint_entries_for_rank = linear_state_checkpoint_entries_[dp_rank];
+  auto& checkpoint_handles_for_rank = linear_state_checkpoint_handles_[dp_rank];
   for (const XXH3Key& checkpoint_hash : checkpoint_hashes) {
     auto entry_it = checkpoint_entries_for_rank.find(checkpoint_hash);
     if (entry_it == checkpoint_entries_for_rank.end()) {
@@ -225,10 +227,104 @@ BlockManagerPool::record_linear_state_checkpoints(
       entry.valid = true;
       entry_it =
           checkpoint_entries_for_rank.emplace(checkpoint_hash, entry).first;
+      checkpoint_handles_for_rank.emplace(entry.handle, checkpoint_hash);
+    } else if (!entry_it->second.valid) {
+      entry_it->second.valid = true;
     }
     handles.emplace_back(entry_it->second.handle);
   }
   return handles;
+}
+
+std::vector<BlockManagerPool::LinearStateCheckpointHandle>
+BlockManagerPool::reserve_linear_state_checkpoints(
+    int32_t dp_rank,
+    const std::vector<XXH3Key>& checkpoint_hashes) {
+  std::vector<LinearStateCheckpointHandle> handles;
+  handles.reserve(checkpoint_hashes.size());
+  if (!options_.enable_linear_state() || checkpoint_hashes.empty()) {
+    return handles;
+  }
+  CHECK_GE(dp_rank, 0);
+  CHECK_LT(static_cast<size_t>(dp_rank),
+           linear_state_checkpoint_entries_.size());
+
+  auto& checkpoint_entries_for_rank = linear_state_checkpoint_entries_[dp_rank];
+  auto& checkpoint_handles_for_rank = linear_state_checkpoint_handles_[dp_rank];
+  for (const XXH3Key& checkpoint_hash : checkpoint_hashes) {
+    auto entry_it = checkpoint_entries_for_rank.find(checkpoint_hash);
+    if (entry_it == checkpoint_entries_for_rank.end()) {
+      LinearStateCheckpointEntry entry;
+      entry.checkpoint_hash = checkpoint_hash;
+      entry.dp_rank = dp_rank;
+      entry.handle = next_linear_state_checkpoint_handle_++;
+      entry.valid = false;
+      entry_it =
+          checkpoint_entries_for_rank.emplace(checkpoint_hash, entry).first;
+      checkpoint_handles_for_rank.emplace(entry.handle, checkpoint_hash);
+    }
+    handles.emplace_back(entry_it->second.handle);
+  }
+  return handles;
+}
+
+void BlockManagerPool::commit_linear_state_checkpoint_handles(
+    int32_t dp_rank,
+    const std::vector<LinearStateCheckpointHandle>& checkpoint_handles) {
+  if (!options_.enable_linear_state() || checkpoint_handles.empty()) {
+    return;
+  }
+  CHECK_GE(dp_rank, 0);
+  CHECK_LT(static_cast<size_t>(dp_rank),
+           linear_state_checkpoint_handles_.size());
+
+  const auto& checkpoint_handles_for_rank =
+      linear_state_checkpoint_handles_[dp_rank];
+  auto& checkpoint_entries_for_rank = linear_state_checkpoint_entries_[dp_rank];
+  for (LinearStateCheckpointHandle checkpoint_handle : checkpoint_handles) {
+    if (checkpoint_handle == kInvalidLinearStateCheckpointHandle) {
+      continue;
+    }
+    auto handle_it = checkpoint_handles_for_rank.find(checkpoint_handle);
+    if (handle_it == checkpoint_handles_for_rank.end()) {
+      continue;
+    }
+    auto entry_it = checkpoint_entries_for_rank.find(handle_it->second);
+    if (entry_it != checkpoint_entries_for_rank.end() &&
+        entry_it->second.handle == checkpoint_handle) {
+      entry_it->second.valid = true;
+    }
+  }
+}
+
+void BlockManagerPool::discard_linear_state_checkpoint_handles(
+    int32_t dp_rank,
+    const std::vector<LinearStateCheckpointHandle>& checkpoint_handles) {
+  if (!options_.enable_linear_state() || checkpoint_handles.empty()) {
+    return;
+  }
+  CHECK_GE(dp_rank, 0);
+  CHECK_LT(static_cast<size_t>(dp_rank),
+           linear_state_checkpoint_handles_.size());
+
+  auto& checkpoint_handles_for_rank = linear_state_checkpoint_handles_[dp_rank];
+  auto& checkpoint_entries_for_rank = linear_state_checkpoint_entries_[dp_rank];
+  for (LinearStateCheckpointHandle checkpoint_handle : checkpoint_handles) {
+    if (checkpoint_handle == kInvalidLinearStateCheckpointHandle) {
+      continue;
+    }
+    auto handle_it = checkpoint_handles_for_rank.find(checkpoint_handle);
+    if (handle_it == checkpoint_handles_for_rank.end()) {
+      continue;
+    }
+    auto entry_it = checkpoint_entries_for_rank.find(handle_it->second);
+    if (entry_it != checkpoint_entries_for_rank.end() &&
+        entry_it->second.handle == checkpoint_handle &&
+        !entry_it->second.valid) {
+      checkpoint_entries_for_rank.erase(entry_it);
+      checkpoint_handles_for_rank.erase(handle_it);
+    }
+  }
 }
 
 void BlockManagerPool::record_linear_state_checkpoint_hashes(
@@ -248,7 +344,16 @@ void BlockManagerPool::prune_linear_state_checkpoint_hashes(
 
   for (auto& checkpoint_entries_for_rank : linear_state_checkpoint_entries_) {
     for (const XXH3Key& evicted_hash : event.removed_cache) {
-      checkpoint_entries_for_rank.erase(evicted_hash);
+      auto entry_it = checkpoint_entries_for_rank.find(evicted_hash);
+      if (entry_it == checkpoint_entries_for_rank.end()) {
+        continue;
+      }
+      const int32_t dp_rank = entry_it->second.dp_rank;
+      CHECK_GE(dp_rank, 0);
+      CHECK_LT(static_cast<size_t>(dp_rank),
+               linear_state_checkpoint_handles_.size());
+      linear_state_checkpoint_handles_[dp_rank].erase(entry_it->second.handle);
+      checkpoint_entries_for_rank.erase(entry_it);
     }
   }
 }
@@ -265,7 +370,12 @@ void BlockManagerPool::prune_linear_state_checkpoint_hashes(
 
   auto& checkpoint_entries_for_rank = linear_state_checkpoint_entries_[dp_rank];
   for (const XXH3Key& checkpoint_hash : checkpoint_hashes) {
-    checkpoint_entries_for_rank.erase(checkpoint_hash);
+    auto entry_it = checkpoint_entries_for_rank.find(checkpoint_hash);
+    if (entry_it == checkpoint_entries_for_rank.end()) {
+      continue;
+    }
+    linear_state_checkpoint_handles_[dp_rank].erase(entry_it->second.handle);
+    checkpoint_entries_for_rank.erase(entry_it);
   }
 }
 
@@ -283,7 +393,8 @@ BlockManagerPool::get_linear_state_checkpoint_handle(
   const auto& checkpoint_entries_for_rank =
       linear_state_checkpoint_entries_[dp_rank];
   auto entry_it = checkpoint_entries_for_rank.find(checkpoint_hash);
-  if (entry_it == checkpoint_entries_for_rank.end()) {
+  if (entry_it == checkpoint_entries_for_rank.end() ||
+      !entry_it->second.valid) {
     return kInvalidLinearStateCheckpointHandle;
   }
   return entry_it->second.handle;
@@ -602,7 +713,8 @@ size_t BlockManagerPool::get_linear_state_prefix_match_blocks(
        ++block_idx) {
     const XXH3Key prefix_hash(
         shared_blocks[block_idx].get_immutable_hash_value());
-    if (checkpoint_entries.find(prefix_hash) != checkpoint_entries.end()) {
+    auto entry_it = checkpoint_entries.find(prefix_hash);
+    if (entry_it != checkpoint_entries.end() && entry_it->second.valid) {
       safe_blocks = block_idx + 1;
     }
   }
