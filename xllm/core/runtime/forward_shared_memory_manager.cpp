@@ -207,6 +207,43 @@ void normalize_linear_state_metadata(
   CHECK_EQ(linear_state_save_prefix_hashes.size(), num_sequences);
 }
 
+void sync_linear_state_cache_ops(
+    std::vector<int32_t>& linear_state_ids,
+    std::vector<std::string>& linear_state_request_ids,
+    std::vector<LinearStatePrefixHash>& linear_state_prefix_hashes,
+    std::vector<LinearStatePrefixHash>& linear_state_save_prefix_hashes,
+    std::vector<LinearStateCacheOp>& linear_state_cache_ops) {
+  if (linear_state_cache_ops.empty()) {
+    linear_state_cache_ops.reserve(linear_state_ids.size());
+    for (size_t i = 0; i < linear_state_ids.size(); ++i) {
+      LinearStateCacheOp op;
+      op.linear_state_id = linear_state_ids[i];
+      op.request_id = linear_state_request_ids[i];
+      op.restore_prefix_hash = linear_state_prefix_hashes[i];
+      op.save_prefix_hash = linear_state_save_prefix_hashes[i];
+      linear_state_cache_ops.emplace_back(std::move(op));
+    }
+    return;
+  }
+
+  const size_t num_ops = linear_state_cache_ops.size();
+  if (linear_state_ids.empty()) {
+    linear_state_ids.resize(num_ops);
+  }
+  CHECK_EQ(linear_state_ids.size(), num_ops);
+  linear_state_request_ids.resize(num_ops);
+  linear_state_prefix_hashes.resize(num_ops);
+  linear_state_save_prefix_hashes.resize(num_ops);
+  for (size_t i = 0; i < num_ops; ++i) {
+    linear_state_ids[i] = linear_state_cache_ops[i].linear_state_id;
+    linear_state_request_ids[i] = linear_state_cache_ops[i].request_id;
+    linear_state_prefix_hashes[i] =
+        linear_state_cache_ops[i].restore_prefix_hash;
+    linear_state_save_prefix_hashes[i] =
+        linear_state_cache_ops[i].save_prefix_hash;
+  }
+}
+
 inline size_t get_instance_info_size(const InstanceInfo& info) {
   size_t size = get_string_size(info.name) + get_string_size(info.rpc_address) +
                 get_string_size(info.type);
@@ -454,6 +491,21 @@ inline void write_string_vector(RawInputSectionCursor& cursor,
   write_data(cursor, size);
   for (const auto& str : vec) {
     write_string(cursor, str);
+  }
+}
+
+inline void write_linear_state_cache_ops(
+    RawInputSectionCursor& cursor,
+    const std::vector<LinearStateCacheOp>& ops) {
+  const uint64_t size = ops.size();
+  write_data(cursor, size);
+  for (const LinearStateCacheOp& op : ops) {
+    write_data(cursor, op.linear_state_id);
+    write_string(cursor, op.request_id);
+    write_bytes(cursor,
+                op.restore_prefix_hash.data(),
+                XXH3_128BITS_HASH_VALUE_LEN);
+    write_bytes(cursor, op.save_prefix_hash.data(), XXH3_128BITS_HASH_VALUE_LEN);
   }
 }
 
@@ -1192,6 +1244,26 @@ inline void read_string_vector(ReadContext& context,
   vec.resize(size);
   for (uint64_t i = 0; i < size; ++i) {
     read_string(context, vec[i]);
+  }
+}
+
+inline void read_linear_state_cache_ops(
+    ReadContext& context,
+    std::vector<LinearStateCacheOp>& ops) {
+  uint64_t size;
+  read_data(context, size);
+  ops.resize(size);
+  for (uint64_t i = 0; i < size; ++i) {
+    read_data(context, ops[i].linear_state_id);
+    read_string(context, ops[i].request_id);
+    std::memcpy(ops[i].restore_prefix_hash.data(),
+                context.descriptor_cursor,
+                XXH3_128BITS_HASH_VALUE_LEN);
+    advance_descriptor_cursor(context, XXH3_128BITS_HASH_VALUE_LEN);
+    std::memcpy(ops[i].save_prefix_hash.data(),
+                context.descriptor_cursor,
+                XXH3_128BITS_HASH_VALUE_LEN);
+    advance_descriptor_cursor(context, XXH3_128BITS_HASH_VALUE_LEN);
   }
 }
 
@@ -2060,12 +2132,18 @@ inline void deserialize_raw_forward_input(const char*& buffer,
   read_vector(context, input_params.linear_state_prefix_hashes);
   read_vector(context, input_params.linear_state_save_prefix_hashes);
   read_vector(context, input_params.linear_state_evict_prefix_hashes);
+  read_linear_state_cache_ops(context, input_params.linear_state_cache_ops);
   read_string_vector(context, input_params.request_ids);
   normalize_linear_state_metadata(input_params.linear_state_ids,
                                   input_params.request_ids,
                                   input_params.linear_state_request_ids,
                                   input_params.linear_state_prefix_hashes,
                                   input_params.linear_state_save_prefix_hashes);
+  sync_linear_state_cache_ops(input_params.linear_state_ids,
+                              input_params.linear_state_request_ids,
+                              input_params.linear_state_prefix_hashes,
+                              input_params.linear_state_save_prefix_hashes,
+                              input_params.linear_state_cache_ops);
   read_vector(context, input_params.extra_token_ids);
   read_swap_blocks(context, input_params.swap_blocks);
   read_tensor(context, input_params.src_block_indices, stream);
@@ -2171,11 +2249,28 @@ inline void serialize_raw_forward_input_sections(
   write_vector(context.descriptor, input.dp_global_token_nums);
   write_vector(context.descriptor, input.dp_is_decode);
   write_vector(context.descriptor, input.embedding_ids);
-  write_vector(context.descriptor, input.linear_state_ids);
-  write_string_vector(context.descriptor, input.linear_state_request_ids);
-  write_vector(context.descriptor, input.linear_state_prefix_hashes);
-  write_vector(context.descriptor, input.linear_state_save_prefix_hashes);
+  std::vector<int32_t> linear_state_ids = input.linear_state_ids;
+  std::vector<std::string> linear_state_request_ids =
+      input.linear_state_request_ids;
+  std::vector<LinearStatePrefixHash> linear_state_prefix_hashes =
+      input.linear_state_prefix_hashes;
+  std::vector<LinearStatePrefixHash> linear_state_save_prefix_hashes =
+      input.linear_state_save_prefix_hashes;
+  std::vector<LinearStateCacheOp> linear_state_cache_ops =
+      input.linear_state_cache_ops;
+  if (!linear_state_cache_ops.empty()) {
+    sync_linear_state_cache_ops(linear_state_ids,
+                                linear_state_request_ids,
+                                linear_state_prefix_hashes,
+                                linear_state_save_prefix_hashes,
+                                linear_state_cache_ops);
+  }
+  write_vector(context.descriptor, linear_state_ids);
+  write_string_vector(context.descriptor, linear_state_request_ids);
+  write_vector(context.descriptor, linear_state_prefix_hashes);
+  write_vector(context.descriptor, linear_state_save_prefix_hashes);
   write_vector(context.descriptor, input.linear_state_evict_prefix_hashes);
+  write_linear_state_cache_ops(context.descriptor, linear_state_cache_ops);
   write_string_vector(context.descriptor, input.request_ids);
   write_vector(context.descriptor, input.extra_token_ids);
   write_swap_blocks(context, input.swap_blocks);
@@ -2436,6 +2531,8 @@ void convert_raw_forward_input_to_forward_input(RawForwardInput& raw_input,
       std::move(raw_input.linear_state_save_prefix_hashes);
   input_params.linear_state_evict_prefix_hashes =
       std::move(raw_input.linear_state_evict_prefix_hashes);
+  input_params.linear_state_cache_ops =
+      std::move(raw_input.linear_state_cache_ops);
   input_params.request_ids = std::move(raw_input.request_ids);
   normalize_linear_state_ids(input_params.linear_state_ids,
                              input_params.num_sequences);
@@ -2444,6 +2541,11 @@ void convert_raw_forward_input_to_forward_input(RawForwardInput& raw_input,
                                   input_params.linear_state_request_ids,
                                   input_params.linear_state_prefix_hashes,
                                   input_params.linear_state_save_prefix_hashes);
+  sync_linear_state_cache_ops(input_params.linear_state_ids,
+                              input_params.linear_state_request_ids,
+                              input_params.linear_state_prefix_hashes,
+                              input_params.linear_state_save_prefix_hashes,
+                              input_params.linear_state_cache_ops);
   input_params.dp_global_token_nums = std::move(raw_input.dp_global_token_nums);
   input_params.dp_is_decode = std::move(raw_input.dp_is_decode);
 

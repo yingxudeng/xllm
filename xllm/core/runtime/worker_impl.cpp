@@ -610,27 +610,39 @@ void WorkerImpl::prepare_work_before_execute(const ForwardInput& input,
 std::vector<WorkerImpl::LinearStatePrefixHash>
 WorkerImpl::restore_linear_state_snapshots(ModelInputParams& input_params) {
   std::vector<LinearStatePrefixHash> restored_prefix_hashes;
-  if (input_params.linear_state_ids.empty()) {
+  const std::vector<LinearStateCacheOp>& cache_ops =
+      input_params.linear_state_cache_ops;
+  if (cache_ops.empty() && input_params.linear_state_ids.empty()) {
     return restored_prefix_hashes;
   }
 
-  CHECK_EQ(input_params.linear_state_ids.size(),
-           input_params.linear_state_request_ids.size());
-  CHECK_EQ(input_params.linear_state_ids.size(),
-           input_params.linear_state_prefix_hashes.size());
+  if (cache_ops.empty()) {
+    CHECK_EQ(input_params.linear_state_ids.size(),
+             input_params.linear_state_request_ids.size());
+    CHECK_EQ(input_params.linear_state_ids.size(),
+             input_params.linear_state_prefix_hashes.size());
+  }
 
   CHECK_EQ(input_params.has_initial_state.size(),
-           input_params.linear_state_ids.size())
+           cache_ops.empty() ? input_params.linear_state_ids.size()
+                             : cache_ops.size())
       << "has_initial_state must be initialized before linear state restore.";
-  restored_prefix_hashes.reserve(input_params.linear_state_ids.size());
+  const size_t num_ops =
+      cache_ops.empty() ? input_params.linear_state_ids.size()
+                        : cache_ops.size();
+  restored_prefix_hashes.reserve(num_ops);
   std::lock_guard<std::mutex> lock(linear_state_snapshots_mutex_);
-  for (size_t i = 0; i < input_params.linear_state_ids.size(); ++i) {
-    const int32_t linear_state_id = input_params.linear_state_ids[i];
+  for (size_t i = 0; i < num_ops; ++i) {
+    const int32_t linear_state_id =
+        cache_ops.empty() ? input_params.linear_state_ids[i]
+                          : cache_ops[i].linear_state_id;
     if (linear_state_id < 0) {
       continue;
     }
 
-    const std::string& request_id = input_params.linear_state_request_ids[i];
+    const std::string& request_id =
+        cache_ops.empty() ? input_params.linear_state_request_ids[i]
+                          : cache_ops[i].request_id;
     auto active_it = active_linear_state_requests_.find(linear_state_id);
     if (!request_id.empty() &&
         active_it != active_linear_state_requests_.end() &&
@@ -639,19 +651,20 @@ WorkerImpl::restore_linear_state_snapshots(ModelInputParams& input_params) {
       continue;
     }
 
-    if (is_zero_prefix_hash(input_params.linear_state_prefix_hashes[i])) {
+    const LinearStatePrefixHash& restore_prefix_hash =
+        cache_ops.empty() ? input_params.linear_state_prefix_hashes[i]
+                          : cache_ops[i].restore_prefix_hash;
+    if (is_zero_prefix_hash(restore_prefix_hash)) {
       active_linear_state_requests_[linear_state_id] = request_id;
       continue;
     }
 
-    if (restore_linear_state_snapshot(
-            input_params.linear_state_prefix_hashes[i], linear_state_id)) {
+    if (restore_linear_state_snapshot(restore_prefix_hash, linear_state_id)) {
       VLOG(1) << "Qwen3.5 linear state snapshot restored; linear_state_id="
               << linear_state_id;
       input_params.has_initial_state[i] = 1;
       active_linear_state_requests_[linear_state_id] = request_id;
-      restored_prefix_hashes.emplace_back(
-          input_params.linear_state_prefix_hashes[i]);
+      restored_prefix_hashes.emplace_back(restore_prefix_hash);
       continue;
     }
 
@@ -699,12 +712,19 @@ void WorkerImpl::prune_linear_state_snapshots(
 WorkerImpl::LinearStateSnapshotUpdate WorkerImpl::save_linear_state_snapshots(
     const ModelInputParams& input_params) {
   LinearStateSnapshotUpdate update;
-  if (!FLAGS_enable_prefix_cache || input_params.linear_state_ids.empty()) {
+  const std::vector<LinearStateCacheOp>& cache_ops =
+      input_params.linear_state_cache_ops;
+  if (!FLAGS_enable_prefix_cache) {
+    return update;
+  }
+  if (cache_ops.empty() && input_params.linear_state_ids.empty()) {
     return update;
   }
 
-  CHECK_EQ(input_params.linear_state_ids.size(),
-           input_params.linear_state_save_prefix_hashes.size());
+  if (cache_ops.empty()) {
+    CHECK_EQ(input_params.linear_state_ids.size(),
+             input_params.linear_state_save_prefix_hashes.size());
+  }
 #if defined(USE_NPU)
   std::optional<std::unique_lock<std::mutex>> capture_lock_guard;
   if (FLAGS_enable_graph) {
@@ -714,19 +734,26 @@ WorkerImpl::LinearStateSnapshotUpdate WorkerImpl::save_linear_state_snapshots(
     capture_lock_guard.emplace(capture_lock);
   }
 #endif
+  const size_t num_ops =
+      cache_ops.empty() ? input_params.linear_state_ids.size()
+                        : cache_ops.size();
   std::lock_guard<std::mutex> lock(linear_state_snapshots_mutex_);
-  for (size_t i = 0; i < input_params.linear_state_ids.size(); ++i) {
-    if (is_zero_prefix_hash(input_params.linear_state_save_prefix_hashes[i])) {
+  for (size_t i = 0; i < num_ops; ++i) {
+    const LinearStatePrefixHash& save_prefix_hash =
+        cache_ops.empty() ? input_params.linear_state_save_prefix_hashes[i]
+                          : cache_ops[i].save_prefix_hash;
+    if (is_zero_prefix_hash(save_prefix_hash)) {
       continue;
     }
-    if (save_linear_state_snapshot(
-            input_params.linear_state_save_prefix_hashes[i],
-            input_params.linear_state_ids[i],
-            &update.evicted_prefix_hashes)) {
-      update.saved_prefix_hashes.emplace_back(
-          input_params.linear_state_save_prefix_hashes[i]);
+    const int32_t linear_state_id =
+        cache_ops.empty() ? input_params.linear_state_ids[i]
+                          : cache_ops[i].linear_state_id;
+    if (save_linear_state_snapshot(save_prefix_hash,
+                                   linear_state_id,
+                                   &update.evicted_prefix_hashes)) {
+      update.saved_prefix_hashes.emplace_back(save_prefix_hash);
       VLOG(1) << "Qwen3.5 linear state snapshot saved; linear_state_id="
-              << input_params.linear_state_ids[i];
+              << linear_state_id;
     }
   }
   return update;

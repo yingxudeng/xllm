@@ -336,6 +336,13 @@ struct BlockTransferInfo {
   }
 };
 
+struct LinearStateCacheOp {
+  int32_t linear_state_id = -1;
+  std::string request_id;
+  std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN> restore_prefix_hash{};
+  std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN> save_prefix_hash{};
+};
+
 struct ModelInputParams {
   ModelInputParams to(const torch::Device& device) const {
     ModelInputParams params;
@@ -370,6 +377,7 @@ struct ModelInputParams {
     params.linear_state_prefix_hashes = linear_state_prefix_hashes;
     params.linear_state_save_prefix_hashes = linear_state_save_prefix_hashes;
     params.linear_state_evict_prefix_hashes = linear_state_evict_prefix_hashes;
+    params.linear_state_cache_ops = linear_state_cache_ops;
     params.request_ids = std::move(request_ids);
     params.extra_token_ids = std::move(extra_token_ids);
     params.dp_ep_padding_data = dp_ep_padding_data;
@@ -588,6 +596,10 @@ struct ModelInputParams {
   // Prefix hashes evicted from KV prefix cache before this forward.
   std::vector<std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>>
       linear_state_evict_prefix_hashes;
+
+  // Structured per-row linear-state cache operations. This is the preferred
+  // internal form; legacy vectors above stay populated for compatibility.
+  std::vector<LinearStateCacheOp> linear_state_cache_ops;
 
   // IntTensor: [n_seq]
   torch::Tensor linear_state_indices;

@@ -296,6 +296,14 @@ message ForwardInput {
   repeated bytes linear_state_prefix_hashes = 48;
   repeated bytes linear_state_save_prefix_hashes = 49;
   repeated bytes linear_state_evict_prefix_hashes = 50;
+  repeated LinearStateCacheOp linear_state_cache_ops = 51;
+}
+
+message LinearStateCacheOp {
+  int32 linear_state_id = 1;
+  string request_id = 2;
+  bytes restore_prefix_hash = 3;
+  bytes save_prefix_hash = 4;
 }
 
  message BatchedForwardInputs {

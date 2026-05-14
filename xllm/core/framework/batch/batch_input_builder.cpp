@@ -328,6 +328,9 @@ void BatchInputBuilder::process_sequences_multithreaded() {
         state_.linear_state_save_prefix_hashes.end(),
         state.linear_state_save_prefix_hashes.begin(),
         state.linear_state_save_prefix_hashes.end());
+    state_.linear_state_cache_ops.insert(state_.linear_state_cache_ops.end(),
+                                         state.linear_state_cache_ops.begin(),
+                                         state.linear_state_cache_ops.end());
     state_.request_ids.insert(state_.request_ids.end(),
                               state.request_ids.begin(),
                               state.request_ids.end());
@@ -494,6 +497,14 @@ void BatchInputBuilder::extract_tokens_and_positions(Sequence* sequence,
       get_prefix_boundary_hash(sequence, n_kv_cache_tokens));
   state.linear_state_save_prefix_hashes.emplace_back(
       compute_prefix_boundary_hash(sequence, seq_len));
+  LinearStateCacheOp linear_state_cache_op;
+  linear_state_cache_op.linear_state_id = state.linear_state_ids.back();
+  linear_state_cache_op.request_id = state.linear_state_request_ids.back();
+  linear_state_cache_op.restore_prefix_hash =
+      state.linear_state_prefix_hashes.back();
+  linear_state_cache_op.save_prefix_hash =
+      state.linear_state_save_prefix_hashes.back();
+  state.linear_state_cache_ops.emplace_back(std::move(linear_state_cache_op));
 
   // Add extra token id
   if (n_tokens == seq_len) {
@@ -655,6 +666,7 @@ ForwardInput BatchInputBuilder::state_to_forward_input() {
       std::move(state_.linear_state_prefix_hashes);
   input_params.linear_state_save_prefix_hashes =
       std::move(state_.linear_state_save_prefix_hashes);
+  input_params.linear_state_cache_ops = std::move(state_.linear_state_cache_ops);
   if (!input_params.linear_state_ids.empty()) {
     input_params.linear_state_indices =
         torch::tensor(input_params.linear_state_ids, torch::kInt);
@@ -746,6 +758,8 @@ RawForwardInput BatchInputBuilder::state_to_raw_forward_input() {
       std::move(state_.linear_state_prefix_hashes);
   raw_forward_input.linear_state_save_prefix_hashes =
       std::move(state_.linear_state_save_prefix_hashes);
+  raw_forward_input.linear_state_cache_ops =
+      std::move(state_.linear_state_cache_ops);
   raw_forward_input.request_ids = std::move(state_.request_ids);
   raw_forward_input.extra_token_ids = std::move(state_.extra_token_ids);
   // beam search kernel input

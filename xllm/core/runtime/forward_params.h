@@ -260,6 +260,7 @@ struct RawForwardInput {
       linear_state_save_prefix_hashes;
   std::vector<std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>>
       linear_state_evict_prefix_hashes;
+  std::vector<LinearStateCacheOp> linear_state_cache_ops;
   // request ids of each sequence
   std::vector<std::string> request_ids;
   // swap

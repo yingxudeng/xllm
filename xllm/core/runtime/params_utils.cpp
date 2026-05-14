@@ -67,6 +67,21 @@ void prefix_hashes_to_proto(
   }
 }
 
+LinearStatePrefixHash prefix_hash_from_proto(const std::string& pb_hash) {
+  if (pb_hash.empty()) {
+    return {};
+  }
+  CHECK_EQ(pb_hash.size(), XXH3_128BITS_HASH_VALUE_LEN);
+  LinearStatePrefixHash hash{};
+  std::memcpy(hash.data(), pb_hash.data(), XXH3_128BITS_HASH_VALUE_LEN);
+  return hash;
+}
+
+std::string prefix_hash_to_proto(const LinearStatePrefixHash& hash) {
+  return std::string(reinterpret_cast<const char*>(hash.data()),
+                     XXH3_128BITS_HASH_VALUE_LEN);
+}
+
 void normalize_linear_state_ids(std::vector<int32_t>& linear_state_ids,
                                 int32_t num_sequences) {
   if (num_sequences <= 0) {
@@ -107,6 +122,74 @@ void normalize_linear_state_metadata(
                                            LinearStatePrefixHash{});
   }
   CHECK_EQ(linear_state_save_prefix_hashes.size(), num_sequences);
+}
+
+std::vector<LinearStateCacheOp> linear_state_cache_ops_from_proto(
+    const google::protobuf::RepeatedPtrField<proto::LinearStateCacheOp>&
+        pb_ops) {
+  std::vector<LinearStateCacheOp> ops;
+  ops.reserve(pb_ops.size());
+  for (const proto::LinearStateCacheOp& pb_op : pb_ops) {
+    LinearStateCacheOp op;
+    op.linear_state_id = pb_op.linear_state_id();
+    op.request_id = pb_op.request_id();
+    op.restore_prefix_hash = prefix_hash_from_proto(
+        pb_op.restore_prefix_hash());
+    op.save_prefix_hash = prefix_hash_from_proto(pb_op.save_prefix_hash());
+    ops.emplace_back(std::move(op));
+  }
+  return ops;
+}
+
+void linear_state_cache_ops_to_proto(
+    const std::vector<LinearStateCacheOp>& ops,
+    google::protobuf::RepeatedPtrField<proto::LinearStateCacheOp>* pb_ops) {
+  pb_ops->Reserve(ops.size());
+  for (const LinearStateCacheOp& op : ops) {
+    proto::LinearStateCacheOp* pb_op = pb_ops->Add();
+    pb_op->set_linear_state_id(op.linear_state_id);
+    pb_op->set_request_id(op.request_id);
+    pb_op->set_restore_prefix_hash(prefix_hash_to_proto(
+        op.restore_prefix_hash));
+    pb_op->set_save_prefix_hash(prefix_hash_to_proto(op.save_prefix_hash));
+  }
+}
+
+void sync_linear_state_cache_ops(
+    std::vector<int32_t>& linear_state_ids,
+    std::vector<std::string>& linear_state_request_ids,
+    std::vector<LinearStatePrefixHash>& linear_state_prefix_hashes,
+    std::vector<LinearStatePrefixHash>& linear_state_save_prefix_hashes,
+    std::vector<LinearStateCacheOp>& linear_state_cache_ops) {
+  if (linear_state_cache_ops.empty()) {
+    linear_state_cache_ops.reserve(linear_state_ids.size());
+    for (size_t i = 0; i < linear_state_ids.size(); ++i) {
+      LinearStateCacheOp op;
+      op.linear_state_id = linear_state_ids[i];
+      op.request_id = linear_state_request_ids[i];
+      op.restore_prefix_hash = linear_state_prefix_hashes[i];
+      op.save_prefix_hash = linear_state_save_prefix_hashes[i];
+      linear_state_cache_ops.emplace_back(std::move(op));
+    }
+    return;
+  }
+
+  const size_t num_ops = linear_state_cache_ops.size();
+  if (linear_state_ids.empty()) {
+    linear_state_ids.resize(num_ops);
+  }
+  CHECK_EQ(linear_state_ids.size(), num_ops);
+  linear_state_request_ids.resize(num_ops);
+  linear_state_prefix_hashes.resize(num_ops);
+  linear_state_save_prefix_hashes.resize(num_ops);
+  for (size_t i = 0; i < num_ops; ++i) {
+    linear_state_ids[i] = linear_state_cache_ops[i].linear_state_id;
+    linear_state_request_ids[i] = linear_state_cache_ops[i].request_id;
+    linear_state_prefix_hashes[i] =
+        linear_state_cache_ops[i].restore_prefix_hash;
+    linear_state_save_prefix_hashes[i] =
+        linear_state_cache_ops[i].save_prefix_hash;
+  }
 }
 }  // namespace
 
@@ -217,6 +300,9 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
   std::vector<LinearStatePrefixHash> linear_state_evict_prefix_hashes =
       prefix_hashes_from_proto(
           pb_forward_input->linear_state_evict_prefix_hashes());
+  std::vector<LinearStateCacheOp> linear_state_cache_ops =
+      linear_state_cache_ops_from_proto(
+          pb_forward_input->linear_state_cache_ops());
   std::vector<int32_t> extra_token_ids =
       std::vector<int32_t>(pb_forward_input->extra_token_ids().begin(),
                            pb_forward_input->extra_token_ids().end());
@@ -228,6 +314,11 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
                                   linear_state_request_ids,
                                   linear_state_prefix_hashes,
                                   linear_state_save_prefix_hashes);
+  sync_linear_state_cache_ops(linear_state_ids,
+                              linear_state_request_ids,
+                              linear_state_prefix_hashes,
+                              linear_state_save_prefix_hashes,
+                              linear_state_cache_ops);
 
   std::vector<BlockTransferInfo> swap_blocks;
   swap_blocks.reserve(pb_forward_input->swap_blocks().size());
@@ -330,6 +421,7 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
       std::move(linear_state_save_prefix_hashes);
   input_params.linear_state_evict_prefix_hashes =
       std::move(linear_state_evict_prefix_hashes);
+  input_params.linear_state_cache_ops = std::move(linear_state_cache_ops);
   input_params.request_ids = std::move(request_ids);
   input_params.extra_token_ids = std::move(extra_token_ids);
 
@@ -611,21 +703,40 @@ void forward_input_to_proto(const RawForwardInput& inputs,
     *pb_forward_input->mutable_embeds()->Add() = embeds;
   }
 
+  std::vector<int32_t> linear_state_ids = inputs.linear_state_ids;
+  std::vector<std::string> linear_state_request_ids =
+      inputs.linear_state_request_ids;
+  std::vector<LinearStatePrefixHash> linear_state_prefix_hashes =
+      inputs.linear_state_prefix_hashes;
+  std::vector<LinearStatePrefixHash> linear_state_save_prefix_hashes =
+      inputs.linear_state_save_prefix_hashes;
+  std::vector<LinearStateCacheOp> linear_state_cache_ops =
+      inputs.linear_state_cache_ops;
+  if (!linear_state_cache_ops.empty()) {
+    sync_linear_state_cache_ops(linear_state_ids,
+                                linear_state_request_ids,
+                                linear_state_prefix_hashes,
+                                linear_state_save_prefix_hashes,
+                                linear_state_cache_ops);
+  }
   ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_embedding_ids(),
                       inputs.embedding_ids);
   ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_linear_state_ids(),
-                      inputs.linear_state_ids);
+                      linear_state_ids);
   ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_linear_state_request_ids(),
-                      inputs.linear_state_request_ids);
+                      linear_state_request_ids);
   prefix_hashes_to_proto(
-      inputs.linear_state_prefix_hashes,
+      linear_state_prefix_hashes,
       pb_forward_input->mutable_linear_state_prefix_hashes());
   prefix_hashes_to_proto(
-      inputs.linear_state_save_prefix_hashes,
+      linear_state_save_prefix_hashes,
       pb_forward_input->mutable_linear_state_save_prefix_hashes());
   prefix_hashes_to_proto(
       inputs.linear_state_evict_prefix_hashes,
       pb_forward_input->mutable_linear_state_evict_prefix_hashes());
+  linear_state_cache_ops_to_proto(
+      linear_state_cache_ops,
+      pb_forward_input->mutable_linear_state_cache_ops());
   ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_request_ids(),
                       inputs.request_ids);
   ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_extra_token_ids(),
