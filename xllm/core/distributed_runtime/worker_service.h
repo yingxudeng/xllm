@@ -153,7 +153,11 @@ class WorkerService : public proto::DistributeWorker {
             int32_t& prepared_layer_id,
             torch::Tensor& src_seq_idxes,
             torch::Tensor& out_tokens,
-            torch::Tensor& out_logprobs);
+            torch::Tensor& out_logprobs,
+            std::vector<ForwardOutput::LinearStatePrefixHash>&
+                linear_state_saved_prefix_hashes,
+            std::vector<ForwardOutput::LinearStatePrefixHash>&
+                linear_state_evicted_prefix_hashes);
   DISALLOW_COPY_AND_ASSIGN(WorkerService);
 
  private:

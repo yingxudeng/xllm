@@ -141,6 +141,11 @@ void SingleBlockManager::get_merged_kvcache_event(
   // Prefix cache is disabled in this manager: no-op.
 }
 
+void SingleBlockManager::drain_prefix_cache_event(
+    KvCacheEvent* /*event*/) const {
+  // Prefix cache is disabled in this manager: no-op.
+}
+
 size_t SingleBlockManager::num_blocks_in_prefix_cache() const { return 0; }
 
 size_t SingleBlockManager::num_free_blocks() const { return num_free_blocks_; }

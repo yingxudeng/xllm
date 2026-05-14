@@ -16,12 +16,15 @@ limitations under the License.
 #pragma once
 
 #include <absl/container/flat_hash_map.h>
+#include <absl/hash/hash.h>
 #include <acl/acl.h>
 #include <torch/torch.h>
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <vector>
 
 #include "core/common/macros.h"
 #include "core/framework/kv_cache/kv_cache.h"
@@ -53,6 +56,21 @@ struct TilingBufferInfo;
 
 namespace xllm::npu {
 
+struct AclGraphKey {
+  uint32_t bucket_num_tokens = 0;
+  std::vector<int32_t> linear_state_ids;
+};
+
+inline bool operator==(const AclGraphKey& lhs, const AclGraphKey& rhs) {
+  return lhs.bucket_num_tokens == rhs.bucket_num_tokens &&
+         lhs.linear_state_ids == rhs.linear_state_ids;
+}
+
+template <typename H>
+H AbslHashValue(H h, const AclGraphKey& key) {
+  return H::combine(std::move(h), key.bucket_num_tokens, key.linear_state_ids);
+}
+
 // Helper class to hold persistent parameters for graph execution
 // Multiple AclGraph instances can share the same GraphPersistentParam object
 class GraphPersistentParam {
@@ -76,6 +94,7 @@ class GraphPersistentParam {
                                          const torch::Tensor& positions,
                                          const ModelInputParams& params,
                                          uint32_t padded_num_token,
+                                         int32_t padding_linear_state_id,
                                          bool return_capture_params = false);
 
   // Getter methods for persistent tensors
@@ -255,20 +274,21 @@ class AclGraph {
   }
 
   // Capture computation graph for given bucket num_tokens
-  bool capture(CausalLM* model,
-               const ModelArgs& args,
-               const runtime::Options& options,
-               const torch::Tensor& tokens,
-               const torch::Tensor& positions,
-               const ModelInputParams& params,
-               std::vector<KVCache>& kv_cache,
-               uint32_t bucket_num_tokens);
+  std::optional<ModelOutput> capture(CausalLM* model,
+                                     const ModelArgs& args,
+                                     const runtime::Options& options,
+                                     const torch::Tensor& tokens,
+                                     const torch::Tensor& positions,
+                                     const ModelInputParams& params,
+                                     std::vector<KVCache>& kv_cache,
+                                     uint32_t bucket_num_tokens);
 
   // Replay captured graph with new input data
   ModelOutput replay(const torch::Tensor& tokens,
                      const torch::Tensor& positions,
                      std::vector<KVCache>& kv_cache,
-                     const ModelInputParams& params);
+                     const ModelInputParams& params,
+                     bool include_aux_hidden_states);
 
   // Get the hidden states from the last capture
   torch::Tensor get_hidden_states(uint32_t actual_num_tokens = 0) const {
@@ -289,6 +309,8 @@ class AclGraph {
   // Reference to persistent parameters (shared across multiple AclGraph
   // instances)
   GraphPersistentParam& persistent_param_;
+  int32_t padding_linear_state_id_ = -1;
+  ModelInputParams captured_params_;
 
   // Cached capture stream, initialized on first capture
   std::optional<c10_npu::NPUStream> capture_stream_;
@@ -326,10 +348,13 @@ class AclGraphExecutorImpl : public ExecutorImpl {
   runtime::Options options_;
 
   // Lazy-loaded ACL graphs for different num_tokens
-  absl::flat_hash_map<uint32_t, std::unique_ptr<AclGraph>> graphs_;
+  absl::flat_hash_map<AclGraphKey, std::unique_ptr<AclGraph>> graphs_;
 
   // Persistent parameters shared across all AclGraph instances
   std::unique_ptr<GraphPersistentParam> persistent_param_;
+
+  // Graph replay/capture reuses shared persistent buffers and the graph map.
+  mutable std::mutex graph_execution_mutex_;
 
   // Get bucket num_tokens for given num_tokens
   // For num_tokens < 8: use 1, 2, 4, 8

@@ -16,11 +16,13 @@ limitations under the License.
 #pragma once
 
 #include <queue>
+#include <unordered_set>
 #include <vector>
 
 #include "block_manager.h"
 #include "framework/block/kv_cache_manager.h"
 #include "framework/block/single_block_manager.h"
+#include "util/hash_util.h"
 
 namespace xllm {
 
@@ -30,6 +32,7 @@ class BlockManagerPool : public KVCacheManager {
     PROPERTY(uint32_t, num_blocks) = 0;
     PROPERTY(uint32_t, host_num_blocks) = 0;
     PROPERTY(int32_t, block_size) = 0;
+    PROPERTY(uint32_t, single_block_capacity) = 0;
     PROPERTY(bool, enable_linear_state) = false;
     PROPERTY(bool, enable_prefix_cache) = true;
     PROPERTY(bool, enable_disagg_pd) = false;
@@ -71,8 +74,16 @@ class BlockManagerPool : public KVCacheManager {
   virtual std::vector<std::vector<BlockTransferInfo>>*
   get_swap_block_transfer_infos() override;
   virtual void reset_transfer_infos() override;
+  void record_linear_state_checkpoint_hashes(
+      int32_t dp_rank,
+      const std::vector<XXH3Key>& checkpoint_hashes);
+  void prune_linear_state_checkpoint_hashes(const KvCacheEvent& event);
+  void prune_linear_state_checkpoint_hashes(
+      int32_t dp_rank,
+      const std::vector<XXH3Key>& checkpoint_hashes);
 
   virtual void get_merged_kvcache_event(KvCacheEvent* event) const;
+  virtual void drain_prefix_cache_event(KvCacheEvent* event) const;
   virtual float get_gpu_cache_usage_perc() const;
 
   virtual uint32_t num_blocks() const override;
@@ -80,6 +91,8 @@ class BlockManagerPool : public KVCacheManager {
   virtual std::vector<size_t> num_blocks_in_prefix_cache() const override;
   virtual std::vector<size_t> num_free_blocks() const override;
   virtual std::vector<size_t> num_used_blocks() const override;
+  virtual std::vector<size_t> num_free_single_blocks() const override;
+  virtual std::vector<size_t> num_total_single_blocks() const override;
   virtual double kv_cache_utilization() const override;
 
   // get the options for the block manager
@@ -98,8 +111,19 @@ class BlockManagerPool : public KVCacheManager {
   void deallocate_single_block(Sequence* sequence, int32_t dp_rank);
 
  private:
+  size_t get_linear_state_prefix_match_blocks(
+      int32_t dp_rank,
+      const std::vector<Block>& shared_blocks,
+      size_t existed_shared_blocks_num) const;
+  void truncate_linear_state_prefix_match(int32_t dp_rank,
+                                          size_t existed_shared_blocks_num,
+                                          std::vector<Block>* shared_blocks);
+
   std::vector<std::vector<BlockTransferInfo>> swap_block_transfer_infos_;
   std::vector<std::unique_ptr<SingleBlockManager>> single_block_managers_;
+  using LinearStateCheckpointHashSet =
+      std::unordered_set<XXH3Key, FixedStringKeyHash, FixedStringKeyEqual>;
+  std::vector<LinearStateCheckpointHashSet> linear_state_checkpoint_hashes_;
 
  protected:
   // the options for the block manager
