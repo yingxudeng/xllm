@@ -33,6 +33,7 @@ limitations under the License.
 #endif
 #include "core/common/global_flags.h"
 #include "core/common/metrics.h"
+#include "core/framework/kv_cache/kv_cache_utils.h"
 #include "core/util/utils.h"
 #include "platform/npu/device_capture_lock.h"
 
@@ -263,12 +264,11 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
               /*non_blocking=*/true);
     }
     if (padded_num_tokens > actual_batch_size) {
-      const int32_t padding_linear_state_id = options_.max_seqs_per_batch() + 1;
       persistent_linear_state_indices_
           .slice(/*dim=*/0,
                  /*start=*/actual_batch_size,
                  /*end=*/padded_num_tokens)
-          .fill_(padding_linear_state_id);
+          .fill_(kPaddingLinearStateId);
     }
   }
 
@@ -363,9 +363,8 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
         persistent_block_tables(padded_num_tokens);
     if (!params.linear_state_ids.empty()) {
       params_for_capture->linear_state_ids = params.linear_state_ids;
-      const int32_t padding_linear_state_id = options_.max_seqs_per_batch() + 1;
       params_for_capture->linear_state_ids.resize(padded_num_tokens,
-                                                  padding_linear_state_id);
+                                                  kPaddingLinearStateId);
       params_for_capture->linear_state_indices =
           persistent_linear_state_indices(padded_num_tokens);
     }

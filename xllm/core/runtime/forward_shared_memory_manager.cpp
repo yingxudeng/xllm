@@ -771,6 +771,22 @@ inline void write_eplb_info(RawInputSerializeContext& context,
   write_data(context.descriptor, info.update_layer_id);
 }
 
+inline void write_linear_state_cache_ops(
+    RawInputSerializeContext& context,
+    const std::vector<LinearStateCacheOp>& cache_ops) {
+  write_data(context.descriptor, static_cast<uint64_t>(cache_ops.size()));
+  for (const LinearStateCacheOp& cache_op : cache_ops) {
+    write_data(context.descriptor, cache_op.linear_state_id);
+    write_string(context.descriptor, cache_op.request_id);
+    write_bytes(context.descriptor,
+                cache_op.restore_prefix_hash.data(),
+                XXH3_128BITS_HASH_VALUE_LEN);
+    write_bytes(context.descriptor,
+                cache_op.save_prefix_hash.data(),
+                XXH3_128BITS_HASH_VALUE_LEN);
+  }
+}
+
 inline void write_swap_blocks(char*& buffer,
                               const std::vector<BlockTransferInfo>& blocks) {
   write_data(buffer, (uint64_t)blocks.size());
@@ -1541,6 +1557,26 @@ inline void read_eplb_info(ReadContext& context, EplbInfo& info) {
   read_data(context, info.update_layer_id);
 }
 
+inline void read_linear_state_cache_ops(
+    ReadContext& context,
+    std::vector<LinearStateCacheOp>& cache_ops) {
+  uint64_t size;
+  read_data(context, size);
+  cache_ops.resize(size);
+  for (LinearStateCacheOp& cache_op : cache_ops) {
+    read_data(context, cache_op.linear_state_id);
+    read_string(context, cache_op.request_id);
+    std::memcpy(cache_op.restore_prefix_hash.data(),
+                context.descriptor_cursor,
+                XXH3_128BITS_HASH_VALUE_LEN);
+    advance_descriptor_cursor(context, XXH3_128BITS_HASH_VALUE_LEN);
+    std::memcpy(cache_op.save_prefix_hash.data(),
+                context.descriptor_cursor,
+                XXH3_128BITS_HASH_VALUE_LEN);
+    advance_descriptor_cursor(context, XXH3_128BITS_HASH_VALUE_LEN);
+  }
+}
+
 inline void read_swap_blocks(const char*& buffer,
                              std::vector<BlockTransferInfo>& blocks,
                              const char*& device_buffer) {
@@ -2026,6 +2062,8 @@ inline void deserialize_raw_forward_input(const char*& buffer,
   read_vector(context, input_params.linear_state_ids);
   normalize_linear_state_ids(input_params.linear_state_ids,
                              input_params.num_sequences);
+  read_vector(context, input_params.linear_state_evict_prefix_hashes);
+  read_linear_state_cache_ops(context, input_params.linear_state_cache_ops);
   read_string_vector(context, input_params.request_ids);
   read_vector(context, input_params.extra_token_ids);
   read_swap_blocks(context, input_params.swap_blocks);
@@ -2133,6 +2171,8 @@ inline void serialize_raw_forward_input_sections(
   write_vector(context.descriptor, input.dp_is_decode);
   write_vector(context.descriptor, input.embedding_ids);
   write_vector(context.descriptor, input.linear_state_ids);
+  write_vector(context.descriptor, input.linear_state_evict_prefix_hashes);
+  write_linear_state_cache_ops(context, input.linear_state_cache_ops);
   write_string_vector(context.descriptor, input.request_ids);
   write_vector(context.descriptor, input.extra_token_ids);
   write_swap_blocks(context, input.swap_blocks);
@@ -2268,6 +2308,7 @@ size_t calculate_raw_forward_output_size(const RawForwardOutput& output) {
   size += type_size<int32_t>;  // prepared_layer_id
   // dit output data
   size += get_dit_forward_output_size(output.dit_forward_output);
+  size += get_vector_size(output.linear_state_evicted_prefix_hashes);
 
   return size;
 }
@@ -2335,6 +2376,7 @@ void deserialize_raw_forward_output(const char* buffer,
   read_vector_tensor(buffer, output.mm_embeddings);
   // read dit output
   read_dit_forward_output(buffer, output.dit_forward_output);
+  read_vector(buffer, output.linear_state_evicted_prefix_hashes);
 }
 
 void serialize_raw_forward_output(const RawForwardOutput& output,
@@ -2351,6 +2393,7 @@ void serialize_raw_forward_output(const RawForwardOutput& output,
   write_vector_tensor(buffer, output.mm_embeddings);
   // write dit output
   write_dit_forward_output(buffer, output.dit_forward_output);
+  write_vector(buffer, output.linear_state_evicted_prefix_hashes);
 }
 
 void convert_raw_forward_input_to_forward_input(RawForwardInput& raw_input,
@@ -2377,6 +2420,10 @@ void convert_raw_forward_input_to_forward_input(RawForwardInput& raw_input,
   input_params.q_max_seq_len = raw_input.q_max_seq_len;
   input_params.embedding_ids = std::move(raw_input.embedding_ids);
   input_params.linear_state_ids = std::move(raw_input.linear_state_ids);
+  input_params.linear_state_evict_prefix_hashes =
+      std::move(raw_input.linear_state_evict_prefix_hashes);
+  input_params.linear_state_cache_ops =
+      std::move(raw_input.linear_state_cache_ops);
   input_params.request_ids = std::move(raw_input.request_ids);
   input_params.dp_global_token_nums = std::move(raw_input.dp_global_token_nums);
   input_params.dp_is_decode = std::move(raw_input.dp_is_decode);
@@ -2450,8 +2497,12 @@ void convert_tensor_to_raw_output(
     const torch::Tensor& src_seq_idxes,
     const torch::Tensor& out_tokens,
     const torch::Tensor& out_logprobs,
+    const std::vector<LinearStatePrefixHash>&
+        linear_state_evicted_prefix_hashes,
     RawForwardOutput& raw_output) {
   raw_output.prepared_layer_id = prepared_layer_id;
+  raw_output.linear_state_evicted_prefix_hashes =
+      linear_state_evicted_prefix_hashes;
 
   if (FLAGS_enable_eplb) {
     torch::Tensor expert_load_data_flattened =
@@ -2658,7 +2709,9 @@ bool ForwardSharedMemoryManager::raw_output_write(
     int32_t prepared_layer_id,
     const torch::Tensor& src_seq_idxes,
     const torch::Tensor& out_tokens,
-    const torch::Tensor& out_logprobs) {
+    const torch::Tensor& out_logprobs,
+    const std::vector<LinearStatePrefixHash>&
+        linear_state_evicted_prefix_hashes) {
   RawForwardOutput output;
   convert_tensor_to_raw_output(next_tokens,
                                logprobs,
@@ -2672,6 +2725,7 @@ bool ForwardSharedMemoryManager::raw_output_write(
                                src_seq_idxes,
                                out_tokens,
                                out_logprobs,
+                               linear_state_evicted_prefix_hashes,
                                output);
   uint64_t total_size = sizeof(ControlMetadata);
   total_size += calculate_raw_forward_output_size(output);

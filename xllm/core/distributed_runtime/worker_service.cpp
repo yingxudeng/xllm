@@ -67,19 +67,21 @@ void WorkerService::set_worker(std::unique_ptr<Worker> worker) {
   initialized_ = true;
 }
 
-void WorkerService::step(ForwardInput& fwd_input,
-                         torch::Tensor& next_tokens,
-                         torch::Tensor& logprobs,
-                         torch::Tensor& top_tokens,
-                         torch::Tensor& top_logprobs,
-                         torch::Tensor& embeddings,
-                         std::vector<torch::Tensor>& mm_embeddings,
-                         std::vector<torch::Tensor>& dit_images,
-                         torch::Tensor& expert_load_data,
-                         int32_t& prepared_layer_id,
-                         torch::Tensor& src_seq_idxes,
-                         torch::Tensor& out_tokens,
-                         torch::Tensor& out_logprobs) {
+void WorkerService::step(
+    ForwardInput& fwd_input,
+    torch::Tensor& next_tokens,
+    torch::Tensor& logprobs,
+    torch::Tensor& top_tokens,
+    torch::Tensor& top_logprobs,
+    torch::Tensor& embeddings,
+    std::vector<torch::Tensor>& mm_embeddings,
+    std::vector<torch::Tensor>& dit_images,
+    torch::Tensor& expert_load_data,
+    int32_t& prepared_layer_id,
+    torch::Tensor& src_seq_idxes,
+    torch::Tensor& out_tokens,
+    torch::Tensor& out_logprobs,
+    std::vector<LinearStatePrefixHash>& linear_state_evicted_prefix_hashes) {
   const bool use_default_stream =
       !options_.enable_schedule_overlap() && options_.backend() == "llm";
   // execute model
@@ -97,6 +99,8 @@ void WorkerService::step(ForwardInput& fwd_input,
       expert_load_data =
           safe_to(forward_outputs.value().expert_load_data, torch::kCPU, true);
       prepared_layer_id = forward_outputs.value().prepared_layer_id;
+      linear_state_evicted_prefix_hashes =
+          forward_outputs.value().linear_state_evicted_prefix_hashes;
 
       {
         auto copy_output_to_host = [&]() {
@@ -207,6 +211,7 @@ void WorkerService::create_polling_shm_thread(
           torch::Tensor src_seq_idxes;
           torch::Tensor out_tokens;
           torch::Tensor out_logprobs;
+          std::vector<LinearStatePrefixHash> linear_state_evicted_prefix_hashes;
 
           step(fwd_input,
                next_tokens,
@@ -220,20 +225,23 @@ void WorkerService::create_polling_shm_thread(
                prepared_layer_id,
                src_seq_idxes,
                out_tokens,
-               out_logprobs);
+               out_logprobs,
+               linear_state_evicted_prefix_hashes);
 
-          output_shm_manager->raw_output_write(next_tokens,
-                                               logprobs,
-                                               top_tokens,
-                                               top_logprobs,
-                                               embeddings,
-                                               mm_embeddings,
-                                               dit_images,
-                                               expert_load_data,
-                                               prepared_layer_id,
-                                               src_seq_idxes,
-                                               out_tokens,
-                                               out_logprobs);
+          output_shm_manager->raw_output_write(
+              next_tokens,
+              logprobs,
+              top_tokens,
+              top_logprobs,
+              embeddings,
+              mm_embeddings,
+              dit_images,
+              expert_load_data,
+              prepared_layer_id,
+              src_seq_idxes,
+              out_tokens,
+              out_logprobs,
+              linear_state_evicted_prefix_hashes);
           COUNTER_ADD(worker_service_latency_seconds, timer.elapsed_seconds());
         }
       });
@@ -609,6 +617,7 @@ void WorkerService::ExecuteModel(::google::protobuf::RpcController* controller,
         torch::Tensor src_seq_idxes;
         torch::Tensor out_tokens;
         torch::Tensor out_logprobs;
+        std::vector<LinearStatePrefixHash> linear_state_evicted_prefix_hashes;
 
         step(forward_input,
              next_tokens,
@@ -622,7 +631,8 @@ void WorkerService::ExecuteModel(::google::protobuf::RpcController* controller,
              prepared_layer_id,
              src_seq_idxes,
              out_tokens,
-             out_logprobs);
+             out_logprobs,
+             linear_state_evicted_prefix_hashes);
         // convert to proto output
         forward_output_to_proto(next_tokens,
                                 logprobs,
@@ -635,6 +645,7 @@ void WorkerService::ExecuteModel(::google::protobuf::RpcController* controller,
                                 out_tokens,
                                 out_logprobs,
                                 dit_images,
+                                linear_state_evicted_prefix_hashes,
                                 pb_forward_output);
         COUNTER_ADD(worker_service_latency_seconds, timer.elapsed_seconds());
       });
@@ -669,6 +680,8 @@ void WorkerService::GetLastStepResult(
           torch::Tensor out_tokens;
           torch::Tensor out_logprobs;
           std::vector<torch::Tensor> dit_images;
+          const auto& linear_state_evicted_prefix_hashes =
+              forward_outputs.value().linear_state_evicted_prefix_hashes;
           auto copy_output_to_host = [&]() {
             // [num_seq, ..., embed_dim]
             embeddings = safe_to(sample_output.embeddings, torch::kCPU, true);
@@ -717,7 +730,8 @@ void WorkerService::GetLastStepResult(
             stream_->synchronize();
           }
 
-          if (next_tokens.defined() || FLAGS_enable_eplb) {
+          if (next_tokens.defined() || FLAGS_enable_eplb ||
+              !linear_state_evicted_prefix_hashes.empty()) {
             forward_output_to_proto(next_tokens,
                                     logprobs,
                                     top_tokens,
@@ -729,6 +743,7 @@ void WorkerService::GetLastStepResult(
                                     out_tokens,
                                     out_logprobs,
                                     dit_images,
+                                    linear_state_evicted_prefix_hashes,
                                     pb_forward_output);
           }
         }
