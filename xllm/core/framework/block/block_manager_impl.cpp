@@ -17,6 +17,7 @@ limitations under the License.
 #include "block_manager_impl.h"
 
 #include <unordered_set>
+#include <utility>
 
 #include "framework/prefix_cache/prefix_cache_factory.h"
 namespace xllm {
@@ -106,7 +107,20 @@ bool BlockManagerImpl::has_enough_blocks(uint32_t num_blocks) {
   const uint32_t n_blocks_to_evict = num_blocks - num_free_blocks_;
 
   AUTO_COUNTER(prefix_cache_latency_seconds_evict);
-  const uint32_t n_blocks_evicted = prefix_cache_->evict(n_blocks_to_evict);
+  uint32_t n_blocks_evicted = 0;
+  if (options_.track_prefix_cache_evictions()) {
+    std::vector<XXH3Key> evicted_prefix_hashes;
+    n_blocks_evicted =
+        prefix_cache_->evict(n_blocks_to_evict, &evicted_prefix_hashes);
+    if (!evicted_prefix_hashes.empty()) {
+      pending_prefix_cache_evictions_.insert(
+          pending_prefix_cache_evictions_.end(),
+          evicted_prefix_hashes.begin(),
+          evicted_prefix_hashes.end());
+    }
+  } else {
+    n_blocks_evicted = prefix_cache_->evict(n_blocks_to_evict);
+  }
   if (n_blocks_evicted < n_blocks_to_evict) {
     return false;
   }
@@ -135,6 +149,8 @@ std::vector<Block> BlockManagerImpl::allocate_shared(
         shared_blocks.empty() ? 0
                               : shared_blocks.size() * shared_blocks[0].size();
     COUNTER_ADD(prefix_cache_match_length_total, prefix_length);
+    VLOG(1) << "Prefix cache matched " << shared_blocks.size()
+            << " blocks, prefix_length=" << prefix_length;
 
     // update effective block usage
     for (const auto& block : shared_blocks) {
@@ -173,6 +189,10 @@ void BlockManagerImpl::get_merged_kvcache_event(KvCacheEvent* event) const {
     event->stored_cache.merge(events->stored_cache);
     events->clear();
   }
+}
+
+std::vector<XXH3Key> BlockManagerImpl::drain_evicted_prefix_hashes() {
+  return std::exchange(pending_prefix_cache_evictions_, {});
 }
 
 // allocate a block id
