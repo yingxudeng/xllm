@@ -77,9 +77,8 @@ class PrefixCache {
   virtual size_t insert(Slice<Block>& blocks);
   virtual size_t insert(const std::vector<Block>& blocks);
 
-  // evict blocks hold by the prefix cache
-  // return the actual number of evicted blocks
   virtual size_t evict(size_t n_blocks);
+  virtual size_t evict(size_t n_blocks, std::vector<XXH3Key>* evict_keys);
 
   // get the number of blocks in the prefix cache
   virtual size_t num_blocks() const {
@@ -110,14 +109,11 @@ class PrefixCache {
 
   size_t insert(Slice<Block>& blocks, std::vector<XXH3Key>* insert_keys);
 
-  size_t evict(size_t n_blocks, std::vector<XXH3Key>* evict_keys);
+  size_t evict_impl(size_t n_blocks, std::vector<XXH3Key>* evict_keys);
 
   struct Node {
     Block block;
-    // the last access time of the node, used to evict blocks
     int64_t last_access_time = 0;
-
-    // the previous and next nodes, used to maintain the LRU list
     Node* prev = nullptr;
     Node* next = nullptr;
   };

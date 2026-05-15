@@ -144,6 +144,11 @@ DEFINE_string(
     "cache dtype aligns with model dtype (no quantization). "
     "\"int8\": Enables INT8 quantization. Only supported on MLU backend.");
 
+DEFINE_int64(max_linear_state_cache_slots,
+             0,
+             "Maximum active linear-attention state cache slots. 0 derives an "
+             "automatic capacity from the available KV cache budget.");
+
 // --- scheduler config ---
 
 DEFINE_int32(max_tokens_per_batch, 10240, "Max number of tokens per batch.");
