@@ -26,6 +26,7 @@ limitations under the License.
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <unordered_map>
 
 #include "common/device_monitor.h"
 #include "common/global_flags.h"
@@ -34,6 +35,7 @@ limitations under the License.
 #include "common/options.h"
 #include "framework/block/hierarchy_block_manager_pool.h"
 #include "framework/kv_cache/kv_cache_shape.h"
+#include "framework/kv_cache/kv_cache_utils.h"
 #include "framework/model/model_args.h"
 #include "framework/model_loader.h"
 #include "framework/xtensor/page_allocator.h"
@@ -43,11 +45,40 @@ limitations under the License.
 #include "runtime/worker.h"
 #include "server/xllm_server_registry.h"
 #include "util/env_var.h"
+#include "util/hash_util.h"
 #include "util/pretty_print.h"
 #include "util/tensor_helper.h"
 #include "util/utils.h"
 
 namespace {
+
+void sync_linear_state_checkpoints(xllm::BlockManagerPool* block_manager_pool,
+                                   int32_t dp_rank,
+                                   const xllm::RawForwardOutput& output) {
+  if (block_manager_pool == nullptr) {
+    return;
+  }
+  std::vector<xllm::XXH3Key> evicted;
+  evicted.reserve(output.linear_state_evicted_prefix_hashes.size());
+  for (const auto& hash : output.linear_state_evicted_prefix_hashes) {
+    if (!xllm::is_zero_prefix_hash(hash)) {
+      evicted.emplace_back(hash.data());
+    }
+  }
+  block_manager_pool->clear_linear_state_flags(dp_rank, evicted);
+
+  std::vector<xllm::XXH3Key> saved;
+  saved.reserve(output.linear_state_saved_prefix_hashes.size());
+  for (const auto& hash : output.linear_state_saved_prefix_hashes) {
+    if (!xllm::is_zero_prefix_hash(hash)) {
+      saved.emplace_back(hash.data());
+    }
+  }
+  if (!saved.empty()) {
+    block_manager_pool->set_linear_state_flags(dp_rank, saved);
+  }
+}
+
 int64_t get_kv_cache_dtype_size_in_bytes(const std::string& kv_cache_dtype,
                                          int64_t model_dtype_size) {
   if (kv_cache_dtype == "auto") {
@@ -528,7 +559,6 @@ KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
   }
 #endif
 
-  kv_cache_cap.num_linear_state_blocks() = FLAGS_max_concurrent_requests + 2;
   for (int64_t layer_id = 0; layer_id < kv_cache_cap.n_layers(); ++layer_id) {
     if (is_full_attention_layer(args_, layer_id)) {
       ++kv_cache_cap.num_full_attention_layers();
@@ -541,6 +571,13 @@ KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
   const int64_t block_size = kv_cache_cap.block_size();
   const int64_t block_size_in_bytes =
       block_size * (slot_size + index_slot_size + scale_slot_size);
+  kv_cache_cap.num_linear_state_blocks() =
+      calculate_linear_state_blocks(kv_cache_cap.cache_size_in_bytes(),
+                                    kv_cache_cap.num_linear_attention_layers(),
+                                    kv_cache_cap.linear_slot_size(),
+                                    kv_cache_cap.num_full_attention_layers(),
+                                    block_size_in_bytes,
+                                    options_.linear_state_cache_options());
   kv_cache_cap.linear_cache_size_in_bytes() =
       kv_cache_cap.num_linear_attention_layers() *
       kv_cache_cap.num_linear_state_blocks() * kv_cache_cap.linear_slot_size();
@@ -551,12 +588,8 @@ KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
     CHECK_GT(kv_cache_cap.cache_size_in_bytes(),
              kv_cache_cap.linear_cache_size_in_bytes())
         << "failed to reserve linear state cache for linear-attention layers: "
-        << "max_concurrent_requests (" << FLAGS_max_concurrent_requests
-        << ") is too large. Please reduce max_concurrent_requests to less than "
-        << kv_cache_cap.cache_size_in_bytes() /
-                   (kv_cache_cap.num_linear_attention_layers() *
-                    kv_cache_cap.linear_slot_size()) -
-               2;
+        << "max_linear_state_cache_slots "
+        << options_.linear_state_cache_options().max_linear_state_cache_slots();
   }
   CHECK_GT(available_full_cache_size_in_bytes, 0)
       << "no memory left for full-attention kv cache after reserving linear "
@@ -570,16 +603,25 @@ KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
 }
 
 bool LLMEngine::allocate_kv_cache(const KVCacheCapacity& kv_cache_cap) {
-  LOG(INFO) << "kv cache capacity: "
-            << readable_size(kv_cache_cap.cache_size_in_bytes())
-            << ", blocks: " << kv_cache_cap.n_blocks()
-            << ", slot_size: " << kv_cache_cap.slot_size()
-            << ", linear_slot_size: " << kv_cache_cap.linear_slot_size()
-            << ", linear_blocks: " << kv_cache_cap.num_linear_state_blocks()
-            << ", reserved_linear_bytes: "
-            << readable_size(kv_cache_cap.linear_cache_size_in_bytes())
-            << ", n_layers: " << kv_cache_cap.n_layers()
-            << ", kv_cache_dtype: " << options_.kv_cache_dtype();
+  LOG(INFO)
+      << "kv cache capacity: "
+      << readable_size(kv_cache_cap.cache_size_in_bytes())
+      << ", blocks: " << kv_cache_cap.n_blocks()
+      << ", slot_size: " << kv_cache_cap.slot_size()
+      << ", linear_slot_size: " << kv_cache_cap.linear_slot_size()
+      << ", linear_blocks: " << kv_cache_cap.num_linear_state_blocks()
+      << ", linear_state_slots: "
+      << (has_linear_attention_layers(args_)
+              ? calculate_linear_state_live_slots(
+                    kv_cache_cap.num_linear_state_blocks(),
+                    options_.max_seqs_per_batch())
+              : 0)
+      << ", max_linear_state_cache_slots: "
+      << options_.linear_state_cache_options().max_linear_state_cache_slots()
+      << ", reserved_linear_bytes: "
+      << readable_size(kv_cache_cap.linear_cache_size_in_bytes())
+      << ", n_layers: " << kv_cache_cap.n_layers()
+      << ", kv_cache_dtype: " << options_.kv_cache_dtype();
 
   CHECK_GT(kv_cache_cap.n_blocks(), 0) << "no memory for kv cache";
   const int32_t block_size = static_cast<int32_t>(kv_cache_cap.block_size());
@@ -605,6 +647,12 @@ bool LLMEngine::allocate_kv_cache(const KVCacheCapacity& kv_cache_cap) {
       .num_layers(args_.n_layers())
       .slot_size(kv_cache_cap.slot_size())
       .model_id(options_.model_id());
+  if (enable_gdn_attention) {
+    options.single_block_capacity(
+        static_cast<uint32_t>(calculate_linear_state_live_slots(
+            kv_cache_cap.num_linear_state_blocks(),
+            options_.max_seqs_per_batch())));
+  }
 
   if (options_.host_blocks_factor() > 1.0 || options_.enable_kvcache_store()) {
     kv_cache_manager_ =
@@ -1044,6 +1092,8 @@ ForwardOutput LLMEngine::step(std::vector<Batch>& batch) {
       if (result.value().outputs.empty() && layer_forward_interrupted_) {
         throw ForwardInterruptedException();
       }
+      sync_linear_state_checkpoints(
+          block_manager_pool(), dp_rank, result.value());
       // if src_seq_idxes is not empty, skip sample output processing and
       // process beam search output instead
       if (result.value().src_seq_idxes.size() == 0) {
@@ -1105,6 +1155,15 @@ void LLMEngine::update_last_step_result(std::vector<Batch>& last_batch) {
       raw_forward_outputs.emplace_back(std::move(result.value()));
     } else {
       LOG(FATAL) << "Failed to get last step results, result has no value";
+    }
+  }
+
+  if (options_.enable_schedule_overlap()) {
+    for (int32_t dp_rank = 0;
+         dp_rank < static_cast<int32_t>(raw_forward_outputs.size());
+         ++dp_rank) {
+      sync_linear_state_checkpoints(
+          block_manager_pool(), dp_rank, raw_forward_outputs[dp_rank]);
     }
   }
 
@@ -1210,6 +1269,17 @@ std::vector<RawForwardInput> LLMEngine::prepare_inputs(
     }
     if (batched_inputs[dp_rank].batch_forward_type.is_empty()) {
       batched_inputs[dp_rank].batch_forward_type = batch_forward_type;
+    }
+  }
+
+  std::vector<LinearStatePrefixHash> evicted_linear_state_hashes =
+      block_manager_pool()->drain_linear_state_evictions();
+  if (!evicted_linear_state_hashes.empty()) {
+    for (RawForwardInput& input : batched_inputs) {
+      input.linear_state_evict_prefix_hashes.insert(
+          input.linear_state_evict_prefix_hashes.end(),
+          evicted_linear_state_hashes.begin(),
+          evicted_linear_state_hashes.end());
     }
   }
 

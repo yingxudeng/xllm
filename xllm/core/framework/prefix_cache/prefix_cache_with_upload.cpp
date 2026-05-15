@@ -54,8 +54,15 @@ size_t PrefixCacheWithUpload::insert(Slice<Block>& blocks) {
 }
 
 size_t PrefixCacheWithUpload::evict(size_t n_blocks) {
+  return evict(n_blocks, /*linear_state_evict_keys=*/nullptr);
+}
+
+size_t PrefixCacheWithUpload::evict(
+    size_t n_blocks,
+    std::vector<XXH3Key>* linear_state_evict_keys) {
   std::vector<XXH3Key> evict_keys;
-  auto evict_count = PrefixCache::evict(n_blocks, &evict_keys);
+  auto evict_count =
+      PrefixCache::evict(n_blocks, &evict_keys, linear_state_evict_keys);
   save_event_async(false, evict_keys);
   return evict_count;
 }

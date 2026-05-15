@@ -291,7 +291,24 @@ message ForwardInput {
   repeated int32 kv_cache_tokens_nums = 43;
   repeated string request_ids = 44;
   DiTForwardInput dit_forward_input = 45;
-  repeated int32 linear_state_ids = 46;
+  LinearStateCacheInput linear_state_cache_input = 46;
+}
+
+message LinearStateCacheOp {
+  int32 linear_state_id = 1;
+  string request_id = 2;
+  bytes restore_prefix_hash = 3;
+  bytes save_prefix_hash = 4;
+}
+
+message LinearStateCacheInput {
+  repeated LinearStateCacheOp ops = 1;
+  repeated bytes evict_prefix_hashes = 2;
+}
+
+message LinearStateCacheOutput {
+  repeated bytes saved_prefix_hashes = 1;
+  repeated bytes evicted_prefix_hashes = 2;
 }
 
  message BatchedForwardInputs {
@@ -325,6 +342,7 @@ message ForwardOutput {
   repeated int32 out_tokens = 6;
   repeated float out_logprobs = 7;
   DiTForwardOutput dit_forward_output = 8;
+  LinearStateCacheOutput linear_state_cache_output = 9;
 }
 
 // master create Collective service

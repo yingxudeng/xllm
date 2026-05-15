@@ -11,6 +11,7 @@ cc_library(
     forward_params.h
     dit_forward_params.h
     params_utils.h
+    linear_state_snapshot_manager.h
     executor.h
     executor_impl.h
     executor_impl_factory.h
@@ -58,6 +59,7 @@ cc_library(
     worker_client.cpp
     xservice_client.cpp
     params_utils.cpp
+    linear_state_snapshot_manager.cpp
     speculative_worker_impl.cpp
     mtp_worker_impl.cpp
     suffix_worker_impl.cpp

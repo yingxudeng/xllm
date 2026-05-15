@@ -17,6 +17,8 @@ limitations under the License.
 
 #include <xxHash/xxhash.h>
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -69,5 +71,22 @@ struct FixedStringKeyEqual {
                         sizeof(left.data)) == 0;
   }
 };
+
+using PrefixHash = std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>;
+
+inline bool is_zero_prefix_hash(const PrefixHash& prefix_hash) {
+  return std::all_of(
+      prefix_hash.begin(), prefix_hash.end(), [](uint8_t v) { return v == 0; });
+}
+
+inline XXH3Key to_xxh3_key(const PrefixHash& hash) {
+  return XXH3Key(hash.data());
+}
+
+inline PrefixHash to_prefix_hash(const XXH3Key& key) {
+  PrefixHash hash;
+  std::memcpy(hash.data(), key.data, XXH3_128BITS_HASH_VALUE_LEN);
+  return hash;
+}
 
 }  // namespace xllm
