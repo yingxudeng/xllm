@@ -1231,6 +1231,8 @@ folly::SemiFuture<std::optional<ForwardOutput>> WorkerImpl::step_async(
       if (output.has_value()) {
         output->linear_state_saved_prefix_hashes =
             std::move(linear_state_update.saved_prefix_hashes);
+        output->linear_state_saved_checkpoint_handles =
+            std::move(linear_state_update.saved_checkpoint_handles);
         output->linear_state_evicted_prefix_hashes =
             std::move(linear_state_update.evicted_prefix_hashes);
       }
@@ -1248,6 +1250,8 @@ folly::SemiFuture<std::optional<ForwardOutput>> WorkerImpl::step_async(
       if (output.has_value()) {
         output->linear_state_saved_prefix_hashes =
             std::move(linear_state_update.saved_prefix_hashes);
+        output->linear_state_saved_checkpoint_handles =
+            std::move(linear_state_update.saved_checkpoint_handles);
         output->linear_state_evicted_prefix_hashes =
             std::move(linear_state_update.evicted_prefix_hashes);
       }

@@ -214,6 +214,8 @@ struct ForwardOutput {
   DiTForwardOutput dit_forward_output;
 
   std::vector<LinearStatePrefixHash> linear_state_saved_prefix_hashes;
+  std::vector<LinearStateCheckpointHandle>
+      linear_state_saved_checkpoint_handles;
   std::vector<LinearStatePrefixHash> linear_state_evicted_prefix_hashes;
 };
 
@@ -537,6 +539,8 @@ struct RawForwardOutput {
   DiTForwardOutput dit_forward_output;
 
   std::vector<LinearStatePrefixHash> linear_state_saved_prefix_hashes;
+  std::vector<LinearStateCheckpointHandle>
+      linear_state_saved_checkpoint_handles;
   std::vector<LinearStatePrefixHash> linear_state_evicted_prefix_hashes;
 };
 

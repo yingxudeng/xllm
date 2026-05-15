@@ -48,6 +48,8 @@ void forward_output_to_proto(
     const std::vector<torch::Tensor>& dit_images,
     const std::vector<ForwardOutput::LinearStatePrefixHash>&
         linear_state_saved_prefix_hashes,
+    const std::vector<LinearStateCheckpointHandle>&
+        linear_state_saved_checkpoint_handles,
     const std::vector<ForwardOutput::LinearStatePrefixHash>&
         linear_state_evicted_prefix_hashes,
     proto::ForwardOutput* pb_forward_output);

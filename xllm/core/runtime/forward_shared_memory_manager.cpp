@@ -2407,6 +2407,7 @@ size_t calculate_raw_forward_output_size(const RawForwardOutput& output) {
   size += get_vector_size(output.out_tokens);
   size += get_vector_size(output.out_logprobs);
   size += get_vector_size(output.linear_state_saved_prefix_hashes);
+  size += get_vector_size(output.linear_state_saved_checkpoint_handles);
   size += get_vector_size(output.linear_state_evicted_prefix_hashes);
   size += type_size<int32_t>;  // prepared_layer_id
   // dit output data
@@ -2476,6 +2477,7 @@ void deserialize_raw_forward_output(const char* buffer,
   read_data(buffer, output.prepared_layer_id);
 
   read_vector(buffer, output.linear_state_saved_prefix_hashes);
+  read_vector(buffer, output.linear_state_saved_checkpoint_handles);
   read_vector(buffer, output.linear_state_evicted_prefix_hashes);
 
   read_vector_tensor(buffer, output.mm_embeddings);
@@ -2495,6 +2497,7 @@ void serialize_raw_forward_output(const RawForwardOutput& output,
   write_data(buffer, output.prepared_layer_id);
 
   write_vector(buffer, output.linear_state_saved_prefix_hashes);
+  write_vector(buffer, output.linear_state_saved_checkpoint_handles);
   write_vector(buffer, output.linear_state_evicted_prefix_hashes);
 
   write_vector_tensor(buffer, output.mm_embeddings);
@@ -2833,6 +2836,8 @@ bool ForwardSharedMemoryManager::raw_output_write(
     const torch::Tensor& out_logprobs,
     const std::vector<ForwardOutput::LinearStatePrefixHash>&
         linear_state_saved_prefix_hashes,
+    const std::vector<LinearStateCheckpointHandle>&
+        linear_state_saved_checkpoint_handles,
     const std::vector<ForwardOutput::LinearStatePrefixHash>&
         linear_state_evicted_prefix_hashes) {
   RawForwardOutput output;
@@ -2850,6 +2855,8 @@ bool ForwardSharedMemoryManager::raw_output_write(
                                out_logprobs,
                                output);
   output.linear_state_saved_prefix_hashes = linear_state_saved_prefix_hashes;
+  output.linear_state_saved_checkpoint_handles =
+      linear_state_saved_checkpoint_handles;
   output.linear_state_evicted_prefix_hashes =
       linear_state_evicted_prefix_hashes;
   uint64_t total_size = sizeof(ControlMetadata);

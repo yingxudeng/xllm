@@ -156,6 +156,8 @@ class WorkerService : public proto::DistributeWorker {
             torch::Tensor& out_logprobs,
             std::vector<ForwardOutput::LinearStatePrefixHash>&
                 linear_state_saved_prefix_hashes,
+            std::vector<LinearStateCheckpointHandle>&
+                linear_state_saved_checkpoint_handles,
             std::vector<ForwardOutput::LinearStatePrefixHash>&
                 linear_state_evicted_prefix_hashes);
   DISALLOW_COPY_AND_ASSIGN(WorkerService);

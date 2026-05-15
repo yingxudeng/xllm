@@ -797,6 +797,9 @@ void proto_to_forward_output(const proto::ForwardOutput& pb_output,
                                          pb_output.out_logprobs().end());
   raw_forward_output.linear_state_saved_prefix_hashes =
       prefix_hashes_from_proto(pb_output.linear_state_saved_prefix_hashes());
+  raw_forward_output.linear_state_saved_checkpoint_handles.assign(
+      pb_output.linear_state_saved_checkpoint_handles().begin(),
+      pb_output.linear_state_saved_checkpoint_handles().end());
   raw_forward_output.linear_state_evicted_prefix_hashes =
       prefix_hashes_from_proto(pb_output.linear_state_evicted_prefix_hashes());
   raw_forward_output.prepared_layer_id = pb_output.prepared_layer_id();
@@ -846,6 +849,8 @@ void forward_output_to_proto(
     const std::vector<torch::Tensor>& dit_images,
     const std::vector<ForwardOutput::LinearStatePrefixHash>&
         linear_state_saved_prefix_hashes,
+    const std::vector<LinearStateCheckpointHandle>&
+        linear_state_saved_checkpoint_handles,
     const std::vector<ForwardOutput::LinearStatePrefixHash>&
         linear_state_evicted_prefix_hashes,
     proto::ForwardOutput* pb_forward_output) {
@@ -1006,6 +1011,9 @@ void forward_output_to_proto(
   prefix_hashes_to_proto(
       linear_state_saved_prefix_hashes,
       pb_forward_output->mutable_linear_state_saved_prefix_hashes());
+  ADD_VECTOR_TO_PROTO(
+      pb_forward_output->mutable_linear_state_saved_checkpoint_handles(),
+      linear_state_saved_checkpoint_handles);
   prefix_hashes_to_proto(
       linear_state_evicted_prefix_hashes,
       pb_forward_output->mutable_linear_state_evicted_prefix_hashes());

@@ -341,6 +341,7 @@ message ForwardOutput {
   DiTForwardOutput dit_forward_output = 8;
   repeated bytes linear_state_saved_prefix_hashes = 9;
   repeated bytes linear_state_evicted_prefix_hashes = 10;
+  repeated int64 linear_state_saved_checkpoint_handles = 11;
 }
 
 // master create Collective service

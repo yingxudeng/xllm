@@ -82,6 +82,8 @@ void WorkerService::step(ForwardInput& fwd_input,
                          torch::Tensor& out_logprobs,
                          std::vector<ForwardOutput::LinearStatePrefixHash>&
                              linear_state_saved_prefix_hashes,
+                         std::vector<LinearStateCheckpointHandle>&
+                             linear_state_saved_checkpoint_handles,
                          std::vector<ForwardOutput::LinearStatePrefixHash>&
                              linear_state_evicted_prefix_hashes) {
   const bool use_default_stream =
@@ -103,6 +105,8 @@ void WorkerService::step(ForwardInput& fwd_input,
       prepared_layer_id = forward_outputs.value().prepared_layer_id;
       linear_state_saved_prefix_hashes =
           forward_outputs.value().linear_state_saved_prefix_hashes;
+      linear_state_saved_checkpoint_handles =
+          forward_outputs.value().linear_state_saved_checkpoint_handles;
       linear_state_evicted_prefix_hashes =
           forward_outputs.value().linear_state_evicted_prefix_hashes;
 
@@ -217,6 +221,8 @@ void WorkerService::create_polling_shm_thread(
           torch::Tensor out_logprobs;
           std::vector<ForwardOutput::LinearStatePrefixHash>
               linear_state_saved_prefix_hashes;
+          std::vector<LinearStateCheckpointHandle>
+              linear_state_saved_checkpoint_handles;
           std::vector<ForwardOutput::LinearStatePrefixHash>
               linear_state_evicted_prefix_hashes;
 
@@ -234,6 +240,7 @@ void WorkerService::create_polling_shm_thread(
                out_tokens,
                out_logprobs,
                linear_state_saved_prefix_hashes,
+               linear_state_saved_checkpoint_handles,
                linear_state_evicted_prefix_hashes);
 
           output_shm_manager->raw_output_write(
@@ -250,6 +257,7 @@ void WorkerService::create_polling_shm_thread(
               out_tokens,
               out_logprobs,
               linear_state_saved_prefix_hashes,
+              linear_state_saved_checkpoint_handles,
               linear_state_evicted_prefix_hashes);
           COUNTER_ADD(worker_service_latency_seconds, timer.elapsed_seconds());
         }
@@ -628,6 +636,8 @@ void WorkerService::ExecuteModel(::google::protobuf::RpcController* controller,
         torch::Tensor out_logprobs;
         std::vector<ForwardOutput::LinearStatePrefixHash>
             linear_state_saved_prefix_hashes;
+        std::vector<LinearStateCheckpointHandle>
+            linear_state_saved_checkpoint_handles;
         std::vector<ForwardOutput::LinearStatePrefixHash>
             linear_state_evicted_prefix_hashes;
 
@@ -645,6 +655,7 @@ void WorkerService::ExecuteModel(::google::protobuf::RpcController* controller,
              out_tokens,
              out_logprobs,
              linear_state_saved_prefix_hashes,
+             linear_state_saved_checkpoint_handles,
              linear_state_evicted_prefix_hashes);
         // convert to proto output
         forward_output_to_proto(next_tokens,
@@ -659,6 +670,7 @@ void WorkerService::ExecuteModel(::google::protobuf::RpcController* controller,
                                 out_logprobs,
                                 dit_images,
                                 linear_state_saved_prefix_hashes,
+                                linear_state_saved_checkpoint_handles,
                                 linear_state_evicted_prefix_hashes,
                                 pb_forward_output);
         COUNTER_ADD(worker_service_latency_seconds, timer.elapsed_seconds());
@@ -696,6 +708,8 @@ void WorkerService::GetLastStepResult(
           std::vector<torch::Tensor> dit_images;
           const auto& linear_state_saved_prefix_hashes =
               forward_outputs.value().linear_state_saved_prefix_hashes;
+          const auto& linear_state_saved_checkpoint_handles =
+              forward_outputs.value().linear_state_saved_checkpoint_handles;
           const auto& linear_state_evicted_prefix_hashes =
               forward_outputs.value().linear_state_evicted_prefix_hashes;
           auto copy_output_to_host = [&]() {
@@ -748,6 +762,7 @@ void WorkerService::GetLastStepResult(
 
           if (next_tokens.defined() || FLAGS_enable_eplb ||
               !linear_state_saved_prefix_hashes.empty() ||
+              !linear_state_saved_checkpoint_handles.empty() ||
               !linear_state_evicted_prefix_hashes.empty()) {
             forward_output_to_proto(next_tokens,
                                     logprobs,
@@ -761,6 +776,7 @@ void WorkerService::GetLastStepResult(
                                     out_logprobs,
                                     dit_images,
                                     linear_state_saved_prefix_hashes,
+                                    linear_state_saved_checkpoint_handles,
                                     linear_state_evicted_prefix_hashes,
                                     pb_forward_output);
           }

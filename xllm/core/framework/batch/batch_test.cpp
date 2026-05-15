@@ -793,6 +793,88 @@ TEST(BatchTest, SharedMemoryRoundTripPreservesAndDefaultsLinearStateMetadata) {
       legacy_from_shm.input_params.linear_state_evict_prefix_hashes.empty());
 }
 
+TEST(BatchTest, ProtoRoundTripPreservesLinearStateSavedCheckpointHandles) {
+  const std::vector<LinearStatePrefixHash> saved_prefix_hashes = {
+      make_linear_state_prefix_hash(/*base=*/11),
+      make_linear_state_prefix_hash(/*base=*/31)};
+  const std::vector<LinearStateCheckpointHandle> saved_checkpoint_handles = {
+      1101, kInvalidLinearStateCheckpointHandle};
+  const std::vector<LinearStatePrefixHash> evicted_prefix_hashes = {
+      make_linear_state_prefix_hash(/*base=*/51)};
+
+  proto::ForwardOutput pb_output;
+  forward_output_to_proto(torch::Tensor(),
+                          torch::Tensor(),
+                          torch::Tensor(),
+                          torch::Tensor(),
+                          torch::Tensor(),
+                          torch::Tensor(),
+                          /*prepared_layer_id=*/-1,
+                          torch::Tensor(),
+                          torch::Tensor(),
+                          torch::Tensor(),
+                          {},
+                          saved_prefix_hashes,
+                          saved_checkpoint_handles,
+                          evicted_prefix_hashes,
+                          &pb_output);
+
+  RawForwardOutput round_trip;
+  proto_to_forward_output(pb_output, round_trip);
+  EXPECT_EQ(round_trip.linear_state_saved_prefix_hashes, saved_prefix_hashes);
+  EXPECT_EQ(round_trip.linear_state_saved_checkpoint_handles,
+            saved_checkpoint_handles);
+  EXPECT_EQ(round_trip.linear_state_evicted_prefix_hashes,
+            evicted_prefix_hashes);
+}
+
+TEST(BatchTest,
+     SharedMemoryRoundTripPreservesLinearStateSavedCheckpointHandles) {
+  const std::vector<LinearStatePrefixHash> saved_prefix_hashes = {
+      make_linear_state_prefix_hash(/*base=*/13),
+      make_linear_state_prefix_hash(/*base=*/37)};
+  const std::vector<LinearStateCheckpointHandle> saved_checkpoint_handles = {
+      1301, 3701};
+  const std::vector<LinearStatePrefixHash> evicted_prefix_hashes = {
+      make_linear_state_prefix_hash(/*base=*/61)};
+
+  bool is_creator = false;
+  auto shm_name = ForwardSharedMemoryManager::create_unique_name(
+      "batch_test_linear_state_output",
+      /*dp_group=*/0,
+      ForwardType::RAW_OUTPUT,
+      /*rank=*/0);
+  ForwardSharedMemoryManager writer_manager(
+      shm_name, 1 << 20, is_creator, ForwardType::RAW_OUTPUT);
+  bool is_reader_creator = false;
+  ForwardSharedMemoryManager reader_manager(
+      shm_name, 1 << 20, is_reader_creator, ForwardType::RAW_OUTPUT);
+
+  ASSERT_TRUE(writer_manager.raw_output_write(torch::Tensor(),
+                                              torch::Tensor(),
+                                              torch::Tensor(),
+                                              torch::Tensor(),
+                                              torch::Tensor(),
+                                              {},
+                                              {},
+                                              torch::Tensor(),
+                                              /*prepared_layer_id=*/-1,
+                                              torch::Tensor(),
+                                              torch::Tensor(),
+                                              torch::Tensor(),
+                                              saved_prefix_hashes,
+                                              saved_checkpoint_handles,
+                                              evicted_prefix_hashes));
+
+  RawForwardOutput round_trip;
+  reader_manager.raw_output_read(round_trip);
+  EXPECT_EQ(round_trip.linear_state_saved_prefix_hashes, saved_prefix_hashes);
+  EXPECT_EQ(round_trip.linear_state_saved_checkpoint_handles,
+            saved_checkpoint_handles);
+  EXPECT_EQ(round_trip.linear_state_evicted_prefix_hashes,
+            evicted_prefix_hashes);
+}
+
 TEST(BatchTest, SampleRequestProcessesAllMatchedRawOutputs) {
   torch::Device device(Device::type_torch(), 0);
   const uint32_t n_blocks = 8;
