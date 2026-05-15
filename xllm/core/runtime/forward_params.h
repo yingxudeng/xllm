@@ -188,8 +188,7 @@ struct ForwardInput {
 
 // output after forward execution
 struct ForwardOutput {
-  using LinearStatePrefixHash =
-      std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>;
+  using LinearStatePrefixHash = xllm::LinearStatePrefixHash;
 
   // sample parameters for speculative decoding
   torch::Tensor do_sample;
@@ -213,9 +212,7 @@ struct ForwardOutput {
   // dit output data
   DiTForwardOutput dit_forward_output;
 
-  std::vector<LinearStatePrefixHash> linear_state_saved_prefix_hashes;
-  std::vector<LinearStateCheckpointHandle>
-      linear_state_saved_checkpoint_handles;
+  std::vector<LinearStateCacheCheckpoint> linear_state_saved_checkpoints;
   std::vector<LinearStatePrefixHash> linear_state_evicted_prefix_hashes;
 };
 
@@ -515,8 +512,7 @@ struct RawSampleOutput {
 };
 
 struct RawForwardOutput {
-  using LinearStatePrefixHash =
-      std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>;
+  using LinearStatePrefixHash = xllm::LinearStatePrefixHash;
 
   std::vector<RawSampleOutput> outputs;  // num seqs
   std::vector<int64_t> expert_load_data;
@@ -533,9 +529,7 @@ struct RawForwardOutput {
   // dit output data
   DiTForwardOutput dit_forward_output;
 
-  std::vector<LinearStatePrefixHash> linear_state_saved_prefix_hashes;
-  std::vector<LinearStateCheckpointHandle>
-      linear_state_saved_checkpoint_handles;
+  std::vector<LinearStateCacheCheckpoint> linear_state_saved_checkpoints;
   std::vector<LinearStatePrefixHash> linear_state_evicted_prefix_hashes;
 };
 

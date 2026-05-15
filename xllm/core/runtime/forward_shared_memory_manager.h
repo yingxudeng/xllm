@@ -117,10 +117,8 @@ class ForwardSharedMemoryManager : public SharedMemoryManager {
                         const torch::Tensor& src_seq_idxes,
                         const torch::Tensor& out_tokens,
                         const torch::Tensor& out_logprobs,
-                        const std::vector<ForwardOutput::LinearStatePrefixHash>&
-                            linear_state_saved_prefix_hashes,
-                        const std::vector<LinearStateCheckpointHandle>&
-                            linear_state_saved_checkpoint_handles,
+                        const std::vector<LinearStateCacheCheckpoint>&
+                            linear_state_saved_checkpoints,
                         const std::vector<ForwardOutput::LinearStatePrefixHash>&
                             linear_state_evicted_prefix_hashes);
   void raw_output_read(RawForwardOutput& outputs);

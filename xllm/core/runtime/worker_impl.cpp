@@ -754,8 +754,8 @@ WorkerImpl::LinearStateSnapshotUpdate WorkerImpl::save_linear_state_snapshots(
                                    linear_state_id,
                                    save_checkpoint_handle,
                                    &update.evicted_prefix_hashes)) {
-      update.saved_prefix_hashes.emplace_back(save_prefix_hash);
-      update.saved_checkpoint_handles.emplace_back(save_checkpoint_handle);
+      update.saved_checkpoints.emplace_back(
+          LinearStateCacheCheckpoint{save_prefix_hash, save_checkpoint_handle});
       VLOG(1) << "Qwen3.5 linear state snapshot saved; linear_state_id="
               << linear_state_id;
     }
@@ -1200,10 +1200,8 @@ folly::SemiFuture<std::optional<ForwardOutput>> WorkerImpl::step_async(
       auto linear_state_update =
           this->save_linear_state_snapshots(input.input_params);
       if (output.has_value()) {
-        output->linear_state_saved_prefix_hashes =
-            std::move(linear_state_update.saved_prefix_hashes);
-        output->linear_state_saved_checkpoint_handles =
-            std::move(linear_state_update.saved_checkpoint_handles);
+        output->linear_state_saved_checkpoints =
+            std::move(linear_state_update.saved_checkpoints);
         output->linear_state_evicted_prefix_hashes =
             std::move(linear_state_update.evicted_prefix_hashes);
       }
@@ -1219,10 +1217,8 @@ folly::SemiFuture<std::optional<ForwardOutput>> WorkerImpl::step_async(
       auto linear_state_update =
           this->save_linear_state_snapshots(input.input_params);
       if (output.has_value()) {
-        output->linear_state_saved_prefix_hashes =
-            std::move(linear_state_update.saved_prefix_hashes);
-        output->linear_state_saved_checkpoint_handles =
-            std::move(linear_state_update.saved_checkpoint_handles);
+        output->linear_state_saved_checkpoints =
+            std::move(linear_state_update.saved_checkpoints);
         output->linear_state_evicted_prefix_hashes =
             std::move(linear_state_update.evicted_prefix_hashes);
       }

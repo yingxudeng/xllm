@@ -101,6 +101,19 @@ std::vector<xllm::XXH3Key> to_linear_state_checkpoint_hashes(
   return checkpoint_hashes;
 }
 
+std::vector<xllm::XXH3Key> to_linear_state_checkpoint_hashes(
+    const std::vector<xllm::LinearStateCacheCheckpoint>& checkpoints) {
+  std::vector<xllm::XXH3Key> checkpoint_hashes;
+  checkpoint_hashes.reserve(checkpoints.size());
+  for (const xllm::LinearStateCacheCheckpoint& checkpoint : checkpoints) {
+    if (is_zero_prefix_hash(checkpoint.prefix_hash)) {
+      continue;
+    }
+    checkpoint_hashes.emplace_back(checkpoint.prefix_hash.data());
+  }
+  return checkpoint_hashes;
+}
+
 void record_linear_state_checkpoint_hashes(
     xllm::BlockManagerPool* block_manager_pool,
     int32_t dp_rank,
@@ -189,27 +202,21 @@ void sync_linear_state_checkpoint_hashes(
           output.linear_state_evicted_prefix_hashes));
   if (!reserved_save_handles.empty()) {
     std::vector<xllm::LinearStateCheckpointHandle> saved_handles;
-    if (!output.linear_state_saved_checkpoint_handles.empty()) {
-      saved_handles.reserve(
-          output.linear_state_saved_checkpoint_handles.size());
-      for (xllm::LinearStateCheckpointHandle checkpoint_handle :
-           output.linear_state_saved_checkpoint_handles) {
-        if (checkpoint_handle != xllm::kInvalidLinearStateCheckpointHandle) {
-          saved_handles.emplace_back(checkpoint_handle);
-        }
-      }
-    } else {
-      saved_handles.reserve(output.linear_state_saved_prefix_hashes.size());
-      for (const LinearStatePrefixHash& prefix_hash :
-           output.linear_state_saved_prefix_hashes) {
-        if (is_zero_prefix_hash(prefix_hash)) {
-          continue;
-        }
-        const xllm::XXH3Key checkpoint_hash(prefix_hash.data());
+    saved_handles.reserve(output.linear_state_saved_checkpoints.size());
+    for (const xllm::LinearStateCacheCheckpoint& checkpoint :
+         output.linear_state_saved_checkpoints) {
+      xllm::LinearStateCheckpointHandle checkpoint_handle =
+          checkpoint.checkpoint_handle;
+      if (checkpoint_handle == xllm::kInvalidLinearStateCheckpointHandle &&
+          !is_zero_prefix_hash(checkpoint.prefix_hash)) {
+        const xllm::XXH3Key checkpoint_hash(checkpoint.prefix_hash.data());
         auto handle_it = reserved_save_handles.find(checkpoint_hash);
         if (handle_it != reserved_save_handles.end()) {
-          saved_handles.emplace_back(handle_it->second);
+          checkpoint_handle = handle_it->second;
         }
+      }
+      if (checkpoint_handle != xllm::kInvalidLinearStateCheckpointHandle) {
+        saved_handles.emplace_back(checkpoint_handle);
       }
     }
     block_manager_pool->commit_linear_state_checkpoint_handles(dp_rank,
@@ -227,8 +234,7 @@ void sync_linear_state_checkpoint_hashes(
   record_linear_state_checkpoint_hashes(
       block_manager_pool,
       dp_rank,
-      to_linear_state_checkpoint_hashes(
-          output.linear_state_saved_prefix_hashes));
+      to_linear_state_checkpoint_hashes(output.linear_state_saved_checkpoints));
 }
 
 int64_t get_kv_cache_dtype_size_in_bytes(const std::string& kv_cache_dtype,

@@ -241,8 +241,7 @@ class WorkerImpl {
   };
 
   struct LinearStateSnapshotUpdate {
-    std::vector<LinearStatePrefixHash> saved_prefix_hashes;
-    std::vector<LinearStateCheckpointHandle> saved_checkpoint_handles;
+    std::vector<LinearStateCacheCheckpoint> saved_checkpoints;
     std::vector<LinearStatePrefixHash> evicted_prefix_hashes;
   };
 

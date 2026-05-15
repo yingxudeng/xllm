@@ -62,6 +62,23 @@ LinearStateCacheOp make_linear_state_cache_op(int32_t linear_state_id,
   op.save_checkpoint_handle = save_handle;
   return op;
 }
+
+LinearStateCacheCheckpoint make_linear_state_checkpoint(
+    uint8_t base,
+    int64_t checkpoint_handle) {
+  LinearStateCacheCheckpoint checkpoint;
+  checkpoint.prefix_hash = make_linear_state_prefix_hash(base);
+  checkpoint.checkpoint_handle = checkpoint_handle;
+  return checkpoint;
+}
+
+void expect_linear_state_checkpoint_eq(
+    const LinearStateCacheCheckpoint& checkpoint,
+    const LinearStatePrefixHash& prefix_hash,
+    int64_t checkpoint_handle) {
+  EXPECT_EQ(checkpoint.prefix_hash, prefix_hash);
+  EXPECT_EQ(checkpoint.checkpoint_handle, checkpoint_handle);
+}
 }  // namespace
 
 template <typename T>
@@ -581,12 +598,6 @@ TEST(BatchTest, ProtoRoundTripPreservesAndDefaultsLinearStateMetadata) {
   raw_input.block_tables_vec = {{0}, {0}};
   raw_input.num_sequences = 2;
   raw_input.linear_state_ids = {7, 9};
-  const std::vector<LinearStatePrefixHash> restore_prefix_hashes = {
-      make_linear_state_prefix_hash(/*base=*/1),
-      make_linear_state_prefix_hash(/*base=*/17)};
-  const std::vector<LinearStatePrefixHash> save_prefix_hashes = {
-      make_linear_state_prefix_hash(/*base=*/33),
-      make_linear_state_prefix_hash(/*base=*/49)};
   raw_input.linear_state_cache_ops = {
       make_linear_state_cache_op(/*linear_state_id=*/7,
                                  "request-0",
@@ -621,9 +632,9 @@ TEST(BatchTest, ProtoRoundTripPreservesAndDefaultsLinearStateMetadata) {
             "request-0");
   EXPECT_EQ(
       round_trip.input_params.linear_state_cache_ops[0].restore_prefix_hash,
-      restore_prefix_hashes[0]);
+      make_linear_state_prefix_hash(/*base=*/1));
   EXPECT_EQ(round_trip.input_params.linear_state_cache_ops[0].save_prefix_hash,
-            save_prefix_hashes[0]);
+            make_linear_state_prefix_hash(/*base=*/33));
   EXPECT_EQ(round_trip.input_params.linear_state_cache_ops[0]
                 .restore_checkpoint_handle,
             7001);
@@ -633,64 +644,42 @@ TEST(BatchTest, ProtoRoundTripPreservesAndDefaultsLinearStateMetadata) {
   EXPECT_EQ(round_trip.input_params.linear_state_evict_prefix_hashes,
             evict_prefix_hashes);
 
-  proto::ForwardInput legacy_field_pb = pb_forward_input;
-  legacy_field_pb.clear_linear_state_cache_ops();
-
-  ForwardInput legacy_field_round_trip;
-  proto_to_forward_input(&legacy_field_pb,
-                         legacy_field_round_trip,
-                         /*num_decoding_tokens=*/1);
-  EXPECT_EQ(legacy_field_round_trip.input_params.linear_state_ids,
-            std::vector<int32_t>({7, 9}));
-  EXPECT_EQ(legacy_field_round_trip.input_params.linear_state_cache_ops.size(),
-            2u);
+  EXPECT_EQ(pb_forward_input.linear_state_cache_input().ops_size(), 2);
   EXPECT_EQ(
-      legacy_field_round_trip.input_params.linear_state_cache_ops[0].request_id,
-      "request-0");
-  EXPECT_EQ(legacy_field_round_trip.input_params.linear_state_cache_ops[0]
-                .restore_prefix_hash,
-            restore_prefix_hashes[0]);
-  EXPECT_EQ(legacy_field_round_trip.input_params.linear_state_cache_ops[0]
-                .save_prefix_hash,
-            save_prefix_hashes[0]);
-  EXPECT_EQ(legacy_field_round_trip.input_params.linear_state_cache_ops[0]
-                .restore_checkpoint_handle,
-            kInvalidLinearStateCheckpointHandle);
-  EXPECT_EQ(legacy_field_round_trip.input_params.linear_state_cache_ops[0]
-                .save_checkpoint_handle,
-            kInvalidLinearStateCheckpointHandle);
+      pb_forward_input.linear_state_cache_input().evict_prefix_hashes_size(),
+      1);
+  EXPECT_EQ(
+      pb_forward_input.linear_state_cache_input().evict_prefix_hashes(0),
+      std::string(reinterpret_cast<const char*>(evict_prefix_hashes[0].data()),
+                  evict_prefix_hashes[0].size()));
 
-  proto::ForwardInput legacy_pb = pb_forward_input;
-  legacy_pb.clear_linear_state_ids();
-  legacy_pb.clear_linear_state_request_ids();
-  legacy_pb.clear_linear_state_prefix_hashes();
-  legacy_pb.clear_linear_state_save_prefix_hashes();
-  legacy_pb.clear_linear_state_cache_ops();
-  legacy_pb.clear_linear_state_evict_prefix_hashes();
+  proto::ForwardInput empty_cache_pb = pb_forward_input;
+  empty_cache_pb.clear_linear_state_cache_input();
 
-  ForwardInput legacy_round_trip;
-  proto_to_forward_input(&legacy_pb,
-                         legacy_round_trip,
+  ForwardInput default_round_trip;
+  proto_to_forward_input(&empty_cache_pb,
+                         default_round_trip,
                          /*num_decoding_tokens=*/1);
-  EXPECT_EQ(legacy_round_trip.input_params.linear_state_ids,
+  EXPECT_EQ(default_round_trip.input_params.linear_state_ids,
             std::vector<int32_t>({-1, -1}));
-  EXPECT_EQ(legacy_round_trip.input_params.linear_state_cache_ops.size(), 2u);
+  EXPECT_EQ(default_round_trip.input_params.linear_state_cache_ops.size(), 2u);
   EXPECT_EQ(
-      legacy_round_trip.input_params.linear_state_cache_ops[0].linear_state_id,
+      default_round_trip.input_params.linear_state_cache_ops[0].linear_state_id,
       -1);
-  EXPECT_EQ(legacy_round_trip.input_params.linear_state_cache_ops[0].request_id,
-            "fallback-0");
-  EXPECT_EQ(legacy_round_trip.input_params.linear_state_cache_ops[0]
+  EXPECT_EQ(
+      default_round_trip.input_params.linear_state_cache_ops[0].request_id,
+      "fallback-0");
+  EXPECT_EQ(default_round_trip.input_params.linear_state_cache_ops[0]
                 .restore_prefix_hash,
             LinearStatePrefixHash{});
-  EXPECT_EQ(legacy_round_trip.input_params.linear_state_cache_ops[0]
+  EXPECT_EQ(default_round_trip.input_params.linear_state_cache_ops[0]
                 .restore_checkpoint_handle,
             kInvalidLinearStateCheckpointHandle);
-  EXPECT_EQ(legacy_round_trip.input_params.linear_state_cache_ops[0]
+  EXPECT_EQ(default_round_trip.input_params.linear_state_cache_ops[0]
                 .save_checkpoint_handle,
             kInvalidLinearStateCheckpointHandle);
   EXPECT_TRUE(
-      legacy_round_trip.input_params.linear_state_evict_prefix_hashes.empty());
+      default_round_trip.input_params.linear_state_evict_prefix_hashes.empty());
 }
 
 TEST(BatchTest, SharedMemoryRoundTripPreservesAndDefaultsLinearStateMetadata) {
@@ -794,11 +783,11 @@ TEST(BatchTest, SharedMemoryRoundTripPreservesAndDefaultsLinearStateMetadata) {
 }
 
 TEST(BatchTest, ProtoRoundTripPreservesLinearStateSavedCheckpointHandles) {
-  const std::vector<LinearStatePrefixHash> saved_prefix_hashes = {
-      make_linear_state_prefix_hash(/*base=*/11),
-      make_linear_state_prefix_hash(/*base=*/31)};
-  const std::vector<LinearStateCheckpointHandle> saved_checkpoint_handles = {
-      1101, kInvalidLinearStateCheckpointHandle};
+  const std::vector<LinearStateCacheCheckpoint> saved_checkpoints = {
+      make_linear_state_checkpoint(/*base=*/11, /*checkpoint_handle=*/1101),
+      make_linear_state_checkpoint(
+          /*base=*/31,
+          /*checkpoint_handle=*/kInvalidLinearStateCheckpointHandle)};
   const std::vector<LinearStatePrefixHash> evicted_prefix_hashes = {
       make_linear_state_prefix_hash(/*base=*/51)};
 
@@ -814,27 +803,29 @@ TEST(BatchTest, ProtoRoundTripPreservesLinearStateSavedCheckpointHandles) {
                           torch::Tensor(),
                           torch::Tensor(),
                           {},
-                          saved_prefix_hashes,
-                          saved_checkpoint_handles,
+                          saved_checkpoints,
                           evicted_prefix_hashes,
                           &pb_output);
 
   RawForwardOutput round_trip;
   proto_to_forward_output(pb_output, round_trip);
-  EXPECT_EQ(round_trip.linear_state_saved_prefix_hashes, saved_prefix_hashes);
-  EXPECT_EQ(round_trip.linear_state_saved_checkpoint_handles,
-            saved_checkpoint_handles);
+  ASSERT_EQ(round_trip.linear_state_saved_checkpoints.size(),
+            saved_checkpoints.size());
+  for (size_t i = 0; i < saved_checkpoints.size(); ++i) {
+    expect_linear_state_checkpoint_eq(
+        round_trip.linear_state_saved_checkpoints[i],
+        saved_checkpoints[i].prefix_hash,
+        saved_checkpoints[i].checkpoint_handle);
+  }
   EXPECT_EQ(round_trip.linear_state_evicted_prefix_hashes,
             evicted_prefix_hashes);
 }
 
 TEST(BatchTest,
      SharedMemoryRoundTripPreservesLinearStateSavedCheckpointHandles) {
-  const std::vector<LinearStatePrefixHash> saved_prefix_hashes = {
-      make_linear_state_prefix_hash(/*base=*/13),
-      make_linear_state_prefix_hash(/*base=*/37)};
-  const std::vector<LinearStateCheckpointHandle> saved_checkpoint_handles = {
-      1301, 3701};
+  const std::vector<LinearStateCacheCheckpoint> saved_checkpoints = {
+      make_linear_state_checkpoint(/*base=*/13, /*checkpoint_handle=*/1301),
+      make_linear_state_checkpoint(/*base=*/37, /*checkpoint_handle=*/3701)};
   const std::vector<LinearStatePrefixHash> evicted_prefix_hashes = {
       make_linear_state_prefix_hash(/*base=*/61)};
 
@@ -862,15 +853,19 @@ TEST(BatchTest,
                                               torch::Tensor(),
                                               torch::Tensor(),
                                               torch::Tensor(),
-                                              saved_prefix_hashes,
-                                              saved_checkpoint_handles,
+                                              saved_checkpoints,
                                               evicted_prefix_hashes));
 
   RawForwardOutput round_trip;
   reader_manager.raw_output_read(round_trip);
-  EXPECT_EQ(round_trip.linear_state_saved_prefix_hashes, saved_prefix_hashes);
-  EXPECT_EQ(round_trip.linear_state_saved_checkpoint_handles,
-            saved_checkpoint_handles);
+  ASSERT_EQ(round_trip.linear_state_saved_checkpoints.size(),
+            saved_checkpoints.size());
+  for (size_t i = 0; i < saved_checkpoints.size(); ++i) {
+    expect_linear_state_checkpoint_eq(
+        round_trip.linear_state_saved_checkpoints[i],
+        saved_checkpoints[i].prefix_hash,
+        saved_checkpoints[i].checkpoint_handle);
+  }
   EXPECT_EQ(round_trip.linear_state_evicted_prefix_hashes,
             evicted_prefix_hashes);
 }

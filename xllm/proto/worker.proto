@@ -291,12 +291,7 @@ message ForwardInput {
   repeated int32 kv_cache_tokens_nums = 43;
   repeated string request_ids = 44;
   DiTForwardInput dit_forward_input = 45;
-  repeated int32 linear_state_ids = 46;
-  repeated string linear_state_request_ids = 47;
-  repeated bytes linear_state_prefix_hashes = 48;
-  repeated bytes linear_state_save_prefix_hashes = 49;
-  repeated bytes linear_state_evict_prefix_hashes = 50;
-  repeated LinearStateCacheOp linear_state_cache_ops = 51;
+  LinearStateCacheInput linear_state_cache_input = 46;
 }
 
 message LinearStateCacheOp {
@@ -304,8 +299,23 @@ message LinearStateCacheOp {
   string request_id = 2;
   bytes restore_prefix_hash = 3;
   bytes save_prefix_hash = 4;
-  optional int64 restore_checkpoint_handle = 5;
-  optional int64 save_checkpoint_handle = 6;
+  int64 restore_checkpoint_handle = 5;
+  int64 save_checkpoint_handle = 6;
+}
+
+message LinearStateCacheInput {
+  repeated LinearStateCacheOp ops = 1;
+  repeated bytes evict_prefix_hashes = 2;
+}
+
+message LinearStateCacheCheckpoint {
+  bytes prefix_hash = 1;
+  int64 checkpoint_handle = 2;
+}
+
+message LinearStateCacheOutput {
+  repeated LinearStateCacheCheckpoint saved_checkpoints = 1;
+  repeated bytes evicted_prefix_hashes = 2;
 }
 
  message BatchedForwardInputs {
@@ -339,9 +349,7 @@ message ForwardOutput {
   repeated int32 out_tokens = 6;
   repeated float out_logprobs = 7;
   DiTForwardOutput dit_forward_output = 8;
-  repeated bytes linear_state_saved_prefix_hashes = 9;
-  repeated bytes linear_state_evicted_prefix_hashes = 10;
-  repeated int64 linear_state_saved_checkpoint_handles = 11;
+  LinearStateCacheOutput linear_state_cache_output = 9;
 }
 
 // master create Collective service

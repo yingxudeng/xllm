@@ -339,15 +339,22 @@ struct BlockTransferInfo {
 
 using LinearStateCheckpointHandle = int64_t;
 constexpr LinearStateCheckpointHandle kInvalidLinearStateCheckpointHandle = -1;
+using LinearStatePrefixHash = std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>;
 
 struct LinearStateCacheOp {
   int32_t linear_state_id = -1;
   std::string request_id;
-  std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN> restore_prefix_hash{};
-  std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN> save_prefix_hash{};
+  LinearStatePrefixHash restore_prefix_hash{};
+  LinearStatePrefixHash save_prefix_hash{};
   LinearStateCheckpointHandle restore_checkpoint_handle =
       kInvalidLinearStateCheckpointHandle;
   LinearStateCheckpointHandle save_checkpoint_handle =
+      kInvalidLinearStateCheckpointHandle;
+};
+
+struct LinearStateCacheCheckpoint {
+  LinearStatePrefixHash prefix_hash{};
+  LinearStateCheckpointHandle checkpoint_handle =
       kInvalidLinearStateCheckpointHandle;
 };
 
@@ -588,11 +595,9 @@ struct ModelInputParams {
   std::vector<int32_t> linear_state_ids;
 
   // Prefix hashes evicted from KV prefix cache before this forward.
-  std::vector<std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>>
-      linear_state_evict_prefix_hashes;
+  std::vector<LinearStatePrefixHash> linear_state_evict_prefix_hashes;
 
-  // Structured per-row linear-state cache operations. Legacy transport fields
-  // are derived from this at serialization boundaries.
+  // Structured per-row linear-state cache operations.
   std::vector<LinearStateCacheOp> linear_state_cache_ops;
 
   // IntTensor: [n_seq]
