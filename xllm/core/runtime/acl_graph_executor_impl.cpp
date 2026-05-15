@@ -48,6 +48,8 @@ limitations under the License.
 namespace xllm::npu {
 
 namespace {
+constexpr int32_t kPaddingLinearStateId = 0;
+
 std::pair<torch::Tensor, torch::Tensor> find_attention_plan_kv_cache(
     const std::vector<KVCache>& kv_caches) {
   for (const auto& cache : kv_caches) {
@@ -263,12 +265,11 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
               /*non_blocking=*/true);
     }
     if (padded_num_tokens > actual_batch_size) {
-      const int32_t padding_linear_state_id = options_.max_seqs_per_batch() + 1;
       persistent_linear_state_indices_
           .slice(/*dim=*/0,
                  /*start=*/actual_batch_size,
                  /*end=*/padded_num_tokens)
-          .fill_(padding_linear_state_id);
+          .fill_(kPaddingLinearStateId);
     }
   }
 
@@ -363,9 +364,8 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
         persistent_block_tables(padded_num_tokens);
     if (!params.linear_state_ids.empty()) {
       params_for_capture->linear_state_ids = params.linear_state_ids;
-      const int32_t padding_linear_state_id = options_.max_seqs_per_batch() + 1;
       params_for_capture->linear_state_ids.resize(padded_num_tokens,
-                                                  padding_linear_state_id);
+                                                  kPaddingLinearStateId);
       params_for_capture->linear_state_indices =
           persistent_linear_state_indices(padded_num_tokens);
     }

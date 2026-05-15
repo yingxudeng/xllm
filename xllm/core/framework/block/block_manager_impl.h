@@ -24,7 +24,8 @@ namespace xllm {
 class BlockManagerImpl : public BlockManager {
  public:
   explicit BlockManagerImpl(const Options& options);
-  virtual ~BlockManagerImpl() {
+  ~BlockManagerImpl() override {
+    prefix_cache_.reset();
     CHECK_EQ(num_free_blocks_, free_blocks_.size() - 1)
         << "Not all blocks have been freed";
   };
@@ -47,6 +48,7 @@ class BlockManagerImpl : public BlockManager {
   void cache(const std::vector<Block>& blocks) override;
 
   void get_merged_kvcache_event(KvCacheEvent* event) const override;
+  std::vector<XXH3Key> drain_linear_state_evictions() override;
 
   size_t num_blocks_in_prefix_cache() const override {
     if (options_.enable_prefix_cache()) {
@@ -89,6 +91,11 @@ class BlockManagerImpl : public BlockManager {
   // total blocks num
   size_t num_total_blocks() const override { return free_blocks_.size() - 1; }
 
+  void set_linear_state_flag(const XXH3Key& prefix_hash, bool value) override;
+  bool has_linear_state(const XXH3Key& prefix_hash) const override;
+  void clear_linear_state_flags(
+      const std::vector<XXH3Key>& prefix_hashes) override;
+
  private:
   // check if has enough slots, if not, try to evict some blocks
   // from the prefix cache
@@ -112,6 +119,8 @@ class BlockManagerImpl : public BlockManager {
 
   // free block list
   std::vector<int32_t> free_blocks_;
+
+  std::vector<XXH3Key> pending_linear_state_evictions_;
 };
 
 }  // namespace xllm

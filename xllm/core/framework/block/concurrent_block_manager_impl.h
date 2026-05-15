@@ -50,6 +50,11 @@ class ConcurrentBlockManagerImpl : public BlockManagerImpl {
   // get the block utilization.
   double kv_cache_utilization() const override;
 
+  void set_linear_state_flag(const XXH3Key& prefix_hash, bool value) override;
+  bool has_linear_state(const XXH3Key& prefix_hash) const override;
+  void clear_linear_state_flags(
+      const std::vector<XXH3Key>& prefix_hashes) override;
+
  private:
   // mutex for disagg prefill/decode mode
   mutable std::mutex mutex_;

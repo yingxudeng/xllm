@@ -67,6 +67,8 @@ class BlockManager {
   // get merged all dp rank KVCacheEvent
   virtual void get_merged_kvcache_event(KvCacheEvent* event) const = 0;
 
+  virtual std::vector<XXH3Key> drain_linear_state_evictions() { return {}; }
+
   virtual size_t num_blocks_in_prefix_cache() const = 0;
   virtual size_t num_free_blocks() const = 0;
   virtual size_t num_used_blocks() const = 0;
@@ -89,6 +91,14 @@ class BlockManager {
 
   // get number of total blocks
   virtual size_t num_total_blocks() const = 0;
+
+  virtual void set_linear_state_flag(const XXH3Key& /*prefix_hash*/,
+                                     bool /*value*/) {}
+  virtual bool has_linear_state(const XXH3Key& /*prefix_hash*/) const {
+    return false;
+  }
+  virtual void clear_linear_state_flags(
+      const std::vector<XXH3Key>& /*prefix_hashes*/) {}
 
  protected:
   // the options for the block manager

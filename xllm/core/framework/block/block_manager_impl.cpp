@@ -17,6 +17,7 @@ limitations under the License.
 #include "block_manager_impl.h"
 
 #include <unordered_set>
+#include <utility>
 
 #include "framework/prefix_cache/prefix_cache_factory.h"
 namespace xllm {
@@ -102,11 +103,18 @@ bool BlockManagerImpl::has_enough_blocks(uint32_t num_blocks) {
     return false;
   }
 
-  // try to evict some blocks from the prefix cache
   const uint32_t n_blocks_to_evict = num_blocks - num_free_blocks_;
 
   AUTO_COUNTER(prefix_cache_latency_seconds_evict);
-  const uint32_t n_blocks_evicted = prefix_cache_->evict(n_blocks_to_evict);
+  std::vector<XXH3Key> linear_state_evict_keys;
+  const uint32_t n_blocks_evicted =
+      prefix_cache_->evict(n_blocks_to_evict, &linear_state_evict_keys);
+  if (!linear_state_evict_keys.empty()) {
+    pending_linear_state_evictions_.insert(
+        pending_linear_state_evictions_.end(),
+        linear_state_evict_keys.begin(),
+        linear_state_evict_keys.end());
+  }
   if (n_blocks_evicted < n_blocks_to_evict) {
     return false;
   }
@@ -135,6 +143,8 @@ std::vector<Block> BlockManagerImpl::allocate_shared(
         shared_blocks.empty() ? 0
                               : shared_blocks.size() * shared_blocks[0].size();
     COUNTER_ADD(prefix_cache_match_length_total, prefix_length);
+    VLOG(1) << "Prefix cache matched " << shared_blocks.size()
+            << " blocks, prefix_length=" << prefix_length;
 
     // update effective block usage
     for (const auto& block : shared_blocks) {
@@ -175,6 +185,10 @@ void BlockManagerImpl::get_merged_kvcache_event(KvCacheEvent* event) const {
   }
 }
 
+std::vector<XXH3Key> BlockManagerImpl::drain_linear_state_evictions() {
+  return std::exchange(pending_linear_state_evictions_, {});
+}
+
 // allocate a block id
 Block BlockManagerImpl::allocate() {
   CHECK(num_free_blocks_ > 0) << "No more blocks available";
@@ -191,6 +205,29 @@ void BlockManagerImpl::free(int32_t block_id) {
         num_free_blocks_.fetch_add(1, std::memory_order_relaxed);
     CHECK(prev_count < free_blocks_.size());
     free_blocks_[prev_count] = block_id;
+  }
+}
+
+void BlockManagerImpl::set_linear_state_flag(const XXH3Key& prefix_hash,
+                                             bool value) {
+  if (prefix_cache_) {
+    prefix_cache_->set_linear_state_flag(prefix_hash, value);
+  }
+}
+
+bool BlockManagerImpl::has_linear_state(const XXH3Key& prefix_hash) const {
+  if (prefix_cache_) {
+    return prefix_cache_->has_linear_state(prefix_hash);
+  }
+  return false;
+}
+
+void BlockManagerImpl::clear_linear_state_flags(
+    const std::vector<XXH3Key>& prefix_hashes) {
+  if (prefix_cache_) {
+    for (const auto& hash : prefix_hashes) {
+      prefix_cache_->set_linear_state_flag(hash, false);
+    }
   }
 }
 

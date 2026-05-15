@@ -22,6 +22,7 @@ limitations under the License.
 
 #include <iostream>
 #include <thread>
+#include <vector>
 
 #include "common/global_flags.h"
 #include "common/metrics.h"
@@ -39,19 +40,20 @@ void xxh3_128bits_hash(const uint8_t* pre_hash_value,
     memcpy(
         hash_value, &xxh3_128bits_hash_value, sizeof(xxh3_128bits_hash_value));
   } else {
-    uint8_t key[1024];
-
-    int32_t data_len =
+    const size_t data_len =
         sizeof(int32_t) * token_ids.size() + XXH3_128BITS_HASH_VALUE_LEN;
-    CHECK_GT(sizeof(key), data_len) << "key size is too small";
+    thread_local std::vector<uint8_t> key;
+    key.resize(data_len);
 
-    memcpy(key, pre_hash_value, XXH3_128BITS_HASH_VALUE_LEN);
-    memcpy(key + XXH3_128BITS_HASH_VALUE_LEN,
+    memcpy(key.data(), pre_hash_value, XXH3_128BITS_HASH_VALUE_LEN);
+    memcpy(key.data() + XXH3_128BITS_HASH_VALUE_LEN,
            reinterpret_cast<const void*>(token_ids.data()),
            sizeof(int32_t) * token_ids.size());
 
-    XXH128_hash_t xxh3_128bits_hash_value = XXH3_128bits_withSeed(
-        reinterpret_cast<const void*>(key), data_len, FLAGS_xxh3_128bits_seed);
+    XXH128_hash_t xxh3_128bits_hash_value =
+        XXH3_128bits_withSeed(reinterpret_cast<const void*>(key.data()),
+                              data_len,
+                              FLAGS_xxh3_128bits_seed);
     memcpy(
         hash_value, &xxh3_128bits_hash_value, sizeof(xxh3_128bits_hash_value));
   }
@@ -139,7 +141,13 @@ size_t PrefixCache::insert(Slice<Block>& blocks) {
 
 size_t PrefixCache::evict(size_t n_blocks) {
   std::vector<XXH3Key> evict_keys;
-  return evict(n_blocks, &evict_keys);
+  return evict(n_blocks, &evict_keys, /*linear_state_evict_keys=*/nullptr);
+}
+
+size_t PrefixCache::evict(size_t n_blocks,
+                          std::vector<XXH3Key>* linear_state_evict_keys) {
+  std::vector<XXH3Key> evict_keys;
+  return evict(n_blocks, &evict_keys, linear_state_evict_keys);
 }
 
 size_t PrefixCache::insert(const Slice<int32_t>& token_ids,
@@ -253,7 +261,9 @@ size_t PrefixCache::insert(Slice<Block>& blocks,
   return blocks.size() * block_size_;
 }
 
-size_t PrefixCache::evict(size_t n_blocks, std::vector<XXH3Key>* evict_keys) {
+size_t PrefixCache::evict(size_t n_blocks,
+                          std::vector<XXH3Key>* evict_keys,
+                          std::vector<XXH3Key>* linear_state_evict_keys) {
   if (num_blocks_ == 0 || lru_lst_.is_empty()) {
     return 0;
   }
@@ -266,9 +276,8 @@ size_t PrefixCache::evict(size_t n_blocks, std::vector<XXH3Key>* evict_keys) {
       break;
     }
 
-    if (iter_node->block.is_shared()) {  // in use
+    if (iter_node->block.is_shared()) {
       iter_node = iter_node->next;
-
       continue;
     }
 
@@ -277,6 +286,10 @@ size_t PrefixCache::evict(size_t n_blocks, std::vector<XXH3Key>* evict_keys) {
     iter_node = lru_lst_.remove_node(del_node);
 
     XXH3Key token_hash_key(del_node->block.get_immutable_hash_value());
+
+    if (linear_state_evict_keys != nullptr && del_node->has_linear_state) {
+      linear_state_evict_keys->emplace_back(token_hash_key);
+    }
 
     cached_blocks_.erase(token_hash_key);
 
@@ -288,6 +301,19 @@ size_t PrefixCache::evict(size_t n_blocks, std::vector<XXH3Key>* evict_keys) {
   }
 
   return evict_count;
+}
+
+void PrefixCache::set_linear_state_flag(const XXH3Key& prefix_hash,
+                                        bool value) {
+  auto it = cached_blocks_.find(prefix_hash);
+  if (it != cached_blocks_.end()) {
+    it->second->has_linear_state = value;
+  }
+}
+
+bool PrefixCache::has_linear_state(const XXH3Key& prefix_hash) const {
+  auto it = cached_blocks_.find(prefix_hash);
+  return it != cached_blocks_.end() && it->second->has_linear_state;
 }
 
 uint32_t PrefixCache::compute_hash_keys(const Slice<int32_t>& token_ids,

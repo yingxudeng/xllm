@@ -365,4 +365,18 @@ void HierarchyBlockManagerPool::get_merged_kvcache_event(
   }
 }
 
+std::vector<PrefixHash>
+HierarchyBlockManagerPool::drain_linear_state_evictions() {
+  if (host_block_managers_.empty()) {
+    return BlockManagerPool::drain_linear_state_evictions();
+  }
+  std::vector<PrefixHash> result;
+  for (auto& mgr : host_block_managers_) {
+    for (const XXH3Key& key : mgr->drain_linear_state_evictions()) {
+      result.emplace_back(to_prefix_hash(key));
+    }
+  }
+  return result;
+}
+
 }  // namespace xllm

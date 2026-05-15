@@ -64,4 +64,23 @@ double ConcurrentBlockManagerImpl::kv_cache_utilization() const {
   return BlockManagerImpl::kv_cache_utilization();
 }
 
+void ConcurrentBlockManagerImpl::set_linear_state_flag(
+    const XXH3Key& prefix_hash,
+    bool value) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  BlockManagerImpl::set_linear_state_flag(prefix_hash, value);
+}
+
+bool ConcurrentBlockManagerImpl::has_linear_state(
+    const XXH3Key& prefix_hash) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return BlockManagerImpl::has_linear_state(prefix_hash);
+}
+
+void ConcurrentBlockManagerImpl::clear_linear_state_flags(
+    const std::vector<XXH3Key>& prefix_hashes) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  BlockManagerImpl::clear_linear_state_flags(prefix_hashes);
+}
+
 }  // namespace xllm
