@@ -104,12 +104,6 @@ class BatchInputBuilder {
     // Additional data
     std::vector<int32_t> embedding_ids;
     std::vector<int32_t> linear_state_ids;
-    std::vector<std::string> linear_state_request_ids;
-    // linear-attention prefix boundary hashes, aligned with linear_state_ids.
-    std::vector<std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>>
-        linear_state_prefix_hashes;
-    std::vector<std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>>
-        linear_state_save_prefix_hashes;
     std::vector<LinearStateCacheOp> linear_state_cache_ops;
     std::vector<std::string> request_ids;
     std::vector<int32_t> extra_token_ids;

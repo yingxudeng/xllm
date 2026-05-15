@@ -316,18 +316,6 @@ void BatchInputBuilder::process_sequences_multithreaded() {
     state_.linear_state_ids.insert(state_.linear_state_ids.end(),
                                    state.linear_state_ids.begin(),
                                    state.linear_state_ids.end());
-    state_.linear_state_request_ids.insert(
-        state_.linear_state_request_ids.end(),
-        state.linear_state_request_ids.begin(),
-        state.linear_state_request_ids.end());
-    state_.linear_state_prefix_hashes.insert(
-        state_.linear_state_prefix_hashes.end(),
-        state.linear_state_prefix_hashes.begin(),
-        state.linear_state_prefix_hashes.end());
-    state_.linear_state_save_prefix_hashes.insert(
-        state_.linear_state_save_prefix_hashes.end(),
-        state.linear_state_save_prefix_hashes.begin(),
-        state.linear_state_save_prefix_hashes.end());
     state_.linear_state_cache_ops.insert(state_.linear_state_cache_ops.end(),
                                          state.linear_state_cache_ops.begin(),
                                          state.linear_state_cache_ops.end());
@@ -492,18 +480,13 @@ void BatchInputBuilder::extract_tokens_and_positions(Sequence* sequence,
   // `linear_state_ids` is sequence-scoped metadata and must stay aligned with
   // logical batch rows even for non-terminal chunked-prefill slices.
   state.linear_state_ids.emplace_back(sequence->get_single_block_id());
-  state.linear_state_request_ids.emplace_back(sequence->request_id());
-  state.linear_state_prefix_hashes.emplace_back(
-      get_prefix_boundary_hash(sequence, n_kv_cache_tokens));
-  state.linear_state_save_prefix_hashes.emplace_back(
-      compute_prefix_boundary_hash(sequence, seq_len));
   LinearStateCacheOp linear_state_cache_op;
   linear_state_cache_op.linear_state_id = state.linear_state_ids.back();
-  linear_state_cache_op.request_id = state.linear_state_request_ids.back();
+  linear_state_cache_op.request_id = sequence->request_id();
   linear_state_cache_op.restore_prefix_hash =
-      state.linear_state_prefix_hashes.back();
+      get_prefix_boundary_hash(sequence, n_kv_cache_tokens);
   linear_state_cache_op.save_prefix_hash =
-      state.linear_state_save_prefix_hashes.back();
+      compute_prefix_boundary_hash(sequence, seq_len);
   state.linear_state_cache_ops.emplace_back(std::move(linear_state_cache_op));
 
   // Add extra token id
@@ -660,13 +643,8 @@ ForwardInput BatchInputBuilder::state_to_forward_input() {
 
   input_params.embedding_ids = std::move(state_.embedding_ids);
   input_params.linear_state_ids = std::move(state_.linear_state_ids);
-  input_params.linear_state_request_ids =
-      std::move(state_.linear_state_request_ids);
-  input_params.linear_state_prefix_hashes =
-      std::move(state_.linear_state_prefix_hashes);
-  input_params.linear_state_save_prefix_hashes =
-      std::move(state_.linear_state_save_prefix_hashes);
-  input_params.linear_state_cache_ops = std::move(state_.linear_state_cache_ops);
+  input_params.linear_state_cache_ops =
+      std::move(state_.linear_state_cache_ops);
   if (!input_params.linear_state_ids.empty()) {
     input_params.linear_state_indices =
         torch::tensor(input_params.linear_state_ids, torch::kInt);
@@ -752,12 +730,6 @@ RawForwardInput BatchInputBuilder::state_to_raw_forward_input() {
 
   raw_forward_input.embedding_ids = std::move(state_.embedding_ids);
   raw_forward_input.linear_state_ids = std::move(state_.linear_state_ids);
-  raw_forward_input.linear_state_request_ids =
-      std::move(state_.linear_state_request_ids);
-  raw_forward_input.linear_state_prefix_hashes =
-      std::move(state_.linear_state_prefix_hashes);
-  raw_forward_input.linear_state_save_prefix_hashes =
-      std::move(state_.linear_state_save_prefix_hashes);
   raw_forward_input.linear_state_cache_ops =
       std::move(state_.linear_state_cache_ops);
   raw_forward_input.request_ids = std::move(state_.request_ids);
