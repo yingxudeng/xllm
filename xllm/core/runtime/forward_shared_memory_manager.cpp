@@ -2131,21 +2131,24 @@ inline void deserialize_raw_forward_input(const char*& buffer,
   read_vector(context, input_params.linear_state_ids);
   normalize_linear_state_ids(input_params.linear_state_ids,
                              input_params.num_sequences);
-  read_string_vector(context, input_params.linear_state_request_ids);
-  read_vector(context, input_params.linear_state_prefix_hashes);
-  read_vector(context, input_params.linear_state_save_prefix_hashes);
+  std::vector<std::string> linear_state_request_ids;
+  std::vector<LinearStatePrefixHash> linear_state_prefix_hashes;
+  std::vector<LinearStatePrefixHash> linear_state_save_prefix_hashes;
+  read_string_vector(context, linear_state_request_ids);
+  read_vector(context, linear_state_prefix_hashes);
+  read_vector(context, linear_state_save_prefix_hashes);
   read_vector(context, input_params.linear_state_evict_prefix_hashes);
   read_linear_state_cache_ops(context, input_params.linear_state_cache_ops);
   read_string_vector(context, input_params.request_ids);
   normalize_linear_state_metadata(input_params.linear_state_ids,
                                   input_params.request_ids,
-                                  input_params.linear_state_request_ids,
-                                  input_params.linear_state_prefix_hashes,
-                                  input_params.linear_state_save_prefix_hashes);
+                                  linear_state_request_ids,
+                                  linear_state_prefix_hashes,
+                                  linear_state_save_prefix_hashes);
   sync_linear_state_cache_ops(input_params.linear_state_ids,
-                              input_params.linear_state_request_ids,
-                              input_params.linear_state_prefix_hashes,
-                              input_params.linear_state_save_prefix_hashes,
+                              linear_state_request_ids,
+                              linear_state_prefix_hashes,
+                              linear_state_save_prefix_hashes,
                               input_params.linear_state_cache_ops);
   read_vector(context, input_params.extra_token_ids);
   read_swap_blocks(context, input_params.swap_blocks);
@@ -2253,21 +2256,22 @@ inline void serialize_raw_forward_input_sections(
   write_vector(context.descriptor, input.dp_is_decode);
   write_vector(context.descriptor, input.embedding_ids);
   std::vector<int32_t> linear_state_ids = input.linear_state_ids;
-  std::vector<std::string> linear_state_request_ids =
-      input.linear_state_request_ids;
-  std::vector<LinearStatePrefixHash> linear_state_prefix_hashes =
-      input.linear_state_prefix_hashes;
-  std::vector<LinearStatePrefixHash> linear_state_save_prefix_hashes =
-      input.linear_state_save_prefix_hashes;
+  normalize_linear_state_ids(linear_state_ids, input.num_sequences);
+  std::vector<std::string> linear_state_request_ids;
+  std::vector<LinearStatePrefixHash> linear_state_prefix_hashes;
+  std::vector<LinearStatePrefixHash> linear_state_save_prefix_hashes;
   std::vector<LinearStateCacheOp> linear_state_cache_ops =
       input.linear_state_cache_ops;
-  if (!linear_state_cache_ops.empty()) {
-    sync_linear_state_cache_ops(linear_state_ids,
-                                linear_state_request_ids,
-                                linear_state_prefix_hashes,
-                                linear_state_save_prefix_hashes,
-                                linear_state_cache_ops);
-  }
+  normalize_linear_state_metadata(linear_state_ids,
+                                  input.request_ids,
+                                  linear_state_request_ids,
+                                  linear_state_prefix_hashes,
+                                  linear_state_save_prefix_hashes);
+  sync_linear_state_cache_ops(linear_state_ids,
+                              linear_state_request_ids,
+                              linear_state_prefix_hashes,
+                              linear_state_save_prefix_hashes,
+                              linear_state_cache_ops);
   write_vector(context.descriptor, linear_state_ids);
   write_string_vector(context.descriptor, linear_state_request_ids);
   write_vector(context.descriptor, linear_state_prefix_hashes);
@@ -2529,12 +2533,6 @@ void convert_raw_forward_input_to_forward_input(RawForwardInput& raw_input,
   input_params.q_max_seq_len = raw_input.q_max_seq_len;
   input_params.embedding_ids = std::move(raw_input.embedding_ids);
   input_params.linear_state_ids = std::move(raw_input.linear_state_ids);
-  input_params.linear_state_request_ids =
-      std::move(raw_input.linear_state_request_ids);
-  input_params.linear_state_prefix_hashes =
-      std::move(raw_input.linear_state_prefix_hashes);
-  input_params.linear_state_save_prefix_hashes =
-      std::move(raw_input.linear_state_save_prefix_hashes);
   input_params.linear_state_evict_prefix_hashes =
       std::move(raw_input.linear_state_evict_prefix_hashes);
   input_params.linear_state_cache_ops =
@@ -2542,15 +2540,18 @@ void convert_raw_forward_input_to_forward_input(RawForwardInput& raw_input,
   input_params.request_ids = std::move(raw_input.request_ids);
   normalize_linear_state_ids(input_params.linear_state_ids,
                              input_params.num_sequences);
+  std::vector<std::string> linear_state_request_ids;
+  std::vector<LinearStatePrefixHash> linear_state_prefix_hashes;
+  std::vector<LinearStatePrefixHash> linear_state_save_prefix_hashes;
   normalize_linear_state_metadata(input_params.linear_state_ids,
                                   input_params.request_ids,
-                                  input_params.linear_state_request_ids,
-                                  input_params.linear_state_prefix_hashes,
-                                  input_params.linear_state_save_prefix_hashes);
+                                  linear_state_request_ids,
+                                  linear_state_prefix_hashes,
+                                  linear_state_save_prefix_hashes);
   sync_linear_state_cache_ops(input_params.linear_state_ids,
-                              input_params.linear_state_request_ids,
-                              input_params.linear_state_prefix_hashes,
-                              input_params.linear_state_save_prefix_hashes,
+                              linear_state_request_ids,
+                              linear_state_prefix_hashes,
+                              linear_state_save_prefix_hashes,
                               input_params.linear_state_cache_ops);
   input_params.dp_global_token_nums = std::move(raw_input.dp_global_token_nums);
   input_params.dp_is_decode = std::move(raw_input.dp_is_decode);

@@ -422,11 +422,6 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
   input_params.dp_is_decode = std::move(dp_is_decode);
   input_params.embedding_ids = std::move(embedding_ids);
   input_params.linear_state_ids = std::move(linear_state_ids);
-  input_params.linear_state_request_ids = std::move(linear_state_request_ids);
-  input_params.linear_state_prefix_hashes =
-      std::move(linear_state_prefix_hashes);
-  input_params.linear_state_save_prefix_hashes =
-      std::move(linear_state_save_prefix_hashes);
   input_params.linear_state_evict_prefix_hashes =
       std::move(linear_state_evict_prefix_hashes);
   input_params.linear_state_cache_ops = std::move(linear_state_cache_ops);
@@ -712,21 +707,22 @@ void forward_input_to_proto(const RawForwardInput& inputs,
   }
 
   std::vector<int32_t> linear_state_ids = inputs.linear_state_ids;
-  std::vector<std::string> linear_state_request_ids =
-      inputs.linear_state_request_ids;
-  std::vector<LinearStatePrefixHash> linear_state_prefix_hashes =
-      inputs.linear_state_prefix_hashes;
-  std::vector<LinearStatePrefixHash> linear_state_save_prefix_hashes =
-      inputs.linear_state_save_prefix_hashes;
+  normalize_linear_state_ids(linear_state_ids, inputs.num_sequences);
+  std::vector<std::string> linear_state_request_ids;
+  std::vector<LinearStatePrefixHash> linear_state_prefix_hashes;
+  std::vector<LinearStatePrefixHash> linear_state_save_prefix_hashes;
   std::vector<LinearStateCacheOp> linear_state_cache_ops =
       inputs.linear_state_cache_ops;
-  if (!linear_state_cache_ops.empty()) {
-    sync_linear_state_cache_ops(linear_state_ids,
-                                linear_state_request_ids,
-                                linear_state_prefix_hashes,
-                                linear_state_save_prefix_hashes,
-                                linear_state_cache_ops);
-  }
+  normalize_linear_state_metadata(linear_state_ids,
+                                  inputs.request_ids,
+                                  linear_state_request_ids,
+                                  linear_state_prefix_hashes,
+                                  linear_state_save_prefix_hashes);
+  sync_linear_state_cache_ops(linear_state_ids,
+                              linear_state_request_ids,
+                              linear_state_prefix_hashes,
+                              linear_state_save_prefix_hashes,
+                              linear_state_cache_ops);
   ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_embedding_ids(),
                       inputs.embedding_ids);
   ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_linear_state_ids(),

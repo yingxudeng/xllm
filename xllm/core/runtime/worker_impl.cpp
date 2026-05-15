@@ -612,37 +612,22 @@ WorkerImpl::restore_linear_state_snapshots(ModelInputParams& input_params) {
   std::vector<LinearStatePrefixHash> restored_prefix_hashes;
   const std::vector<LinearStateCacheOp>& cache_ops =
       input_params.linear_state_cache_ops;
-  if (cache_ops.empty() && input_params.linear_state_ids.empty()) {
+  if (cache_ops.empty()) {
     return restored_prefix_hashes;
   }
 
-  if (cache_ops.empty()) {
-    CHECK_EQ(input_params.linear_state_ids.size(),
-             input_params.linear_state_request_ids.size());
-    CHECK_EQ(input_params.linear_state_ids.size(),
-             input_params.linear_state_prefix_hashes.size());
-  }
-
-  CHECK_EQ(input_params.has_initial_state.size(),
-           cache_ops.empty() ? input_params.linear_state_ids.size()
-                             : cache_ops.size())
+  CHECK_EQ(input_params.has_initial_state.size(), cache_ops.size())
       << "has_initial_state must be initialized before linear state restore.";
-  const size_t num_ops = cache_ops.empty()
-                             ? input_params.linear_state_ids.size()
-                             : cache_ops.size();
-  restored_prefix_hashes.reserve(num_ops);
+  restored_prefix_hashes.reserve(cache_ops.size());
   std::lock_guard<std::mutex> lock(linear_state_snapshots_mutex_);
-  for (size_t i = 0; i < num_ops; ++i) {
-    const int32_t linear_state_id = cache_ops.empty()
-                                        ? input_params.linear_state_ids[i]
-                                        : cache_ops[i].linear_state_id;
+  for (size_t i = 0; i < cache_ops.size(); ++i) {
+    const LinearStateCacheOp& cache_op = cache_ops[i];
+    const int32_t linear_state_id = cache_op.linear_state_id;
     if (linear_state_id < 0) {
       continue;
     }
 
-    const std::string& request_id =
-        cache_ops.empty() ? input_params.linear_state_request_ids[i]
-                          : cache_ops[i].request_id;
+    const std::string& request_id = cache_op.request_id;
     auto active_it = active_linear_state_requests_.find(linear_state_id);
     if (!request_id.empty() &&
         active_it != active_linear_state_requests_.end() &&
@@ -652,11 +637,9 @@ WorkerImpl::restore_linear_state_snapshots(ModelInputParams& input_params) {
     }
 
     const LinearStatePrefixHash& requested_restore_prefix_hash =
-        cache_ops.empty() ? input_params.linear_state_prefix_hashes[i]
-                          : cache_ops[i].restore_prefix_hash;
+        cache_op.restore_prefix_hash;
     const LinearStateCheckpointHandle restore_checkpoint_handle =
-        cache_ops.empty() ? kInvalidLinearStateCheckpointHandle
-                          : cache_ops[i].restore_checkpoint_handle;
+        cache_op.restore_checkpoint_handle;
     LinearStatePrefixHash restore_prefix_hash = requested_restore_prefix_hash;
     if (restore_checkpoint_handle != kInvalidLinearStateCheckpointHandle) {
       std::optional<LinearStatePrefixHash> handle_prefix_hash =
@@ -745,14 +728,10 @@ WorkerImpl::LinearStateSnapshotUpdate WorkerImpl::save_linear_state_snapshots(
   if (!FLAGS_enable_prefix_cache) {
     return update;
   }
-  if (cache_ops.empty() && input_params.linear_state_ids.empty()) {
+  if (cache_ops.empty()) {
     return update;
   }
 
-  if (cache_ops.empty()) {
-    CHECK_EQ(input_params.linear_state_ids.size(),
-             input_params.linear_state_save_prefix_hashes.size());
-  }
 #if defined(USE_NPU)
   std::optional<std::unique_lock<std::mutex>> capture_lock_guard;
   if (FLAGS_enable_graph) {
@@ -762,23 +741,15 @@ WorkerImpl::LinearStateSnapshotUpdate WorkerImpl::save_linear_state_snapshots(
     capture_lock_guard.emplace(capture_lock);
   }
 #endif
-  const size_t num_ops = cache_ops.empty()
-                             ? input_params.linear_state_ids.size()
-                             : cache_ops.size();
   std::lock_guard<std::mutex> lock(linear_state_snapshots_mutex_);
-  for (size_t i = 0; i < num_ops; ++i) {
-    const LinearStatePrefixHash& save_prefix_hash =
-        cache_ops.empty() ? input_params.linear_state_save_prefix_hashes[i]
-                          : cache_ops[i].save_prefix_hash;
+  for (const LinearStateCacheOp& cache_op : cache_ops) {
+    const LinearStatePrefixHash& save_prefix_hash = cache_op.save_prefix_hash;
     if (is_zero_prefix_hash(save_prefix_hash)) {
       continue;
     }
-    const int32_t linear_state_id = cache_ops.empty()
-                                        ? input_params.linear_state_ids[i]
-                                        : cache_ops[i].linear_state_id;
+    const int32_t linear_state_id = cache_op.linear_state_id;
     const LinearStateCheckpointHandle save_checkpoint_handle =
-        cache_ops.empty() ? kInvalidLinearStateCheckpointHandle
-                          : cache_ops[i].save_checkpoint_handle;
+        cache_op.save_checkpoint_handle;
     if (save_linear_state_snapshot(save_prefix_hash,
                                    linear_state_id,
                                    save_checkpoint_handle,

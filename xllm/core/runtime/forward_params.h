@@ -255,11 +255,6 @@ struct RawForwardInput {
   std::vector<int> embedding_ids;
   // linear state ids of each sequence
   std::vector<int> linear_state_ids;
-  std::vector<std::string> linear_state_request_ids;
-  std::vector<std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>>
-      linear_state_prefix_hashes;
-  std::vector<std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>>
-      linear_state_save_prefix_hashes;
   std::vector<std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>>
       linear_state_evict_prefix_hashes;
   std::vector<LinearStateCacheOp> linear_state_cache_ops;

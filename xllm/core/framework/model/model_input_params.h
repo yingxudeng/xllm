@@ -380,10 +380,7 @@ struct ModelInputParams {
     params.dp_is_decode = dp_is_decode;
     params.embedding_ids = std::move(embedding_ids);
     params.linear_state_ids = std::move(linear_state_ids);
-    params.linear_state_request_ids = std::move(linear_state_request_ids);
     params.linear_state_indices = safe_to(linear_state_indices, device, true);
-    params.linear_state_prefix_hashes = linear_state_prefix_hashes;
-    params.linear_state_save_prefix_hashes = linear_state_save_prefix_hashes;
     params.linear_state_evict_prefix_hashes = linear_state_evict_prefix_hashes;
     params.linear_state_cache_ops = linear_state_cache_ops;
     params.request_ids = std::move(request_ids);
@@ -590,23 +587,12 @@ struct ModelInputParams {
   // linear state ids of each sequence
   std::vector<int32_t> linear_state_ids;
 
-  // Request ids aligned with linear_state_ids, used for in-flight state reuse.
-  std::vector<std::string> linear_state_request_ids;
-
-  // Prefix hash for the cached KV boundary of each linear-attention row.
-  std::vector<std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>>
-      linear_state_prefix_hashes;
-
-  // Prefix hash for the post-forward block boundary of each row.
-  std::vector<std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>>
-      linear_state_save_prefix_hashes;
-
   // Prefix hashes evicted from KV prefix cache before this forward.
   std::vector<std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>>
       linear_state_evict_prefix_hashes;
 
-  // Structured per-row linear-state cache operations. This is the preferred
-  // internal form; legacy vectors above stay populated for compatibility.
+  // Structured per-row linear-state cache operations. Legacy transport fields
+  // are derived from this at serialization boundaries.
   std::vector<LinearStateCacheOp> linear_state_cache_ops;
 
   // IntTensor: [n_seq]
