@@ -272,6 +272,11 @@ void XTensorBlockManagerImpl::get_merged_kvcache_event(
   }
 }
 
+void XTensorBlockManagerImpl::drain_prefix_cache_event(
+    KvCacheEvent* /*event*/) const {
+  // Prefix cache not supported.
+}
+
 size_t XTensorBlockManagerImpl::num_free_blocks() const {
   return available_size();
 }

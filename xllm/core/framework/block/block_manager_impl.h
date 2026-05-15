@@ -24,7 +24,8 @@ namespace xllm {
 class BlockManagerImpl : public BlockManager {
  public:
   explicit BlockManagerImpl(const Options& options);
-  virtual ~BlockManagerImpl() {
+  ~BlockManagerImpl() override {
+    prefix_cache_.reset();
     CHECK_EQ(num_free_blocks_, free_blocks_.size() - 1)
         << "Not all blocks have been freed";
   };
@@ -47,6 +48,7 @@ class BlockManagerImpl : public BlockManager {
   void cache(const std::vector<Block>& blocks) override;
 
   void get_merged_kvcache_event(KvCacheEvent* event) const override;
+  void drain_prefix_cache_event(KvCacheEvent* event) const override;
 
   size_t num_blocks_in_prefix_cache() const override {
     if (options_.enable_prefix_cache()) {

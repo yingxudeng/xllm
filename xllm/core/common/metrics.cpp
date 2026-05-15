@@ -105,6 +105,10 @@ DEFINE_GAUGE(num_blocks_in_prefix_cache,
              "Number of blocks in the prefix cache");
 DEFINE_GAUGE(num_free_blocks, "Number of free blocks in the block allocator");
 DEFINE_GAUGE(num_used_blocks, "Effective number of blocks in use");
+DEFINE_GAUGE(num_free_single_blocks,
+             "Number of free single blocks for linear state cache");
+DEFINE_GAUGE(num_total_single_blocks,
+             "Number of total single blocks for linear state cache");
 
 DEFINE_COUNTER(scheduling_latency_seconds, "Latency of scheduling in seconds");
 

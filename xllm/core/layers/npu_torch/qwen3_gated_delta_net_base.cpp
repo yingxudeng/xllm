@@ -372,9 +372,14 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
   auto linear_state_indices = get_linear_state_indices(input_params, device);
   torch::IntArrayRef num_accepted_tokens_opt;
   torch::IntArrayRef has_initial_state;
-  std::vector<int64_t> linear_state_indices_vec(
-      input_params.linear_state_ids.begin(),
-      input_params.linear_state_ids.end());
+  std::vector<int64_t> fallback_linear_state_indices;
+  const std::vector<int64_t>* linear_state_indices_host =
+      &input_params.linear_state_indices_host;
+  if (input_params.linear_state_indices_host.empty()) {
+    fallback_linear_state_indices.assign(input_params.linear_state_ids.begin(),
+                                         input_params.linear_state_ids.end());
+    linear_state_indices_host = &fallback_linear_state_indices;
+  }
   int64_t run_mode = 1;
   if (is_any_prefill) {
     run_mode = 0;
@@ -387,29 +392,31 @@ torch::Tensor Qwen3GatedDeltaNetBaseImpl::forward(
   // padding entries, since input_params.query_start_loc only covers actual
   // requests.
   torch::Tensor mixed_qkv_input = mixed_qkv;
-  std::vector<int64_t> query_start_loc_decode;
   if (!is_any_prefill && mixed_qkv.dim() == 3) {
     int64_t num_tokens = batch_size * seq_len;
     mixed_qkv_input = mixed_qkv.view({num_tokens, mixed_qkv.size(-1)});
-
-    query_start_loc_decode.reserve(num_tokens + 1);
-    for (int64_t i = 0; i <= num_tokens; ++i) {
-      query_start_loc_decode.push_back(i);
-    }
   }
 
-  const std::vector<int64_t>& query_start_loc_to_use =
-      !is_any_prefill && !query_start_loc_decode.empty()
-          ? query_start_loc_decode
-          : input_params.query_start_loc;
+  std::vector<int64_t> fallback_query_start_loc;
+  const std::vector<int64_t>* query_start_loc_to_use =
+      &input_params.query_start_loc;
+  const int64_t num_tokens = batch_size * seq_len;
+  if (!is_any_prefill &&
+      query_start_loc_to_use->size() != static_cast<size_t>(num_tokens + 1)) {
+    fallback_query_start_loc.reserve(num_tokens + 1);
+    for (int64_t i = 0; i <= num_tokens; ++i) {
+      fallback_query_start_loc.push_back(i);
+    }
+    query_start_loc_to_use = &fallback_query_start_loc;
+  }
 
   mixed_qkv = xllm::kernel::causal_conv1d(
       mixed_qkv_input,
       conv_weight,
       conv_cache,
       std::optional<torch::Tensor>(),  // bias (no bias for qwen3)
-      torch::IntArrayRef(query_start_loc_to_use),
-      torch::IntArrayRef(linear_state_indices_vec),
+      torch::IntArrayRef(*query_start_loc_to_use),
+      torch::IntArrayRef(*linear_state_indices_host),
       has_initial_state,
       num_accepted_tokens_opt,
       1,        // activation_mode

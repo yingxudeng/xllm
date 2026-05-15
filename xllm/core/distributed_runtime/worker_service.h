@@ -141,19 +141,23 @@ class WorkerService : public proto::DistributeWorker {
               ::google::protobuf::Closure* done) override;
 
  private:
-  void step(ForwardInput& fwd_input,
-            torch::Tensor& next_tokens,
-            torch::Tensor& logprobs,
-            torch::Tensor& top_tokens,
-            torch::Tensor& top_logprobs,
-            torch::Tensor& embeddings,
-            std::vector<torch::Tensor>& mm_embeddings,
-            std::vector<torch::Tensor>& dit_images,
-            torch::Tensor& expert_load_data,
-            int32_t& prepared_layer_id,
-            torch::Tensor& src_seq_idxes,
-            torch::Tensor& out_tokens,
-            torch::Tensor& out_logprobs);
+  void step(
+      ForwardInput& fwd_input,
+      torch::Tensor& next_tokens,
+      torch::Tensor& logprobs,
+      torch::Tensor& top_tokens,
+      torch::Tensor& top_logprobs,
+      torch::Tensor& embeddings,
+      std::vector<torch::Tensor>& mm_embeddings,
+      std::vector<torch::Tensor>& dit_images,
+      torch::Tensor& expert_load_data,
+      int32_t& prepared_layer_id,
+      torch::Tensor& src_seq_idxes,
+      torch::Tensor& out_tokens,
+      torch::Tensor& out_logprobs,
+      std::vector<LinearStateCacheCheckpoint>& linear_state_saved_checkpoints,
+      std::vector<ForwardOutput::LinearStatePrefixHash>&
+          linear_state_evicted_prefix_hashes);
   DISALLOW_COPY_AND_ASSIGN(WorkerService);
 
  private:

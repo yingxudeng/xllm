@@ -18,6 +18,8 @@ limitations under the License.
 
 #include <torch/torch.h>
 
+#include <array>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -335,6 +337,27 @@ struct BlockTransferInfo {
   }
 };
 
+using LinearStateCheckpointHandle = int64_t;
+constexpr LinearStateCheckpointHandle kInvalidLinearStateCheckpointHandle = -1;
+using LinearStatePrefixHash = std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>;
+
+struct LinearStateCacheOp {
+  int32_t linear_state_id = -1;
+  std::string request_id;
+  LinearStatePrefixHash restore_prefix_hash{};
+  LinearStatePrefixHash save_prefix_hash{};
+  LinearStateCheckpointHandle restore_checkpoint_handle =
+      kInvalidLinearStateCheckpointHandle;
+  LinearStateCheckpointHandle save_checkpoint_handle =
+      kInvalidLinearStateCheckpointHandle;
+};
+
+struct LinearStateCacheCheckpoint {
+  LinearStatePrefixHash prefix_hash{};
+  LinearStateCheckpointHandle checkpoint_handle =
+      kInvalidLinearStateCheckpointHandle;
+};
+
 struct ModelInputParams {
   ModelInputParams to(const torch::Device& device) const {
     ModelInputParams params;
@@ -365,6 +388,8 @@ struct ModelInputParams {
     params.embedding_ids = std::move(embedding_ids);
     params.linear_state_ids = std::move(linear_state_ids);
     params.linear_state_indices = safe_to(linear_state_indices, device, true);
+    params.linear_state_evict_prefix_hashes = linear_state_evict_prefix_hashes;
+    params.linear_state_cache_ops = linear_state_cache_ops;
     params.request_ids = std::move(request_ids);
     params.extra_token_ids = std::move(extra_token_ids);
     params.dp_ep_padding_data = dp_ep_padding_data;
@@ -394,6 +419,11 @@ struct ModelInputParams {
     params.ring_cache_seqlen_host = ring_cache_seqlen_host;
 #if defined(USE_NPU) || defined(USE_MLU)
     params.layer_synchronizer = layer_synchronizer;
+#endif
+#if defined(USE_NPU)
+    params.query_start_loc = query_start_loc;
+    params.has_initial_state = has_initial_state;
+    params.linear_state_indices_host = linear_state_indices_host;
 #endif
     params.expert_load_data = expert_load_data;
     params.expert_array = expert_array;
@@ -564,6 +594,12 @@ struct ModelInputParams {
   // linear state ids of each sequence
   std::vector<int32_t> linear_state_ids;
 
+  // Prefix hashes evicted from KV prefix cache before this forward.
+  std::vector<LinearStatePrefixHash> linear_state_evict_prefix_hashes;
+
+  // Structured per-row linear-state cache operations.
+  std::vector<LinearStateCacheOp> linear_state_cache_ops;
+
   // IntTensor: [n_seq]
   torch::Tensor linear_state_indices;
 
@@ -601,6 +637,8 @@ struct ModelInputParams {
   std::vector<int64_t> query_start_loc;
   // if each sequencce has initial conv state, for conv1d
   std::vector<int64_t> has_initial_state;
+  // Stable int64 host linear state ids for kernels that take IntArrayRef.
+  std::vector<int64_t> linear_state_indices_host;
 #endif
 
   DpEpPaddingData dp_ep_padding_data;

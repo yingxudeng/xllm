@@ -22,10 +22,13 @@ limitations under the License.
 #include <glog/logging.h>
 
 #include <algorithm>
+#include <array>
 #include <boost/algorithm/string.hpp>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <memory>
+#include <unordered_map>
 
 #include "common/device_monitor.h"
 #include "common/global_flags.h"
@@ -34,6 +37,7 @@ limitations under the License.
 #include "common/options.h"
 #include "framework/block/hierarchy_block_manager_pool.h"
 #include "framework/kv_cache/kv_cache_shape.h"
+#include "framework/kv_cache/kv_cache_utils.h"
 #include "framework/model/model_args.h"
 #include "framework/model_loader.h"
 #include "framework/xtensor/page_allocator.h"
@@ -48,6 +52,191 @@ limitations under the License.
 #include "util/utils.h"
 
 namespace {
+using LinearStatePrefixHash =
+    std::array<uint8_t, xllm::XXH3_128BITS_HASH_VALUE_LEN>;
+using LinearStateSaveCheckpointMap =
+    std::unordered_map<xllm::XXH3Key,
+                       xllm::LinearStateCheckpointHandle,
+                       xllm::FixedStringKeyHash,
+                       xllm::FixedStringKeyEqual>;
+
+void append_removed_prefix_hashes(const xllm::KvCacheEvent& event,
+                                  std::vector<xllm::RawForwardInput>* inputs) {
+  if (event.removed_cache.empty() || inputs == nullptr) {
+    return;
+  }
+
+  std::vector<LinearStatePrefixHash> removed_prefix_hashes;
+  removed_prefix_hashes.reserve(event.removed_cache.size());
+  for (const xllm::XXH3Key& key : event.removed_cache) {
+    LinearStatePrefixHash hash{};
+    std::memcpy(hash.data(), key.data, xllm::XXH3_128BITS_HASH_VALUE_LEN);
+    removed_prefix_hashes.emplace_back(hash);
+  }
+
+  for (xllm::RawForwardInput& input : *inputs) {
+    input.linear_state_evict_prefix_hashes.insert(
+        input.linear_state_evict_prefix_hashes.end(),
+        removed_prefix_hashes.begin(),
+        removed_prefix_hashes.end());
+  }
+}
+
+bool is_zero_prefix_hash(const LinearStatePrefixHash& prefix_hash) {
+  return std::all_of(prefix_hash.begin(), prefix_hash.end(), [](uint8_t value) {
+    return value == 0;
+  });
+}
+
+std::vector<xllm::XXH3Key> to_linear_state_checkpoint_hashes(
+    const std::vector<LinearStatePrefixHash>& prefix_hashes) {
+  std::vector<xllm::XXH3Key> checkpoint_hashes;
+  checkpoint_hashes.reserve(prefix_hashes.size());
+  for (const auto& prefix_hash : prefix_hashes) {
+    if (is_zero_prefix_hash(prefix_hash)) {
+      continue;
+    }
+    checkpoint_hashes.emplace_back(prefix_hash.data());
+  }
+  return checkpoint_hashes;
+}
+
+std::vector<xllm::XXH3Key> to_linear_state_checkpoint_hashes(
+    const std::vector<xllm::LinearStateCacheCheckpoint>& checkpoints) {
+  std::vector<xllm::XXH3Key> checkpoint_hashes;
+  checkpoint_hashes.reserve(checkpoints.size());
+  for (const xllm::LinearStateCacheCheckpoint& checkpoint : checkpoints) {
+    if (is_zero_prefix_hash(checkpoint.prefix_hash)) {
+      continue;
+    }
+    checkpoint_hashes.emplace_back(checkpoint.prefix_hash.data());
+  }
+  return checkpoint_hashes;
+}
+
+void record_linear_state_checkpoint_hashes(
+    xllm::BlockManagerPool* block_manager_pool,
+    int32_t dp_rank,
+    const std::vector<xllm::XXH3Key>& checkpoint_hashes) {
+  if (block_manager_pool == nullptr || checkpoint_hashes.empty()) {
+    return;
+  }
+  block_manager_pool->record_linear_state_checkpoint_hashes(dp_rank,
+                                                            checkpoint_hashes);
+}
+
+LinearStateSaveCheckpointMap populate_linear_state_save_checkpoint_handles(
+    xllm::BlockManagerPool* block_manager_pool,
+    int32_t dp_rank,
+    xllm::RawForwardInput* input) {
+  LinearStateSaveCheckpointMap reserved_handles;
+  if (block_manager_pool == nullptr || input == nullptr ||
+      input->linear_state_cache_ops.empty()) {
+    return reserved_handles;
+  }
+
+  std::vector<xllm::XXH3Key> checkpoint_hashes;
+  checkpoint_hashes.reserve(input->linear_state_cache_ops.size());
+  for (const xllm::LinearStateCacheOp& op : input->linear_state_cache_ops) {
+    if (op.save_checkpoint_handle !=
+            xllm::kInvalidLinearStateCheckpointHandle ||
+        is_zero_prefix_hash(op.save_prefix_hash)) {
+      continue;
+    }
+    checkpoint_hashes.emplace_back(op.save_prefix_hash.data());
+  }
+  const std::vector<xllm::LinearStateCheckpointHandle> checkpoint_handles =
+      block_manager_pool->reserve_linear_state_checkpoints(dp_rank,
+                                                           checkpoint_hashes);
+  CHECK_EQ(checkpoint_handles.size(), checkpoint_hashes.size());
+
+  for (size_t i = 0; i < checkpoint_hashes.size(); ++i) {
+    reserved_handles.emplace(checkpoint_hashes[i], checkpoint_handles[i]);
+  }
+  for (xllm::LinearStateCacheOp& op : input->linear_state_cache_ops) {
+    if (op.save_checkpoint_handle !=
+            xllm::kInvalidLinearStateCheckpointHandle ||
+        is_zero_prefix_hash(op.save_prefix_hash)) {
+      continue;
+    }
+    const xllm::XXH3Key checkpoint_hash(op.save_prefix_hash.data());
+    auto handle_it = reserved_handles.find(checkpoint_hash);
+    CHECK(handle_it != reserved_handles.end());
+    op.save_checkpoint_handle = handle_it->second;
+  }
+  return reserved_handles;
+}
+
+void populate_linear_state_restore_checkpoint_handles(
+    xllm::BlockManagerPool* block_manager_pool,
+    int32_t dp_rank,
+    xllm::RawForwardInput* input) {
+  if (block_manager_pool == nullptr || input == nullptr ||
+      input->linear_state_cache_ops.empty()) {
+    return;
+  }
+  for (xllm::LinearStateCacheOp& op : input->linear_state_cache_ops) {
+    if (op.restore_checkpoint_handle !=
+            xllm::kInvalidLinearStateCheckpointHandle ||
+        is_zero_prefix_hash(op.restore_prefix_hash)) {
+      continue;
+    }
+    const xllm::XXH3Key checkpoint_hash(op.restore_prefix_hash.data());
+    op.restore_checkpoint_handle =
+        block_manager_pool->get_linear_state_checkpoint_handle(dp_rank,
+                                                               checkpoint_hash);
+  }
+}
+
+void sync_linear_state_checkpoint_hashes(
+    xllm::BlockManagerPool* block_manager_pool,
+    int32_t dp_rank,
+    const xllm::RawForwardOutput& output,
+    const LinearStateSaveCheckpointMap& reserved_save_handles = {}) {
+  if (block_manager_pool == nullptr) {
+    return;
+  }
+  block_manager_pool->prune_linear_state_checkpoint_hashes(
+      dp_rank,
+      to_linear_state_checkpoint_hashes(
+          output.linear_state_evicted_prefix_hashes));
+  if (!reserved_save_handles.empty()) {
+    std::vector<xllm::LinearStateCheckpointHandle> saved_handles;
+    saved_handles.reserve(output.linear_state_saved_checkpoints.size());
+    for (const xllm::LinearStateCacheCheckpoint& checkpoint :
+         output.linear_state_saved_checkpoints) {
+      xllm::LinearStateCheckpointHandle checkpoint_handle =
+          checkpoint.checkpoint_handle;
+      if (checkpoint_handle == xllm::kInvalidLinearStateCheckpointHandle &&
+          !is_zero_prefix_hash(checkpoint.prefix_hash)) {
+        const xllm::XXH3Key checkpoint_hash(checkpoint.prefix_hash.data());
+        auto handle_it = reserved_save_handles.find(checkpoint_hash);
+        if (handle_it != reserved_save_handles.end()) {
+          checkpoint_handle = handle_it->second;
+        }
+      }
+      if (checkpoint_handle != xllm::kInvalidLinearStateCheckpointHandle) {
+        saved_handles.emplace_back(checkpoint_handle);
+      }
+    }
+    block_manager_pool->commit_linear_state_checkpoint_handles(dp_rank,
+                                                               saved_handles);
+
+    std::vector<xllm::LinearStateCheckpointHandle> unsaved_handles;
+    unsaved_handles.reserve(reserved_save_handles.size());
+    for (const auto& reserved_save_handle : reserved_save_handles) {
+      unsaved_handles.emplace_back(reserved_save_handle.second);
+    }
+    block_manager_pool->discard_linear_state_checkpoint_handles(
+        dp_rank, unsaved_handles);
+    return;
+  }
+  record_linear_state_checkpoint_hashes(
+      block_manager_pool,
+      dp_rank,
+      to_linear_state_checkpoint_hashes(output.linear_state_saved_checkpoints));
+}
+
 int64_t get_kv_cache_dtype_size_in_bytes(const std::string& kv_cache_dtype,
                                          int64_t model_dtype_size) {
   if (kv_cache_dtype == "auto") {
@@ -528,7 +717,6 @@ KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
   }
 #endif
 
-  kv_cache_cap.num_linear_state_blocks() = FLAGS_max_concurrent_requests + 2;
   for (int64_t layer_id = 0; layer_id < kv_cache_cap.n_layers(); ++layer_id) {
     if (is_full_attention_layer(args_, layer_id)) {
       ++kv_cache_cap.num_full_attention_layers();
@@ -541,6 +729,13 @@ KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
   const int64_t block_size = kv_cache_cap.block_size();
   const int64_t block_size_in_bytes =
       block_size * (slot_size + index_slot_size + scale_slot_size);
+  kv_cache_cap.num_linear_state_blocks() =
+      calculate_linear_state_blocks(kv_cache_cap.cache_size_in_bytes(),
+                                    kv_cache_cap.num_linear_attention_layers(),
+                                    kv_cache_cap.linear_slot_size(),
+                                    kv_cache_cap.num_full_attention_layers(),
+                                    block_size_in_bytes,
+                                    options_.linear_state_cache_options());
   kv_cache_cap.linear_cache_size_in_bytes() =
       kv_cache_cap.num_linear_attention_layers() *
       kv_cache_cap.num_linear_state_blocks() * kv_cache_cap.linear_slot_size();
@@ -551,12 +746,8 @@ KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
     CHECK_GT(kv_cache_cap.cache_size_in_bytes(),
              kv_cache_cap.linear_cache_size_in_bytes())
         << "failed to reserve linear state cache for linear-attention layers: "
-        << "max_concurrent_requests (" << FLAGS_max_concurrent_requests
-        << ") is too large. Please reduce max_concurrent_requests to less than "
-        << kv_cache_cap.cache_size_in_bytes() /
-                   (kv_cache_cap.num_linear_attention_layers() *
-                    kv_cache_cap.linear_slot_size()) -
-               2;
+        << "max_linear_state_cache_slots "
+        << options_.linear_state_cache_options().max_linear_state_cache_slots();
   }
   CHECK_GT(available_full_cache_size_in_bytes, 0)
       << "no memory left for full-attention kv cache after reserving linear "
@@ -570,16 +761,25 @@ KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
 }
 
 bool LLMEngine::allocate_kv_cache(const KVCacheCapacity& kv_cache_cap) {
-  LOG(INFO) << "kv cache capacity: "
-            << readable_size(kv_cache_cap.cache_size_in_bytes())
-            << ", blocks: " << kv_cache_cap.n_blocks()
-            << ", slot_size: " << kv_cache_cap.slot_size()
-            << ", linear_slot_size: " << kv_cache_cap.linear_slot_size()
-            << ", linear_blocks: " << kv_cache_cap.num_linear_state_blocks()
-            << ", reserved_linear_bytes: "
-            << readable_size(kv_cache_cap.linear_cache_size_in_bytes())
-            << ", n_layers: " << kv_cache_cap.n_layers()
-            << ", kv_cache_dtype: " << options_.kv_cache_dtype();
+  LOG(INFO)
+      << "kv cache capacity: "
+      << readable_size(kv_cache_cap.cache_size_in_bytes())
+      << ", blocks: " << kv_cache_cap.n_blocks()
+      << ", slot_size: " << kv_cache_cap.slot_size()
+      << ", linear_slot_size: " << kv_cache_cap.linear_slot_size()
+      << ", linear_blocks: " << kv_cache_cap.num_linear_state_blocks()
+      << ", linear_state_slots: "
+      << (has_linear_attention_layers(args_)
+              ? calculate_linear_state_live_slots(
+                    kv_cache_cap.num_linear_state_blocks(),
+                    options_.max_seqs_per_batch())
+              : 0)
+      << ", max_linear_state_cache_slots: "
+      << options_.linear_state_cache_options().max_linear_state_cache_slots()
+      << ", reserved_linear_bytes: "
+      << readable_size(kv_cache_cap.linear_cache_size_in_bytes())
+      << ", n_layers: " << kv_cache_cap.n_layers()
+      << ", kv_cache_dtype: " << options_.kv_cache_dtype();
 
   CHECK_GT(kv_cache_cap.n_blocks(), 0) << "no memory for kv cache";
   const int32_t block_size = static_cast<int32_t>(kv_cache_cap.block_size());
@@ -605,6 +805,12 @@ bool LLMEngine::allocate_kv_cache(const KVCacheCapacity& kv_cache_cap) {
       .num_layers(args_.n_layers())
       .slot_size(kv_cache_cap.slot_size())
       .model_id(options_.model_id());
+  if (enable_gdn_attention) {
+    options.single_block_capacity(
+        static_cast<uint32_t>(calculate_linear_state_live_slots(
+            kv_cache_cap.num_linear_state_blocks(),
+            options_.max_seqs_per_batch())));
+  }
 
   if (options_.host_blocks_factor() > 1.0 || options_.enable_kvcache_store()) {
     kv_cache_manager_ =
@@ -997,6 +1203,14 @@ ForwardOutput LLMEngine::step(std::vector<Batch>& batch) {
   futures.reserve(worker_clients_num_);
 
   std::vector<std::vector<RawForwardInput>> cp_partitioned_inputs(dp_size_);
+  std::vector<LinearStateSaveCheckpointMap> reserved_save_handles(dp_size_);
+  if (!options_.enable_schedule_overlap()) {
+    for (int32_t dp_rank = 0; dp_rank < dp_size_; ++dp_rank) {
+      reserved_save_handles[dp_rank] =
+          populate_linear_state_save_checkpoint_handles(
+              block_manager_pool(), dp_rank, &raw_forward_inputs[dp_rank]);
+    }
+  }
 
   if (cp_size_ > 1) {
     for (int32_t dp_rank = 0; dp_rank < dp_size_; ++dp_rank) {
@@ -1044,6 +1258,10 @@ ForwardOutput LLMEngine::step(std::vector<Batch>& batch) {
       if (result.value().outputs.empty() && layer_forward_interrupted_) {
         throw ForwardInterruptedException();
       }
+      sync_linear_state_checkpoint_hashes(block_manager_pool(),
+                                          dp_rank,
+                                          result.value(),
+                                          reserved_save_handles[dp_rank]);
       // if src_seq_idxes is not empty, skip sample output processing and
       // process beam search output instead
       if (result.value().src_seq_idxes.size() == 0) {
@@ -1105,6 +1323,15 @@ void LLMEngine::update_last_step_result(std::vector<Batch>& last_batch) {
       raw_forward_outputs.emplace_back(std::move(result.value()));
     } else {
       LOG(FATAL) << "Failed to get last step results, result has no value";
+    }
+  }
+
+  if (options_.enable_schedule_overlap()) {
+    for (int32_t dp_rank = 0;
+         dp_rank < static_cast<int32_t>(raw_forward_outputs.size());
+         ++dp_rank) {
+      sync_linear_state_checkpoint_hashes(
+          block_manager_pool(), dp_rank, raw_forward_outputs[dp_rank]);
     }
   }
 
@@ -1211,6 +1438,16 @@ std::vector<RawForwardInput> LLMEngine::prepare_inputs(
     if (batched_inputs[dp_rank].batch_forward_type.is_empty()) {
       batched_inputs[dp_rank].batch_forward_type = batch_forward_type;
     }
+  }
+
+  KvCacheEvent prefix_cache_event;
+  block_manager_pool()->drain_prefix_cache_event(&prefix_cache_event);
+  block_manager_pool()->prune_linear_state_checkpoint_hashes(
+      prefix_cache_event);
+  append_removed_prefix_hashes(prefix_cache_event, &batched_inputs);
+  for (auto dp_rank = 0; dp_rank < dp_size_; ++dp_rank) {
+    populate_linear_state_restore_checkpoint_handles(
+        block_manager_pool(), dp_rank, &batched_inputs[dp_rank]);
   }
 
   return batched_inputs;

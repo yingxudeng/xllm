@@ -15,6 +15,7 @@ limitations under the License.
 
 #include <gflags/gflags.h>
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -51,6 +52,8 @@ namespace xllm {
 namespace {
 template <typename T>
 constexpr size_t type_size = sizeof(T);
+
+using LinearStatePrefixHash = std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>;
 
 constexpr size_t sampling_param_fixed_size() {
   return 5 * type_size<float>      // frequency_penalty, presence_penalty,
@@ -175,6 +178,48 @@ void normalize_linear_state_ids(std::vector<int32_t>& linear_state_ids,
   CHECK_EQ(linear_state_ids.size(), static_cast<size_t>(num_sequences))
       << "linear_state_ids size (" << linear_state_ids.size()
       << ") must match num_sequences (" << num_sequences << ")";
+}
+
+void normalize_linear_state_cache_ops(
+    std::vector<LinearStateCacheOp>& linear_state_cache_ops,
+    const std::vector<int32_t>& linear_state_ids,
+    const std::vector<std::string>& request_ids,
+    int32_t num_sequences) {
+  if (num_sequences <= 0) {
+    linear_state_cache_ops.clear();
+    return;
+  }
+  if (!linear_state_cache_ops.empty()) {
+    CHECK_EQ(linear_state_cache_ops.size(), static_cast<size_t>(num_sequences));
+    return;
+  }
+  linear_state_cache_ops.reserve(num_sequences);
+  for (int32_t i = 0; i < num_sequences; ++i) {
+    LinearStateCacheOp op;
+    if (!linear_state_ids.empty()) {
+      op.linear_state_id = linear_state_ids[i];
+    }
+    if (i < static_cast<int32_t>(request_ids.size())) {
+      op.request_id = request_ids[i];
+    }
+    linear_state_cache_ops.emplace_back(std::move(op));
+  }
+}
+
+void sync_linear_state_ids_from_cache_ops(
+    std::vector<int32_t>& linear_state_ids,
+    const std::vector<LinearStateCacheOp>& linear_state_cache_ops,
+    int32_t num_sequences) {
+  if (linear_state_cache_ops.empty()) {
+    normalize_linear_state_ids(linear_state_ids, num_sequences);
+    return;
+  }
+  CHECK_EQ(linear_state_cache_ops.size(), static_cast<size_t>(num_sequences));
+  linear_state_ids.resize(linear_state_cache_ops.size());
+  const size_t num_ops = linear_state_cache_ops.size();
+  for (size_t i = 0; i < num_ops; ++i) {
+    linear_state_ids[i] = linear_state_cache_ops[i].linear_state_id;
+  }
 }
 
 inline size_t get_instance_info_size(const InstanceInfo& info) {
@@ -424,6 +469,23 @@ inline void write_string_vector(RawInputSectionCursor& cursor,
   write_data(cursor, size);
   for (const auto& str : vec) {
     write_string(cursor, str);
+  }
+}
+
+inline void write_linear_state_cache_ops(
+    RawInputSectionCursor& cursor,
+    const std::vector<LinearStateCacheOp>& ops) {
+  const uint64_t size = ops.size();
+  write_data(cursor, size);
+  for (const LinearStateCacheOp& op : ops) {
+    write_data(cursor, op.linear_state_id);
+    write_string(cursor, op.request_id);
+    write_bytes(
+        cursor, op.restore_prefix_hash.data(), XXH3_128BITS_HASH_VALUE_LEN);
+    write_bytes(
+        cursor, op.save_prefix_hash.data(), XXH3_128BITS_HASH_VALUE_LEN);
+    write_data(cursor, op.restore_checkpoint_handle);
+    write_data(cursor, op.save_checkpoint_handle);
   }
 }
 
@@ -1162,6 +1224,27 @@ inline void read_string_vector(ReadContext& context,
   vec.resize(size);
   for (uint64_t i = 0; i < size; ++i) {
     read_string(context, vec[i]);
+  }
+}
+
+inline void read_linear_state_cache_ops(ReadContext& context,
+                                        std::vector<LinearStateCacheOp>& ops) {
+  uint64_t size;
+  read_data(context, size);
+  ops.resize(size);
+  for (uint64_t i = 0; i < size; ++i) {
+    read_data(context, ops[i].linear_state_id);
+    read_string(context, ops[i].request_id);
+    std::memcpy(ops[i].restore_prefix_hash.data(),
+                context.descriptor_cursor,
+                XXH3_128BITS_HASH_VALUE_LEN);
+    advance_descriptor_cursor(context, XXH3_128BITS_HASH_VALUE_LEN);
+    std::memcpy(ops[i].save_prefix_hash.data(),
+                context.descriptor_cursor,
+                XXH3_128BITS_HASH_VALUE_LEN);
+    advance_descriptor_cursor(context, XXH3_128BITS_HASH_VALUE_LEN);
+    read_data(context, ops[i].restore_checkpoint_handle);
+    read_data(context, ops[i].save_checkpoint_handle);
   }
 }
 
@@ -2026,7 +2109,16 @@ inline void deserialize_raw_forward_input(const char*& buffer,
   read_vector(context, input_params.linear_state_ids);
   normalize_linear_state_ids(input_params.linear_state_ids,
                              input_params.num_sequences);
+  read_vector(context, input_params.linear_state_evict_prefix_hashes);
+  read_linear_state_cache_ops(context, input_params.linear_state_cache_ops);
   read_string_vector(context, input_params.request_ids);
+  normalize_linear_state_cache_ops(input_params.linear_state_cache_ops,
+                                   input_params.linear_state_ids,
+                                   input_params.request_ids,
+                                   input_params.num_sequences);
+  sync_linear_state_ids_from_cache_ops(input_params.linear_state_ids,
+                                       input_params.linear_state_cache_ops,
+                                       input_params.num_sequences);
   read_vector(context, input_params.extra_token_ids);
   read_swap_blocks(context, input_params.swap_blocks);
   read_tensor(context, input_params.src_block_indices, stream);
@@ -2132,7 +2224,19 @@ inline void serialize_raw_forward_input_sections(
   write_vector(context.descriptor, input.dp_global_token_nums);
   write_vector(context.descriptor, input.dp_is_decode);
   write_vector(context.descriptor, input.embedding_ids);
-  write_vector(context.descriptor, input.linear_state_ids);
+  std::vector<int32_t> linear_state_ids = input.linear_state_ids;
+  normalize_linear_state_ids(linear_state_ids, input.num_sequences);
+  std::vector<LinearStateCacheOp> linear_state_cache_ops =
+      input.linear_state_cache_ops;
+  normalize_linear_state_cache_ops(linear_state_cache_ops,
+                                   linear_state_ids,
+                                   input.request_ids,
+                                   input.num_sequences);
+  sync_linear_state_ids_from_cache_ops(
+      linear_state_ids, linear_state_cache_ops, input.num_sequences);
+  write_vector(context.descriptor, linear_state_ids);
+  write_vector(context.descriptor, input.linear_state_evict_prefix_hashes);
+  write_linear_state_cache_ops(context.descriptor, linear_state_cache_ops);
   write_string_vector(context.descriptor, input.request_ids);
   write_vector(context.descriptor, input.extra_token_ids);
   write_swap_blocks(context, input.swap_blocks);
@@ -2265,6 +2369,8 @@ size_t calculate_raw_forward_output_size(const RawForwardOutput& output) {
   size += get_vector_size(output.src_seq_idxes);
   size += get_vector_size(output.out_tokens);
   size += get_vector_size(output.out_logprobs);
+  size += get_vector_size(output.linear_state_saved_checkpoints);
+  size += get_vector_size(output.linear_state_evicted_prefix_hashes);
   size += type_size<int32_t>;  // prepared_layer_id
   // dit output data
   size += get_dit_forward_output_size(output.dit_forward_output);
@@ -2332,6 +2438,9 @@ void deserialize_raw_forward_output(const char* buffer,
 
   read_data(buffer, output.prepared_layer_id);
 
+  read_vector(buffer, output.linear_state_saved_checkpoints);
+  read_vector(buffer, output.linear_state_evicted_prefix_hashes);
+
   read_vector_tensor(buffer, output.mm_embeddings);
   // read dit output
   read_dit_forward_output(buffer, output.dit_forward_output);
@@ -2347,6 +2456,9 @@ void serialize_raw_forward_output(const RawForwardOutput& output,
   write_vector(buffer, output.expert_load_data);
 
   write_data(buffer, output.prepared_layer_id);
+
+  write_vector(buffer, output.linear_state_saved_checkpoints);
+  write_vector(buffer, output.linear_state_evicted_prefix_hashes);
 
   write_vector_tensor(buffer, output.mm_embeddings);
   // write dit output
@@ -2377,7 +2489,20 @@ void convert_raw_forward_input_to_forward_input(RawForwardInput& raw_input,
   input_params.q_max_seq_len = raw_input.q_max_seq_len;
   input_params.embedding_ids = std::move(raw_input.embedding_ids);
   input_params.linear_state_ids = std::move(raw_input.linear_state_ids);
+  input_params.linear_state_evict_prefix_hashes =
+      std::move(raw_input.linear_state_evict_prefix_hashes);
+  input_params.linear_state_cache_ops =
+      std::move(raw_input.linear_state_cache_ops);
   input_params.request_ids = std::move(raw_input.request_ids);
+  normalize_linear_state_ids(input_params.linear_state_ids,
+                             input_params.num_sequences);
+  normalize_linear_state_cache_ops(input_params.linear_state_cache_ops,
+                                   input_params.linear_state_ids,
+                                   input_params.request_ids,
+                                   input_params.num_sequences);
+  sync_linear_state_ids_from_cache_ops(input_params.linear_state_ids,
+                                       input_params.linear_state_cache_ops,
+                                       input_params.num_sequences);
   input_params.dp_global_token_nums = std::move(raw_input.dp_global_token_nums);
   input_params.dp_is_decode = std::move(raw_input.dp_is_decode);
 
@@ -2390,6 +2515,7 @@ void convert_raw_forward_input_to_forward_input(RawForwardInput& raw_input,
 
   input_params.new_cache_slots =
       torch::tensor(std::move(raw_input.new_token_slot_ids), tensor_options);
+  input_params.kv_cache_tokens_nums_host = raw_input.kv_cache_tokens_nums;
   input_params.kv_cache_tokens_nums =
       torch::tensor(std::move(raw_input.kv_cache_tokens_nums), tensor_options);
 
@@ -2658,7 +2784,11 @@ bool ForwardSharedMemoryManager::raw_output_write(
     int32_t prepared_layer_id,
     const torch::Tensor& src_seq_idxes,
     const torch::Tensor& out_tokens,
-    const torch::Tensor& out_logprobs) {
+    const torch::Tensor& out_logprobs,
+    const std::vector<LinearStateCacheCheckpoint>&
+        linear_state_saved_checkpoints,
+    const std::vector<ForwardOutput::LinearStatePrefixHash>&
+        linear_state_evicted_prefix_hashes) {
   RawForwardOutput output;
   convert_tensor_to_raw_output(next_tokens,
                                logprobs,
@@ -2673,6 +2803,9 @@ bool ForwardSharedMemoryManager::raw_output_write(
                                out_tokens,
                                out_logprobs,
                                output);
+  output.linear_state_saved_checkpoints = linear_state_saved_checkpoints;
+  output.linear_state_evicted_prefix_hashes =
+      linear_state_evicted_prefix_hashes;
   uint64_t total_size = sizeof(ControlMetadata);
   total_size += calculate_raw_forward_output_size(output);
   if (unlikely(total_size > size())) {

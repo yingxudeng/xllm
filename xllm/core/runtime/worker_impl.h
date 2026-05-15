@@ -19,7 +19,11 @@ limitations under the License.
 #include <sys/mman.h>
 #include <torch/torch.h>
 
+#include <array>
+#include <list>
 #include <memory>
+#include <mutex>
+#include <unordered_map>
 
 #include "common/types.h"
 #include "executor.h"
@@ -40,6 +44,7 @@ limitations under the License.
 #include "framework/xtensor/xtensor.h"
 #include "options.h"
 #include "platform/device.h"
+#include "util/hash_util.h"
 #include "util/threadpool.h"
 #if defined(USE_NPU)
 #include "framework/kv_cache_transfer/mooncake_weight_transfer.h"
@@ -195,9 +200,16 @@ class WorkerImpl {
   }
 
  protected:
+  using LinearStatePrefixHash =
+      std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>;
+
   void update_last_step_output(const std::optional<ForwardOutput>& output);
   // Only used for deepseek chunked prefill ops on npu device
   void prepare_mla_prefixcache_inputs(ModelInputParams& input_params);
+
+  std::vector<LinearStatePrefixHash> restore_linear_state_snapshots(
+      ModelInputParams& input_params);
+  void prune_linear_state_snapshots(const ModelInputParams& input_params);
 
   void init_hierarchy_kv_cache_transfer();
 
@@ -206,6 +218,78 @@ class WorkerImpl {
   int64_t get_num_layers() const;
 
   bool wakeup_local(const WakeupOptions& options);
+
+  class LinearStatePrefixHashHasher {
+   public:
+    size_t operator()(const LinearStatePrefixHash& prefix_hash) const {
+      size_t hash = 0;
+      for (const uint8_t value : prefix_hash) {
+        hash = hash * 131 + value;
+      }
+      return hash;
+    }
+  };
+
+  class LinearStateSnapshot {
+   public:
+    int32_t checkpoint_slot_id = -1;
+    LinearStateCheckpointHandle checkpoint_handle =
+        kInvalidLinearStateCheckpointHandle;
+    int32_t ref_count = 0;
+    bool pending_delete = false;
+    size_t bytes = 0;
+  };
+
+  struct LinearStateSnapshotUpdate {
+    std::vector<LinearStateCacheCheckpoint> saved_checkpoints;
+    std::vector<LinearStatePrefixHash> evicted_prefix_hashes;
+  };
+
+  void initialize_linear_state_checkpoint_slots();
+  int32_t acquire_linear_state_checkpoint_slot(
+      const LinearStatePrefixHash& prefix_hash,
+      std::vector<LinearStatePrefixHash>* evicted_prefix_hashes);
+  void release_linear_state_checkpoint_slot(int32_t checkpoint_slot_id);
+  void release_linear_state_snapshot_refs(
+      const std::vector<LinearStatePrefixHash>& prefix_hashes);
+  void touch_linear_state_snapshot(const LinearStatePrefixHash& prefix_hash);
+  void erase_linear_state_snapshot_handle(
+      const LinearStatePrefixHash& prefix_hash,
+      const LinearStateSnapshot& snapshot);
+  void record_linear_state_snapshot_handle(
+      LinearStateCheckpointHandle checkpoint_handle,
+      const LinearStatePrefixHash& prefix_hash);
+  std::optional<LinearStatePrefixHash> get_linear_state_snapshot_prefix_hash(
+      LinearStateCheckpointHandle checkpoint_handle) const;
+  LinearStateSnapshotUpdate save_linear_state_snapshots(
+      const ModelInputParams& input_params);
+  bool save_linear_state_snapshot(
+      const LinearStatePrefixHash& prefix_hash,
+      int32_t linear_state_id,
+      LinearStateCheckpointHandle checkpoint_handle,
+      std::vector<LinearStatePrefixHash>* evicted_prefix_hashes);
+  bool restore_linear_state_snapshot(const LinearStatePrefixHash& prefix_hash,
+                                     int32_t linear_state_id);
+  static size_t tensor_bytes(const torch::Tensor& tensor);
+
+  std::mutex linear_state_snapshots_mutex_;
+  std::unordered_map<LinearStatePrefixHash,
+                     LinearStateSnapshot,
+                     LinearStatePrefixHashHasher>
+      linear_state_snapshots_;
+  std::list<LinearStatePrefixHash> linear_state_snapshot_lru_;
+  std::unordered_map<LinearStatePrefixHash,
+                     std::list<LinearStatePrefixHash>::iterator,
+                     LinearStatePrefixHashHasher>
+      linear_state_snapshot_lru_iters_;
+  std::unordered_map<LinearStateCheckpointHandle, LinearStatePrefixHash>
+      linear_state_snapshot_handles_;
+  std::vector<int32_t> free_linear_state_checkpoint_slots_;
+  std::vector<uint8_t> linear_state_checkpoint_slot_free_;
+  int32_t linear_state_live_slots_ = 0;
+  int32_t linear_state_checkpoint_slots_ = 0;
+  size_t linear_state_snapshot_bytes_ = 0;
+  std::unordered_map<int32_t, std::string> active_linear_state_requests_;
 
 #if defined(USE_CUDA)
   void refresh_cuda_block_copy_runtime_state();

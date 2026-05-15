@@ -67,6 +67,8 @@ class BlockManager {
   // get merged all dp rank KVCacheEvent
   virtual void get_merged_kvcache_event(KvCacheEvent* event) const = 0;
 
+  virtual void drain_prefix_cache_event(KvCacheEvent* event) const = 0;
+
   virtual size_t num_blocks_in_prefix_cache() const = 0;
   virtual size_t num_free_blocks() const = 0;
   virtual size_t num_used_blocks() const = 0;

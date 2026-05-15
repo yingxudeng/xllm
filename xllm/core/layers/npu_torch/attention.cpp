@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "attention.h"
 
+#include <glog/logging.h>
+
 #include <mutex>
 #include <optional>
 #include <string>
@@ -73,6 +75,70 @@ torch::Tensor get_fia_split_fuse_attn_mask(const torch::Tensor& query) {
           .contiguous();
   mask_cache[cache_key] = mask;
   return mask;
+}
+
+torch::Tensor get_npu_kv_seq_lens(const AttentionMetadata& attn_metadata) {
+  if (attn_metadata.kv_seq_lens_host.defined()) {
+    return attn_metadata.kv_seq_lens_host;
+  }
+  return attn_metadata.kv_seq_lens;
+}
+
+bool supports_paged_fia_tnd_head_size(int64_t head_size) {
+  // CANN PFA with paged TND layout rejects Q/K/V head dim 256. It supports the
+  // documented 64/128/192 cases, so keep FIA for those faster paths.
+  return head_size == 64 || head_size == 128 || head_size == 192;
+}
+
+struct ChunkedPagedAttentionInputs {
+  torch::Tensor block_table;
+  torch::Tensor context_lens;
+};
+
+ChunkedPagedAttentionInputs build_decode_style_chunked_paged_inputs(
+    const AttentionMetadata& attn_metadata,
+    int64_t num_query_tokens) {
+  CHECK(attn_metadata.block_table.defined())
+      << "chunked prefill paged attention requires block_table";
+  CHECK_EQ(attn_metadata.q_seq_lens_vec.size(),
+           attn_metadata.kv_seq_lens_vec.size());
+  CHECK_GE(attn_metadata.block_table.size(0),
+           static_cast<int64_t>(attn_metadata.q_seq_lens_vec.size()));
+
+  std::vector<int64_t> row_indices;
+  std::vector<int32_t> context_lens;
+  row_indices.reserve(num_query_tokens);
+  context_lens.reserve(num_query_tokens);
+
+  int64_t total_query_tokens = 0;
+  for (size_t seq_idx = 0; seq_idx < attn_metadata.q_seq_lens_vec.size();
+       ++seq_idx) {
+    const int32_t query_len = attn_metadata.q_seq_lens_vec[seq_idx];
+    const int32_t kv_len = attn_metadata.kv_seq_lens_vec[seq_idx];
+    CHECK_GT(query_len, 0) << "chunked prefill query length must be positive";
+    CHECK_GE(kv_len, query_len)
+        << "kv length must include the current chunk tokens";
+    const int32_t prefix_len = kv_len - query_len;
+    for (int32_t token_idx = 0; token_idx < query_len; ++token_idx) {
+      row_indices.emplace_back(static_cast<int64_t>(seq_idx));
+      context_lens.emplace_back(prefix_len + token_idx + 1);
+    }
+    total_query_tokens += query_len;
+  }
+  CHECK_EQ(total_query_tokens, num_query_tokens)
+      << "chunked prefill metadata does not match query tokens";
+
+  torch::Tensor row_index_tensor =
+      torch::tensor(row_indices,
+                    torch::TensorOptions()
+                        .dtype(torch::kLong)
+                        .device(attn_metadata.block_table.device()));
+  torch::Tensor expanded_block_table =
+      torch::index_select(attn_metadata.block_table, 0, row_index_tensor)
+          .contiguous();
+  torch::Tensor context_lens_tensor =
+      torch::tensor(context_lens, torch::TensorOptions().dtype(torch::kInt));
+  return {expanded_block_table, context_lens_tensor};
 }
 
 }  // namespace
@@ -161,6 +227,18 @@ void AttentionImpl::prefill_forward(torch::Tensor& query,
         "TND");
     output.copy_(std::get<0>(fia_result).view_as(output));
   } else if (attn_metadata.is_chunked_prefill) {
+    if (!supports_paged_fia_tnd_head_size(head_size_)) {
+      ChunkedPagedAttentionInputs paged_inputs =
+          build_decode_style_chunked_paged_inputs(attn_metadata, query.size(0));
+      xllm::kernel::npu::batch_decode(query,
+                                      k_cache,
+                                      v_cache.value(),
+                                      scale_,
+                                      paged_inputs.block_table,
+                                      paged_inputs.context_lens,
+                                      output);
+      return;
+    }
     auto q_seq_lens = cumulative_lengths(attn_metadata.q_seq_lens_vec);
     auto kv_seq_lens = to_i64_vector(attn_metadata.kv_seq_lens_vec);
     auto k = k_cache.view({k_cache.size(0), k_cache.size(1), -1});
@@ -194,13 +272,7 @@ void AttentionImpl::decoder_forward(torch::Tensor& query,
   query = query.view({-1, 1, num_heads_, head_size_});
   output = output.view({-1, 1, num_heads_, head_size_});
 
-  torch::Tensor kv_seq_lens;
-  if (attn_metadata.kv_seq_lens_host.defined()) {
-    kv_seq_lens = attn_metadata.kv_seq_lens_host;
-  } else {
-    // Fallback if host tensor isn't prepared.
-    kv_seq_lens = attn_metadata.kv_seq_lens;
-  }
+  torch::Tensor kv_seq_lens = get_npu_kv_seq_lens(attn_metadata);
 
   if (attn_metadata.paged_attention_tiling_data.defined()) {
     // Use CustomPagedAttention for ACL graph mode to avoid .to(kCPU) operations

@@ -39,6 +39,7 @@ limitations under the License.
 namespace xllm {
 
 class KVCacheShape;
+struct LinearStateCacheOptions;
 
 struct KVCacheCapacity {
   PROPERTY(int64_t, n_blocks) = 0;
@@ -100,6 +101,16 @@ struct LinearAttentionKVCacheTensors {
 // for qwen3.5
 bool is_linear_attention_layer(int64_t layer_idx,
                                int64_t full_attention_interval);
+
+int64_t calculate_linear_state_blocks(int64_t cache_size_in_bytes,
+                                      int64_t num_linear_attention_layers,
+                                      int64_t linear_slot_size,
+                                      int64_t num_full_attention_layers,
+                                      int64_t full_attention_block_size,
+                                      const LinearStateCacheOptions& options);
+
+int64_t calculate_linear_state_live_slots(int64_t num_linear_state_blocks,
+                                          int64_t max_running_requests);
 
 KVCacheTensors create_kv_cache_tensors(
     const KVCacheShape& kv_cache_shape,
