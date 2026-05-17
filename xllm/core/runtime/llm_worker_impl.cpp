@@ -35,11 +35,48 @@ limitations under the License.
 #if defined(USE_CUDA) || defined(USE_ILU) || defined(USE_MUSA)
 #include "layers/cuda/flashinfer_workspace.h"
 #endif
+#include "framework/model/model_args.h"
 #include "models/model_registry.h"
 #include "util/threadpool.h"
 #include "util/timer.h"
 
 namespace xllm {
+
+namespace {
+
+torch::Device get_linear_state_device(std::vector<KVCache>& kv_caches,
+                                      const ModelArgs& args) {
+  for (int64_t i = 0; i < static_cast<int64_t>(kv_caches.size()); ++i) {
+    if (!is_full_attention_layer(args, i)) {
+      auto conv = kv_caches[i].get_conv_cache();
+      if (conv.defined()) return conv.device();
+    }
+  }
+  return torch::kCPU;
+}
+
+void copy_linear_state_slots(std::vector<KVCache>& kv_caches,
+                             const ModelArgs& args,
+                             const torch::Tensor& src_indices,
+                             const torch::Tensor& dst_indices) {
+  const int64_t num_layers = static_cast<int64_t>(kv_caches.size());
+  for (int64_t layer_id = 0; layer_id < num_layers; ++layer_id) {
+    if (is_full_attention_layer(args, layer_id)) {
+      continue;
+    }
+    auto conv_cache = kv_caches[layer_id].get_conv_cache();
+    auto ssm_cache = kv_caches[layer_id].get_ssm_cache();
+    if (!conv_cache.defined() || !ssm_cache.defined()) {
+      continue;
+    }
+    auto src_conv = conv_cache.index_select(0, src_indices);
+    conv_cache.index_copy_(0, dst_indices, src_conv);
+    auto src_ssm = ssm_cache.index_select(0, src_indices);
+    ssm_cache.index_copy_(0, dst_indices, src_ssm);
+  }
+}
+
+}  // namespace
 
 LLMWorkerImpl::LLMWorkerImpl(const ParallelArgs& parallel_args,
                              const torch::Device& device,
@@ -130,11 +167,51 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
     eplb_executor_->eplb_execute(input.eplb_info);
   }
 
+  // Restore linear state from checkpoint slots before forward.
+  const auto& restore_ids = input.input_params.restore_checkpoint_slot_ids;
+  const auto& save_ids = input.input_params.save_checkpoint_slot_ids;
+  const auto& live_ids = input.input_params.linear_state_ids;
+  const auto& args = context_.get_model_args();
+  if (!restore_ids.empty()) {
+    std::vector<int64_t> src_vec, dst_vec;
+    for (size_t i = 0; i < restore_ids.size(); ++i) {
+      if (restore_ids[i] >= 0 && i < live_ids.size() && live_ids[i] >= 0) {
+        src_vec.push_back(restore_ids[i]);
+        dst_vec.push_back(live_ids[i]);
+      }
+    }
+    if (!src_vec.empty()) {
+      auto device = get_linear_state_device(kv_caches_, args);
+      copy_linear_state_slots(
+          kv_caches_, args,
+          torch::tensor(src_vec, torch::kLong).to(device),
+          torch::tensor(dst_vec, torch::kLong).to(device));
+    }
+  }
+
   // call model executor forward to get hidden states
   auto model_output = model_executor_->forward(
       input.token_ids, input.positions, kv_caches_, input.input_params);
   if (!model_output.hidden_states.defined()) {
     return std::nullopt;
+  }
+
+  // Save linear state to checkpoint slots after forward.
+  if (!save_ids.empty()) {
+    std::vector<int64_t> src_vec, dst_vec;
+    for (size_t i = 0; i < save_ids.size(); ++i) {
+      if (save_ids[i] >= 0 && i < live_ids.size() && live_ids[i] >= 0) {
+        src_vec.push_back(live_ids[i]);
+        dst_vec.push_back(save_ids[i]);
+      }
+    }
+    if (!src_vec.empty()) {
+      auto device = get_linear_state_device(kv_caches_, args);
+      copy_linear_state_slots(
+          kv_caches_, args,
+          torch::tensor(src_vec, torch::kLong).to(device),
+          torch::tensor(dst_vec, torch::kLong).to(device));
+    }
   }
 
   torch::Tensor logits;

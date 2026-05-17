@@ -567,6 +567,10 @@ struct ModelInputParams {
   // IntTensor: [n_seq]
   torch::Tensor linear_state_indices;
 
+  // checkpoint slot ids for linear state restore/save
+  std::vector<int32_t> restore_checkpoint_slot_ids;
+  std::vector<int32_t> save_checkpoint_slot_ids;
+
   // request ids of each sequence, used by suffix decoding request identity
   std::vector<std::string> request_ids;
 

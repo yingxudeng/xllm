@@ -292,6 +292,8 @@ message ForwardInput {
   repeated string request_ids = 44;
   DiTForwardInput dit_forward_input = 45;
   repeated int32 linear_state_ids = 46;
+  repeated int32 restore_checkpoint_slot_ids = 47;
+  repeated int32 save_checkpoint_slot_ids = 48;
 }
 
  message BatchedForwardInputs {

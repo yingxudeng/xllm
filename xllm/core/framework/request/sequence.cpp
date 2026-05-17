@@ -639,6 +639,9 @@ void Sequence::reset() {
   is_timeout_set_ = false;
   volatile_num_prompt_tokens_ = num_tokens_;
   single_block_ = Block();
+  restore_checkpoint_slot_id_ = -1;
+  save_checkpoint_slot_id_ = -1;
+  checkpoint_slot_ids_.clear();
 }
 
 void Sequence::add_shared_kv_blocks(std::vector<Block>&& blocks) {

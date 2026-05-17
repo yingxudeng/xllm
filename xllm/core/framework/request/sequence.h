@@ -404,6 +404,30 @@ class Sequence final {
     return last_token_handled_.load(std::memory_order_relaxed);
   }
 
+  // Checkpoint slot state for linear-state prefix caching.
+  // Per-step transients (set by scheduler, consumed by batch builder).
+  int32_t restore_checkpoint_slot_id() const {
+    return restore_checkpoint_slot_id_;
+  }
+  void set_restore_checkpoint_slot_id(int32_t id) {
+    restore_checkpoint_slot_id_ = id;
+  }
+  int32_t save_checkpoint_slot_id() const {
+    return save_checkpoint_slot_id_;
+  }
+  void set_save_checkpoint_slot_id(int32_t id) {
+    save_checkpoint_slot_id_ = id;
+  }
+
+  // Accumulated checkpoint slot IDs across prefill chunks.
+  // One entry per non-shared KV block; -1 means no checkpoint.
+  const std::vector<int32_t>& checkpoint_slot_ids() const {
+    return checkpoint_slot_ids_;
+  }
+  std::vector<int32_t>& mutable_checkpoint_slot_ids() {
+    return checkpoint_slot_ids_;
+  }
+
  private:
   void record_first_token(const Token& token);
 
@@ -551,6 +575,14 @@ class Sequence final {
   // 1) beams that were already finished before current step and
   // 2) beams that just became finished in current step.
   bool updated_since_last_beam_search_ = false;
+
+  // Linear-state prefix caching: per-step transients.
+  int32_t restore_checkpoint_slot_id_ = -1;
+  int32_t save_checkpoint_slot_id_ = -1;
+
+  // Linear-state prefix caching: accumulated across prefill chunks.
+  // Indexed by non-shared block (same as prefix cache insert convention).
+  std::vector<int32_t> checkpoint_slot_ids_;
 };
 
 }  // namespace xllm

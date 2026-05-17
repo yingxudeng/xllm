@@ -21,6 +21,8 @@ limitations under the License.
 
 namespace xllm {
 
+class CheckpointSlotPool;
+
 class BlockManagerImpl : public BlockManager {
  public:
   explicit BlockManagerImpl(const Options& options);
@@ -45,6 +47,18 @@ class BlockManagerImpl : public BlockManager {
              std::vector<Block>& blocks,
              size_t existed_shared_blocks_num = 0) override;
   void cache(const std::vector<Block>& blocks) override;
+
+  // cache with checkpoint slot IDs for linear state
+  void cache_with_checkpoint_slots(const Slice<int32_t>& token_ids,
+                                   std::vector<Block>& blocks,
+                                   size_t existed_shared_blocks_num,
+                                   const Slice<int32_t>& checkpoint_slot_ids);
+
+  // allocate shared blocks and output matched checkpoint slot IDs
+  std::vector<Block> allocate_shared_with_checkpoint_slots(
+      const Slice<int32_t>& tokens_ids,
+      const Slice<Block>& existed_shared_blocks,
+      std::vector<int32_t>& matched_checkpoint_slots);
 
   void get_merged_kvcache_event(KvCacheEvent* event) const override;
 
@@ -89,6 +103,10 @@ class BlockManagerImpl : public BlockManager {
   // total blocks num
   size_t num_total_blocks() const override { return free_blocks_.size() - 1; }
 
+  void set_checkpoint_slot_pool(CheckpointSlotPool* pool) {
+    checkpoint_slot_pool_ = pool;
+  }
+
  private:
   // check if has enough slots, if not, try to evict some blocks
   // from the prefix cache
@@ -97,6 +115,9 @@ class BlockManagerImpl : public BlockManager {
  private:
   // prefix cache
   std::unique_ptr<PrefixCache> prefix_cache_;
+
+  // non-owning pointer to checkpoint slot pool (managed by BlockManagerPool)
+  CheckpointSlotPool* checkpoint_slot_pool_ = nullptr;
 
   // reserved block id for padding
   Block padding_block_;

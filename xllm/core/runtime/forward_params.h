@@ -245,6 +245,9 @@ struct RawForwardInput {
   std::vector<int> embedding_ids;
   // linear state ids of each sequence
   std::vector<int> linear_state_ids;
+  // checkpoint slot ids for linear state restore/save
+  std::vector<int32_t> restore_checkpoint_slot_ids;
+  std::vector<int32_t> save_checkpoint_slot_ids;
   // request ids of each sequence
   std::vector<std::string> request_ids;
   // swap

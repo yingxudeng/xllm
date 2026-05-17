@@ -76,6 +76,27 @@ BlockManagerPool::BlockManagerPool(const Options& options, int32_t dp_size)
         /*resource_name=*/"single block",
         /*exhaustion_message=*/"No more single-block ids available"));
   }
+
+  // Initialize checkpoint slot pools when linear state is enabled.
+  // Pool size is derived from the number of prefix cache blocks:
+  // each cached prefix block may hold one checkpoint slot.
+  // Offset past live slots so IDs don't collide in the linear state tensor.
+  if (options_.enable_linear_state() && options_.enable_prefix_cache()) {
+    int32_t num_checkpoint_slots =
+        static_cast<int32_t>(options_.num_blocks());
+    int32_t checkpoint_offset = FLAGS_max_concurrent_requests + 2;
+    for (int32_t i = 0; i < dp_size; ++i) {
+      checkpoint_slot_pools_.emplace_back(
+          std::make_unique<CheckpointSlotPool>(
+              num_checkpoint_slots, checkpoint_offset));
+      auto* impl =
+          dynamic_cast<BlockManagerImpl*>(block_managers_[i].get());
+      if (impl != nullptr) {
+        impl->set_checkpoint_slot_pool(checkpoint_slot_pools_[i].get());
+      }
+    }
+  }
+
   reset_transfer_infos();
 }
 
@@ -153,9 +174,12 @@ void BlockManagerPool::deallocate(std::vector<Sequence*>& sequences) {
 
 void BlockManagerPool::deallocate(Sequence* sequence) {
   DCHECK(sequence != nullptr);
-  // add blocks to the prefix cache
   int32_t dp_rank = get_dp_rank(sequence);
-  cache(sequence);
+  if (!sequence->checkpoint_slot_ids().empty()) {
+    cache_with_checkpoint_slots(sequence, sequence->checkpoint_slot_ids());
+  } else {
+    cache(sequence);
+  }
   block_managers_[dp_rank]->deallocate(sequence->kv_state().kv_blocks());
   deallocate_single_block(sequence, dp_rank);
   // release the blocks after prefix cache insertion
@@ -350,6 +374,37 @@ void BlockManagerPool::cache(Sequence* sequence) {
       token_ids, *blocks, existed_shared_blocks_num);
 }
 
+void BlockManagerPool::cache_with_checkpoint_slots(
+    Sequence* sequence,
+    const Slice<int32_t>& checkpoint_slot_ids) {
+  int32_t dp_rank = get_dp_rank(sequence);
+  const auto token_ids = sequence->cached_tokens();
+  auto* blocks = sequence->kv_state().mutable_kv_blocks();
+  auto existed_shared_blocks_num = sequence->kv_state().shared_kv_blocks_num();
+  auto* impl = dynamic_cast<BlockManagerImpl*>(block_managers_[dp_rank].get());
+  CHECK(impl != nullptr) << "Checkpoint slots require BlockManagerImpl";
+  impl->cache_with_checkpoint_slots(
+      token_ids, *blocks, existed_shared_blocks_num, checkpoint_slot_ids);
+}
+
+void BlockManagerPool::allocate_shared_with_checkpoint_slots(
+    Sequence* sequence,
+    std::vector<int32_t>& matched_checkpoint_slots) {
+  if (options_.enable_prefix_cache()) {
+    int32_t dp_rank = get_dp_rank(sequence);
+    const auto& existed_shared_blocks = sequence->kv_state().kv_blocks().slice(
+        0, sequence->kv_state().shared_kv_blocks_num());
+    auto* impl =
+        dynamic_cast<BlockManagerImpl*>(block_managers_[dp_rank].get());
+    CHECK(impl != nullptr) << "Checkpoint slots require BlockManagerImpl";
+    std::vector<Block> shared_blocks =
+        impl->allocate_shared_with_checkpoint_slots(
+            sequence->tokens(), existed_shared_blocks,
+            matched_checkpoint_slots);
+    sequence->add_shared_kv_blocks(std::move(shared_blocks));
+  }
+}
+
 void BlockManagerPool::get_merged_kvcache_event(KvCacheEvent* event) const {
   for (int32_t i = 0; i < block_managers_.size(); ++i) {
     block_managers_[i]->get_merged_kvcache_event(event);
@@ -424,6 +479,26 @@ void BlockManagerPool::reserve_xtensor_padding_blocks() {
 
   // Start prealloc thread once (PageAllocator is shared by all managers)
   PageAllocator::get_instance().start_prealloc_thread();
+}
+
+int32_t BlockManagerPool::allocate_checkpoint_slot(int32_t dp_rank) {
+  CHECK_GE(dp_rank, 0);
+  CHECK_LT(static_cast<size_t>(dp_rank), checkpoint_slot_pools_.size());
+  return checkpoint_slot_pools_[dp_rank]->allocate();
+}
+
+void BlockManagerPool::free_checkpoint_slots(
+    int32_t dp_rank,
+    const std::vector<int32_t>& slot_ids) {
+  CHECK_GE(dp_rank, 0);
+  CHECK_LT(static_cast<size_t>(dp_rank), checkpoint_slot_pools_.size());
+  checkpoint_slot_pools_[dp_rank]->free(slot_ids);
+}
+
+int32_t BlockManagerPool::num_free_checkpoint_slots(int32_t dp_rank) const {
+  CHECK_GE(dp_rank, 0);
+  CHECK_LT(static_cast<size_t>(dp_rank), checkpoint_slot_pools_.size());
+  return checkpoint_slot_pools_[dp_rank]->num_free_slots();
 }
 
 }  // namespace xllm

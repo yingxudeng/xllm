@@ -60,6 +60,29 @@ size_t PrefixCacheWithUpload::evict(size_t n_blocks) {
   return evict_count;
 }
 
+size_t PrefixCacheWithUpload::insert_with_checkpoint_slots(
+    const Slice<int32_t>& token_ids,
+    std::vector<Block>& blocks,
+    size_t existed_shared_blocks_num,
+    const Slice<int32_t>& checkpoint_slot_ids) {
+  std::vector<XXH3Key> insert_keys;
+  auto n_tokens = PrefixCache::insert(
+      token_ids, blocks, existed_shared_blocks_num, &insert_keys,
+      checkpoint_slot_ids);
+  save_event_async(true, insert_keys);
+  return n_tokens;
+}
+
+size_t PrefixCacheWithUpload::evict_with_freed_slots(
+    size_t n_blocks,
+    std::vector<int32_t>& freed_checkpoint_slots) {
+  std::vector<XXH3Key> evict_keys;
+  auto evict_count =
+      PrefixCache::evict(n_blocks, &evict_keys, &freed_checkpoint_slots);
+  save_event_async(false, evict_keys);
+  return evict_count;
+}
+
 void PrefixCacheWithUpload::save_event_async(const bool is_insert,
                                              std::vector<XXH3Key>& keys) {
   threadpool_.schedule([this, is_insert = is_insert, keys = std::move(keys)]() {

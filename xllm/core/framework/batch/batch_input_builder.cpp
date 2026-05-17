@@ -241,6 +241,14 @@ void BatchInputBuilder::process_sequences_multithreaded() {
     state_.linear_state_ids.insert(state_.linear_state_ids.end(),
                                    state.linear_state_ids.begin(),
                                    state.linear_state_ids.end());
+    state_.restore_checkpoint_slot_ids.insert(
+        state_.restore_checkpoint_slot_ids.end(),
+        state.restore_checkpoint_slot_ids.begin(),
+        state.restore_checkpoint_slot_ids.end());
+    state_.save_checkpoint_slot_ids.insert(
+        state_.save_checkpoint_slot_ids.end(),
+        state.save_checkpoint_slot_ids.begin(),
+        state.save_checkpoint_slot_ids.end());
     state_.request_ids.insert(state_.request_ids.end(),
                               state.request_ids.begin(),
                               state.request_ids.end());
@@ -402,6 +410,10 @@ void BatchInputBuilder::extract_tokens_and_positions(Sequence* sequence,
   // `linear_state_ids` is sequence-scoped metadata and must stay aligned with
   // logical batch rows even for non-terminal chunked-prefill slices.
   state.linear_state_ids.emplace_back(sequence->get_single_block_id());
+  state.restore_checkpoint_slot_ids.emplace_back(
+      sequence->restore_checkpoint_slot_id());
+  state.save_checkpoint_slot_ids.emplace_back(
+      sequence->save_checkpoint_slot_id());
 
   // Add extra token id
   if (n_tokens == seq_len) {
@@ -561,6 +573,10 @@ ForwardInput BatchInputBuilder::state_to_forward_input() {
     input_params.linear_state_indices =
         torch::tensor(input_params.linear_state_ids, torch::kInt);
   }
+  input_params.restore_checkpoint_slot_ids =
+      std::move(state_.restore_checkpoint_slot_ids);
+  input_params.save_checkpoint_slot_ids =
+      std::move(state_.save_checkpoint_slot_ids);
   input_params.request_ids = std::move(state_.request_ids);
   input_params.extra_token_ids = std::move(state_.extra_token_ids);
 
@@ -642,6 +658,10 @@ RawForwardInput BatchInputBuilder::state_to_raw_forward_input() {
 
   raw_forward_input.embedding_ids = std::move(state_.embedding_ids);
   raw_forward_input.linear_state_ids = std::move(state_.linear_state_ids);
+  raw_forward_input.restore_checkpoint_slot_ids =
+      std::move(state_.restore_checkpoint_slot_ids);
+  raw_forward_input.save_checkpoint_slot_ids =
+      std::move(state_.save_checkpoint_slot_ids);
   raw_forward_input.request_ids = std::move(state_.request_ids);
   raw_forward_input.extra_token_ids = std::move(state_.extra_token_ids);
   // beam search kernel input

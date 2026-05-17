@@ -64,7 +64,8 @@ class PrefixCache {
 
   virtual std::vector<Block> match(
       const Slice<int32_t>& token_ids,
-      const Slice<Block>& existed_shared_blocks = {});
+      const Slice<Block>& existed_shared_blocks = {},
+      std::vector<int32_t>* matched_checkpoint_slots = nullptr);
 
   // insert the token ids and blocks into the prefix tree
   // and set hash key to the corresponding block
@@ -80,6 +81,18 @@ class PrefixCache {
   // evict blocks hold by the prefix cache
   // return the actual number of evicted blocks
   virtual size_t evict(size_t n_blocks);
+
+  // insert with checkpoint slot IDs for linear state
+  virtual size_t insert_with_checkpoint_slots(
+      const Slice<int32_t>& token_ids,
+      std::vector<Block>& blocks,
+      size_t existed_shared_blocks_num,
+      const Slice<int32_t>& checkpoint_slot_ids);
+
+  // evict blocks and collect freed checkpoint slot IDs
+  virtual size_t evict_with_freed_slots(
+      size_t n_blocks,
+      std::vector<int32_t>& freed_checkpoint_slots);
 
   // get the number of blocks in the prefix cache
   virtual size_t num_blocks() const {
@@ -106,16 +119,21 @@ class PrefixCache {
   size_t insert(const Slice<int32_t>& token_ids,
                 std::vector<Block>& blocks,
                 size_t existed_shared_blocks_num,
-                std::vector<XXH3Key>* insert_keys);
+                std::vector<XXH3Key>* insert_keys,
+                const Slice<int32_t>& checkpoint_slot_ids = {});
 
   size_t insert(Slice<Block>& blocks, std::vector<XXH3Key>* insert_keys);
 
-  size_t evict(size_t n_blocks, std::vector<XXH3Key>* evict_keys);
+  size_t evict(size_t n_blocks,
+               std::vector<XXH3Key>* evict_keys,
+               std::vector<int32_t>* freed_checkpoint_slots = nullptr);
 
   struct Node {
     Block block;
     // the last access time of the node, used to evict blocks
     int64_t last_access_time = 0;
+    // checkpoint slot for linear state, -1 means no checkpoint
+    int32_t checkpoint_slot_id = -1;
 
     // the previous and next nodes, used to maintain the LRU list
     Node* prev = nullptr;

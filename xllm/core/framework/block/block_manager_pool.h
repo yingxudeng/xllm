@@ -24,6 +24,49 @@ limitations under the License.
 
 namespace xllm {
 
+class CheckpointSlotPool final {
+ public:
+  CheckpointSlotPool(int32_t num_slots, int32_t offset)
+      : num_total_slots_(num_slots), offset_(offset) {
+    free_slots_.reserve(num_slots);
+    for (int32_t i = num_slots - 1; i >= 0; --i) {
+      free_slots_.push_back(i + offset);
+    }
+  }
+
+  int32_t allocate() {
+    if (free_slots_.empty()) {
+      return -1;
+    }
+    int32_t slot_id = free_slots_.back();
+    free_slots_.pop_back();
+    return slot_id;
+  }
+
+  void free(int32_t slot_id) {
+    CHECK_GE(slot_id, offset_);
+    CHECK_LT(slot_id, num_total_slots_ + offset_);
+    free_slots_.push_back(slot_id);
+  }
+
+  void free(const std::vector<int32_t>& slot_ids) {
+    for (int32_t slot_id : slot_ids) {
+      free(slot_id);
+    }
+  }
+
+  int32_t num_free_slots() const {
+    return static_cast<int32_t>(free_slots_.size());
+  }
+
+  int32_t num_total_slots() const { return num_total_slots_; }
+
+ private:
+  std::vector<int32_t> free_slots_;
+  int32_t num_total_slots_;
+  int32_t offset_;
+};
+
 class BlockManagerPool : public KVCacheManager {
  public:
   struct Options {
@@ -68,6 +111,10 @@ class BlockManagerPool : public KVCacheManager {
   virtual void allocate_shared(Sequence* sequence) override;
   virtual void cache(Sequence* sequence) override;
 
+  // Checkpoint-slot-aware cache: inserts blocks with their checkpoint slot IDs
+  void cache_with_checkpoint_slots(Sequence* sequence,
+                                   const Slice<int32_t>& checkpoint_slot_ids);
+
   virtual std::vector<std::vector<BlockTransferInfo>>*
   get_swap_block_transfer_infos() override;
   virtual void reset_transfer_infos() override;
@@ -89,6 +136,18 @@ class BlockManagerPool : public KVCacheManager {
   // Should be called after KV tensors are created.
   void reserve_xtensor_padding_blocks() override;
 
+  // Checkpoint slot pool for linear state snapshots.
+  int32_t allocate_checkpoint_slot(int32_t dp_rank) override;
+  void free_checkpoint_slots(int32_t dp_rank,
+                             const std::vector<int32_t>& slot_ids);
+  int32_t num_free_checkpoint_slots(int32_t dp_rank) const;
+  bool has_checkpoint_slot_pool() const override {
+    return !checkpoint_slot_pools_.empty();
+  }
+  void allocate_shared_with_checkpoint_slots(
+      Sequence* sequence,
+      std::vector<int32_t>& matched_checkpoint_slots) override;
+
  protected:
   int32_t get_manager_with_max_free_blocks() const;
   int32_t get_dp_rank(Sequence* sequence) const;
@@ -105,6 +164,7 @@ class BlockManagerPool : public KVCacheManager {
   // the options for the block manager
   Options options_;
   std::vector<std::unique_ptr<BlockManager>> block_managers_;
+  std::vector<std::unique_ptr<CheckpointSlotPool>> checkpoint_slot_pools_;
 };
 
 }  // namespace xllm

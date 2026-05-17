@@ -27,6 +27,18 @@ class PrefixCacheWithUpload final : public PrefixCache {
   // return the actual number of evicted blocks
   size_t evict(size_t n_blocks) override;
 
+  // insert with checkpoint slot IDs for linear state
+  size_t insert_with_checkpoint_slots(
+      const Slice<int32_t>& token_ids,
+      std::vector<Block>& blocks,
+      size_t existed_shared_blocks_num,
+      const Slice<int32_t>& checkpoint_slot_ids) override;
+
+  // evict blocks and collect freed checkpoint slot IDs
+  size_t evict_with_freed_slots(
+      size_t n_blocks,
+      std::vector<int32_t>& freed_checkpoint_slots) override;
+
   virtual KvCacheEvent* get_upload_kvcache_events() override;
 
  private:

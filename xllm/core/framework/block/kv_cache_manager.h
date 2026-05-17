@@ -68,6 +68,16 @@ class KVCacheManager {
   virtual std::vector<size_t> num_used_blocks() const = 0;
   virtual double kv_cache_utilization() const = 0;
 
+  virtual bool has_checkpoint_slot_pool() const { return false; }
+
+  virtual void allocate_shared_with_checkpoint_slots(
+      Sequence* sequence,
+      std::vector<int32_t>& matched_checkpoint_slots) {
+    allocate_shared(sequence);
+  }
+
+  virtual int32_t allocate_checkpoint_slot(int32_t dp_rank) { return -1; }
+
   // Reserve XTensor padding blocks after KV tensors are created.
   virtual void reserve_xtensor_padding_blocks() {}
 

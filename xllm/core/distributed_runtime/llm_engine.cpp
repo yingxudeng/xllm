@@ -528,7 +528,8 @@ KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
   }
 #endif
 
-  kv_cache_cap.num_linear_state_blocks() = FLAGS_max_concurrent_requests + 2;
+  const int64_t num_live_linear_slots = FLAGS_max_concurrent_requests + 2;
+  kv_cache_cap.num_linear_state_blocks() = num_live_linear_slots;
   for (int64_t layer_id = 0; layer_id < kv_cache_cap.n_layers(); ++layer_id) {
     if (is_full_attention_layer(args_, layer_id)) {
       ++kv_cache_cap.num_full_attention_layers();
@@ -541,30 +542,44 @@ KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
   const int64_t block_size = kv_cache_cap.block_size();
   const int64_t block_size_in_bytes =
       block_size * (slot_size + index_slot_size + scale_slot_size);
-  kv_cache_cap.linear_cache_size_in_bytes() =
-      kv_cache_cap.num_linear_attention_layers() *
-      kv_cache_cap.num_linear_state_blocks() * kv_cache_cap.linear_slot_size();
-  const int64_t available_full_cache_size_in_bytes =
-      kv_cache_cap.cache_size_in_bytes() -
-      kv_cache_cap.linear_cache_size_in_bytes();
-  if (kv_cache_cap.linear_slot_size() > 0) {
-    CHECK_GT(kv_cache_cap.cache_size_in_bytes(),
-             kv_cache_cap.linear_cache_size_in_bytes())
+  const int64_t nl = kv_cache_cap.num_linear_attention_layers();
+  const int64_t ls = kv_cache_cap.linear_slot_size();
+  const int64_t live_linear_bytes = nl * num_live_linear_slots * ls;
+  kv_cache_cap.linear_cache_size_in_bytes() = live_linear_bytes;
+  if (ls > 0) {
+    CHECK_GT(kv_cache_cap.cache_size_in_bytes(), live_linear_bytes)
         << "failed to reserve linear state cache for linear-attention layers: "
         << "max_concurrent_requests (" << FLAGS_max_concurrent_requests
         << ") is too large. Please reduce max_concurrent_requests to less than "
-        << kv_cache_cap.cache_size_in_bytes() /
-                   (kv_cache_cap.num_linear_attention_layers() *
-                    kv_cache_cap.linear_slot_size()) -
-               2;
+        << kv_cache_cap.cache_size_in_bytes() / (nl * ls) - 2;
   }
-  CHECK_GT(available_full_cache_size_in_bytes, 0)
-      << "no memory left for full-attention kv cache after reserving linear "
-         "state cache";
   const int64_t full_attention_layers =
       std::max<int64_t>(kv_cache_cap.num_full_attention_layers(), 1);
-  kv_cache_cap.n_blocks() = available_full_cache_size_in_bytes /
-                            (full_attention_layers * block_size_in_bytes);
+  const int64_t remaining_bytes =
+      kv_cache_cap.cache_size_in_bytes() - live_linear_bytes;
+  CHECK_GT(remaining_bytes, 0)
+      << "no memory left for full-attention kv cache after reserving linear "
+         "state cache";
+
+  // When linear state + prefix cache are both enabled, checkpoint slots
+  // share the linear state tensor. Solve jointly for n_blocks (= checkpoint
+  // slots) so that full-attention KV cache and checkpoint linear state
+  // together fill the remaining memory.
+  const bool enable_checkpoint_slots =
+      has_linear_attention_layers(args_) && options_.enable_prefix_cache();
+  if (enable_checkpoint_slots && ls > 0) {
+    const int64_t denominator = full_attention_layers * block_size_in_bytes +
+                                nl * ls;
+    kv_cache_cap.n_blocks() = remaining_bytes / denominator;
+    int64_t num_checkpoint_slots = kv_cache_cap.n_blocks();
+    kv_cache_cap.num_linear_state_blocks() =
+        num_live_linear_slots + num_checkpoint_slots;
+    kv_cache_cap.linear_cache_size_in_bytes() =
+        nl * kv_cache_cap.num_linear_state_blocks() * ls;
+  } else {
+    kv_cache_cap.n_blocks() =
+        remaining_bytes / (full_attention_layers * block_size_in_bytes);
+  }
   CHECK_GT(kv_cache_cap.n_blocks(), 0) << "no n_blocks for kv cache";
   return kv_cache_cap;
 }

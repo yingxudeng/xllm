@@ -18,6 +18,7 @@ limitations under the License.
 
 #include <unordered_set>
 
+#include "block_manager_pool.h"
 #include "framework/prefix_cache/prefix_cache_factory.h"
 namespace xllm {
 
@@ -106,7 +107,17 @@ bool BlockManagerImpl::has_enough_blocks(uint32_t num_blocks) {
   const uint32_t n_blocks_to_evict = num_blocks - num_free_blocks_;
 
   AUTO_COUNTER(prefix_cache_latency_seconds_evict);
-  const uint32_t n_blocks_evicted = prefix_cache_->evict(n_blocks_to_evict);
+
+  uint32_t n_blocks_evicted = 0;
+  if (checkpoint_slot_pool_ != nullptr) {
+    std::vector<int32_t> freed_slots;
+    n_blocks_evicted =
+        prefix_cache_->evict_with_freed_slots(n_blocks_to_evict, freed_slots);
+    checkpoint_slot_pool_->free(freed_slots);
+  } else {
+    n_blocks_evicted = prefix_cache_->evict(n_blocks_to_evict);
+  }
+
   if (n_blocks_evicted < n_blocks_to_evict) {
     return false;
   }
@@ -164,6 +175,43 @@ void BlockManagerImpl::cache(const std::vector<Block>& blocks) {
     // Add the kv cache to the prefix cache
     prefix_cache_->insert(blocks);
   }
+}
+
+void BlockManagerImpl::cache_with_checkpoint_slots(
+    const Slice<int32_t>& token_ids,
+    std::vector<Block>& blocks,
+    size_t existed_shared_blocks_num,
+    const Slice<int32_t>& checkpoint_slot_ids) {
+  if (options_.enable_prefix_cache()) {
+    AUTO_COUNTER(prefix_cache_latency_seconds_insert);
+    prefix_cache_->insert_with_checkpoint_slots(
+        token_ids, blocks, existed_shared_blocks_num, checkpoint_slot_ids);
+  }
+}
+
+std::vector<Block> BlockManagerImpl::allocate_shared_with_checkpoint_slots(
+    const Slice<int32_t>& tokens_ids,
+    const Slice<Block>& existed_shared_blocks,
+    std::vector<int32_t>& matched_checkpoint_slots) {
+  if (options_.enable_prefix_cache()) {
+    AUTO_COUNTER(prefix_cache_latency_seconds_match);
+
+    std::vector<Block> shared_blocks = prefix_cache_->match(
+        tokens_ids, existed_shared_blocks, &matched_checkpoint_slots);
+
+    const size_t prefix_length =
+        shared_blocks.empty() ? 0
+                              : shared_blocks.size() * shared_blocks[0].size();
+    COUNTER_ADD(prefix_cache_match_length_total, prefix_length);
+
+    for (const auto& block : shared_blocks) {
+      if (block.ref_count() <= 2) {
+        num_used_blocks_.fetch_add(1, std::memory_order_relaxed);
+      }
+    }
+    return shared_blocks;
+  }
+  return {};
 }
 
 void BlockManagerImpl::get_merged_kvcache_event(KvCacheEvent* event) const {

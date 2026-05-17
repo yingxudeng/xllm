@@ -724,6 +724,22 @@ bool ChunkedPrefillScheduler::allocate_blocks_for(
 
   allocate_shared_blocks_for(sequence);
 
+  const bool has_checkpoint_pool = kv_cache_manager_->has_checkpoint_slot_pool();
+
+  // For continuation chunks in linear-state models, restore from the last
+  // saved checkpoint (the first chunk's restore is set by
+  // allocate_shared_blocks_for from the prefix cache match).
+  if (has_checkpoint_pool && sequence->kv_state().num_kv_blocks() > 0 &&
+      sequence->is_chunked_prefill_stage()) {
+    const auto& slot_ids = sequence->checkpoint_slot_ids();
+    for (auto it = slot_ids.rbegin(); it != slot_ids.rend(); ++it) {
+      if (*it >= 0) {
+        sequence->set_restore_checkpoint_slot_id(*it);
+        break;
+      }
+    }
+  }
+
   // number of tokens in the kv cache, which are already processed
   const size_t kv_cache_tokens_num = sequence->kv_cache_tokens_num();
   // the total number tokens for the sequence can be handled till now.
@@ -740,23 +756,76 @@ bool ChunkedPrefillScheduler::allocate_blocks_for(
     max_handle_num_tokens += min_speculative_tokens_required_;
   }
 
+  // Block-align for linear state: when checkpoint slots are active and this is
+  // a middle prefill chunk (not the final one), round down to block boundary so
+  // the GDN kernel's final state corresponds to a clean block boundary.
+  if (has_checkpoint_pool && max_handle_num_tokens < sequence->num_tokens()) {
+    const size_t block_size = kv_cache_manager_->block_size();
+    size_t aligned = (max_handle_num_tokens / block_size) * block_size;
+    if (aligned > kv_cache_tokens_num) {
+      max_handle_num_tokens = aligned;
+    }
+  }
+
   // make sure the sequence proceeds forward
   CHECK_GT(max_handle_num_tokens, kv_cache_tokens_num);
 
   // the actual allocated tokens is the difference between the total
   // number of tokens and the number of tokens already processed
   *current_step_handle_tokens = max_handle_num_tokens - kv_cache_tokens_num;
-  // allocate blocks for the sequence
-  return kv_cache_manager_->allocate(sequence, max_handle_num_tokens);
+
+  const size_t num_blocks_before = sequence->kv_state().num_kv_blocks();
+  if (!kv_cache_manager_->allocate(sequence, max_handle_num_tokens)) {
+    return false;
+  }
+
+  // Pre-allocate checkpoint slot for the new blocks in this chunk.
+  if (has_checkpoint_pool && sequence->is_prefill_stage()) {
+    const size_t num_blocks_after = sequence->kv_state().num_kv_blocks();
+    const size_t shared_blocks = sequence->kv_state().shared_kv_blocks_num();
+    const size_t num_new_blocks = num_blocks_after - num_blocks_before;
+    if (num_new_blocks > 0) {
+      int32_t save_slot =
+          kv_cache_manager_->allocate_checkpoint_slot(sequence->dp_rank());
+      sequence->set_save_checkpoint_slot_id(save_slot);
+      if (save_slot >= 0) {
+        auto& slot_ids = sequence->mutable_checkpoint_slot_ids();
+        size_t non_shared_blocks = num_blocks_after - shared_blocks;
+        slot_ids.resize(non_shared_blocks, -1);
+        slot_ids.back() = save_slot;
+      }
+    }
+  }
+
+  return true;
 }
 
 void ChunkedPrefillScheduler::allocate_shared_blocks_for(Sequence* sequence) {
   if (sequence->kv_state().num_kv_blocks() == 0) {
-    // allocate shared blocks
-    kv_cache_manager_->allocate_shared(sequence);
+    if (kv_cache_manager_->has_checkpoint_slot_pool()) {
+      std::vector<int32_t> matched_slots;
+      kv_cache_manager_->allocate_shared_with_checkpoint_slots(
+          sequence, matched_slots);
+      if (!matched_slots.empty()) {
+        for (auto it = matched_slots.rbegin(); it != matched_slots.rend();
+             ++it) {
+          if (*it >= 0) {
+            sequence->set_restore_checkpoint_slot_id(*it);
+            break;
+          }
+        }
+      }
+    } else {
+      kv_cache_manager_->allocate_shared(sequence);
+    }
     return;
   }
   if (sequence->is_chunked_prefill_stage()) {
+    // Skip periodic re-match for linear-state models: mid-stream shared block
+    // changes would require complex linear state re-synchronization.
+    if (kv_cache_manager_->has_checkpoint_slot_pool()) {
+      return;
+    }
     const size_t max_tokens_per_chunk_for_prefill =
         std::max(options_.max_tokens_per_chunk_for_prefill(), 64);
     size_t total_chunked_size =

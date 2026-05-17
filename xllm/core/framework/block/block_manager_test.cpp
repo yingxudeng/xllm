@@ -325,4 +325,82 @@ TEST(BlockManagerPoolTest, SequenceCopyDoesNotReuseSingleBlockSlot) {
   EXPECT_NE(GetSingleBlockIdOrFail(clone), GetSingleBlockIdOrFail(src));
 }
 
+TEST(BlockManagerPoolTest, CheckpointSlotPoolAllocateAndFree) {
+  ScopedValue<int32_t> max_seqs_guard(&FLAGS_max_seqs_per_batch, 2);
+
+  BlockManagerPool::Options options;
+  options.num_blocks(20)
+      .host_num_blocks(0)
+      .block_size(4)
+      .enable_prefix_cache(true)
+      .enable_linear_state(true);
+  BlockManagerPool pool(options, /*dp_size=*/1);
+
+  ASSERT_TRUE(pool.has_checkpoint_slot_pool());
+
+  // Allocate some checkpoint slots
+  int32_t slot0 = pool.allocate_checkpoint_slot(0);
+  int32_t slot1 = pool.allocate_checkpoint_slot(0);
+  EXPECT_GE(slot0, 0);
+  EXPECT_GE(slot1, 0);
+  EXPECT_NE(slot0, slot1);
+
+  // Slots should be offset past live slots (FLAGS_max_concurrent_requests + 2)
+  // Live slots are 0..3 (FLAGS_max_seqs_per_batch=2, pool size=4),
+  // so checkpoint slots start at offset 4.
+  int32_t expected_offset = FLAGS_max_concurrent_requests + 2;
+  EXPECT_GE(slot0, expected_offset);
+  EXPECT_GE(slot1, expected_offset);
+
+  int32_t free_before = pool.num_free_checkpoint_slots(0);
+
+  // Free them back
+  pool.free_checkpoint_slots(0, {slot0, slot1});
+  EXPECT_EQ(pool.num_free_checkpoint_slots(0), free_before + 2);
+}
+
+TEST(BlockManagerPoolTest, EvictionFreesCheckpointSlots) {
+  ScopedValue<int32_t> max_seqs_guard(&FLAGS_max_seqs_per_batch, 0);
+
+  BlockManagerPool::Options options;
+  options.num_blocks(6)
+      .host_num_blocks(0)
+      .block_size(4)
+      .enable_prefix_cache(true)
+      .enable_linear_state(true);
+  BlockManagerPool pool(options, /*dp_size=*/1);
+
+  ASSERT_TRUE(pool.has_checkpoint_slot_pool());
+
+  int32_t initial_free = pool.num_free_checkpoint_slots(0);
+
+  // Allocate checkpoint slots
+  int32_t slot0 = pool.allocate_checkpoint_slot(0);
+  int32_t slot1 = pool.allocate_checkpoint_slot(0);
+  EXPECT_EQ(pool.num_free_checkpoint_slots(0), initial_free - 2);
+
+  // Create a sequence, allocate blocks, and cache with checkpoint slots
+  Sequence seq = MakeSequence(0, /*prompt_tokens=*/{1, 2, 3, 4, 5, 6, 7, 8});
+  ASSERT_TRUE(pool.allocate(&seq));
+
+  seq.mutable_checkpoint_slot_ids() = {slot0, slot1};
+  pool.deallocate(&seq);
+
+  // After deallocation with cache_with_checkpoint_slots, the blocks go into
+  // prefix cache. The checkpoint slots are stored on prefix cache nodes.
+
+  // Now exhaust remaining free blocks to trigger eviction.
+  // Allocating more blocks than available will evict from prefix cache,
+  // which should return checkpoint slots to the pool.
+  Sequence seq2 = MakeSequence(1, /*prompt_tokens=*/{10, 11, 12, 13, 14, 15,
+                                                     16, 17, 18, 19, 20, 21,
+                                                     22, 23, 24, 25});
+  pool.allocate(&seq2);
+
+  // After eviction, checkpoint slots should have been freed back to pool.
+  // The pool should have regained the 2 slots we allocated.
+  EXPECT_GE(pool.num_free_checkpoint_slots(0), initial_free - 2);
+  pool.deallocate_without_cache(&seq2);
+}
+
 }  // namespace xllm

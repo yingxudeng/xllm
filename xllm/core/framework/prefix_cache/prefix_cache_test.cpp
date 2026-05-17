@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 #include <string.h>
 
+#include <algorithm>
 #include <iostream>
 
 #include "framework/block/block_manager_impl.h"
@@ -379,6 +380,97 @@ TEST(HashUtilTest, XXHash3) {
                       XXH3_128BITS_HASH_VALUE_LEN),
               0);
   }
+}
+
+TEST(PrefixCacheTest, CheckpointSlotInsertAndEvict) {
+  const uint32_t block_size = 4;
+  const uint32_t total_blocks = 10;
+  BlockManager::Options options;
+  options.num_blocks(total_blocks).block_size(block_size);
+  BlockManagerImpl block_manager(options);
+
+  PrefixCache prefix_cache(block_size);
+
+  // 12 tokens → 3 blocks
+  std::vector<int32_t> token_ids = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+  Slice<int32_t> slice_tokens(token_ids);
+
+  std::vector<Block> blocks = block_manager.allocate(3);
+  ASSERT_EQ(blocks.size(), 3u);
+
+  // Checkpoint slot only on block 1 (slot 100) and block 2 (slot 101).
+  // Block 0 has no checkpoint (uses -1).
+  std::vector<int32_t> ckpt_slots = {-1, 100, 101};
+  Slice<int32_t> ckpt_slice(ckpt_slots);
+
+  prefix_cache.insert_with_checkpoint_slots(
+      slice_tokens, blocks, /*existed_shared_blocks_num=*/0, ckpt_slice);
+  EXPECT_EQ(prefix_cache.num_blocks(), 3u);
+  blocks.clear();
+
+  // Match with checkpoint slots output (scoped to release shared refs)
+  {
+    std::vector<int32_t> matched_slots;
+    auto matched = prefix_cache.match(slice_tokens, {}, &matched_slots);
+    EXPECT_EQ(matched.size(), 3u);
+    ASSERT_EQ(matched_slots.size(), 3u);
+    EXPECT_EQ(matched_slots[0], -1);
+    EXPECT_EQ(matched_slots[1], 100);
+    EXPECT_EQ(matched_slots[2], 101);
+  }
+
+  // Evict all 3 blocks at once and verify freed checkpoint slots
+  std::vector<int32_t> freed_slots;
+  size_t evicted = prefix_cache.evict_with_freed_slots(3, freed_slots);
+  EXPECT_EQ(evicted, 3u);
+  EXPECT_EQ(prefix_cache.num_blocks(), 0u);
+  // Should have freed slots 100 and 101 (block 0 had -1, not collected)
+  EXPECT_EQ(freed_slots.size(), 2u);
+  std::sort(freed_slots.begin(), freed_slots.end());
+  EXPECT_EQ(freed_slots[0], 100);
+  EXPECT_EQ(freed_slots[1], 101);
+
+  EXPECT_EQ(prefix_cache.num_blocks(), 0u);
+}
+
+TEST(PrefixCacheTest, MatchTruncatesToCheckpointBoundary) {
+  const uint32_t block_size = 4;
+  const uint32_t total_blocks = 10;
+  BlockManager::Options options;
+  options.num_blocks(total_blocks).block_size(block_size);
+  BlockManagerImpl block_manager(options);
+
+  PrefixCache prefix_cache(block_size);
+
+  // 16 tokens → 4 blocks
+  std::vector<int32_t> token_ids = {1,  2,  3,  4,  5,  6,  7,  8,
+                                    9, 10, 11, 12, 13, 14, 15, 16};
+  Slice<int32_t> slice_tokens(token_ids);
+
+  std::vector<Block> blocks = block_manager.allocate(4);
+  ASSERT_EQ(blocks.size(), 4u);
+
+  // Checkpoint on block 0 (slot 50) and block 2 (slot 52), none on block 1/3.
+  std::vector<int32_t> ckpt_slots = {50, -1, 52, -1};
+  Slice<int32_t> ckpt_slice(ckpt_slots);
+
+  prefix_cache.insert_with_checkpoint_slots(
+      slice_tokens, blocks, /*existed_shared_blocks_num=*/0, ckpt_slice);
+  EXPECT_EQ(prefix_cache.num_blocks(), 4u);
+
+  // Match with checkpoint_slots: should truncate to block 2 (last with slot)
+  std::vector<int32_t> matched_slots;
+  auto matched = prefix_cache.match(slice_tokens, {}, &matched_slots);
+  // Truncated to 3 blocks (blocks 0,1,2) — block 3 has no checkpoint
+  EXPECT_EQ(matched.size(), 3u);
+  ASSERT_EQ(matched_slots.size(), 3u);
+  EXPECT_EQ(matched_slots[0], 50);
+  EXPECT_EQ(matched_slots[1], -1);
+  EXPECT_EQ(matched_slots[2], 52);
+
+  // Match without checkpoint_slots: returns all 4 blocks (no truncation)
+  auto matched_full = prefix_cache.match(slice_tokens, {}, nullptr);
+  EXPECT_EQ(matched_full.size(), 4u);
 }
 
 }  // namespace xllm

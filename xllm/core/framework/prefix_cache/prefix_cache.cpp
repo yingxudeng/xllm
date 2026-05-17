@@ -59,7 +59,8 @@ void xxh3_128bits_hash(const uint8_t* pre_hash_value,
 
 std::vector<Block> PrefixCache::match(
     const Slice<int32_t>& token_ids,
-    const Slice<Block>& existed_shared_blocks) {
+    const Slice<Block>& existed_shared_blocks,
+    std::vector<int32_t>* matched_checkpoint_slots) {
   // allign tokens to block boundary
   const size_t n_tokens = round_down(token_ids.size(), block_size_);
   if (n_tokens == 0) {
@@ -97,6 +98,10 @@ std::vector<Block> PrefixCache::match(
     auto iter = cached_blocks_.find(token_hash_key);
     if (iter != cached_blocks_.end()) {
       blocks.push_back(iter->second->block);
+      if (matched_checkpoint_slots != nullptr) {
+        matched_checkpoint_slots->push_back(
+            iter->second->checkpoint_slot_id);
+      }
       lru_lst_.remove_node(iter->second);
       node_list.push_front(iter->second);
     } else {
@@ -108,6 +113,28 @@ std::vector<Block> PrefixCache::match(
   while (!node_list.is_empty()) {
     Node* node = node_list.pop_front();
     lru_lst_.push_back(node);
+  }
+
+  // When checkpoint slots are requested, truncate matched blocks to the last
+  // checkpoint boundary. Blocks beyond the last checkpoint cannot be used as
+  // shared blocks because the linear state would not cover those tokens —
+  // they must be recomputed.
+  if (matched_checkpoint_slots != nullptr &&
+      blocks.size() > existed_shared_blocks.size()) {
+    size_t keep_count = existed_shared_blocks.size();
+    for (size_t i = matched_checkpoint_slots->size(); i > 0; --i) {
+      if ((*matched_checkpoint_slots)[i - 1] >= 0) {
+        keep_count = existed_shared_blocks.size() + i;
+        break;
+      }
+    }
+    if (keep_count < blocks.size()) {
+      blocks.resize(keep_count);
+      size_t new_keep = keep_count > existed_shared_blocks.size()
+                            ? keep_count - existed_shared_blocks.size()
+                            : 0;
+      matched_checkpoint_slots->resize(new_keep);
+    }
   }
 
   matched_blocks_.fetch_add(blocks.size());
@@ -142,10 +169,29 @@ size_t PrefixCache::evict(size_t n_blocks) {
   return evict(n_blocks, &evict_keys);
 }
 
+size_t PrefixCache::insert_with_checkpoint_slots(
+    const Slice<int32_t>& token_ids,
+    std::vector<Block>& blocks,
+    size_t existed_shared_blocks_num,
+    const Slice<int32_t>& checkpoint_slot_ids) {
+  std::vector<XXH3Key> insert_keys;
+  return insert(
+      token_ids, blocks, existed_shared_blocks_num, &insert_keys,
+      checkpoint_slot_ids);
+}
+
+size_t PrefixCache::evict_with_freed_slots(
+    size_t n_blocks,
+    std::vector<int32_t>& freed_checkpoint_slots) {
+  std::vector<XXH3Key> evict_keys;
+  return evict(n_blocks, &evict_keys, &freed_checkpoint_slots);
+}
+
 size_t PrefixCache::insert(const Slice<int32_t>& token_ids,
                            std::vector<Block>& blocks,
                            size_t existed_shared_blocks_num,
-                           std::vector<XXH3Key>* insert_keys) {
+                           std::vector<XXH3Key>* insert_keys,
+                           const Slice<int32_t>& checkpoint_slot_ids) {
   const int64_t now = absl::ToUnixMicros(absl::Now());
   // allign tokens to block boundary
   const size_t n_blocks =
@@ -165,6 +211,7 @@ size_t PrefixCache::insert(const Slice<int32_t>& token_ids,
                                              .get_immutable_hash_value()};
 
   uint32_t block_idx = existed_shared_blocks_num;
+  uint32_t slot_idx = 0;
   insert_keys->reserve(n_blocks);
   for (size_t i = existed_shared_blocks_num * block_size_; i < n_tokens;
        i += block_size_) {
@@ -189,6 +236,9 @@ size_t PrefixCache::insert(const Slice<int32_t>& token_ids,
 
       new_node->block = blocks[block_idx];
       new_node->last_access_time = now;
+      if (slot_idx < checkpoint_slot_ids.size()) {
+        new_node->checkpoint_slot_id = checkpoint_slot_ids[slot_idx];
+      }
 
       node_list.push_front(new_node);
 
@@ -200,6 +250,7 @@ size_t PrefixCache::insert(const Slice<int32_t>& token_ids,
     }
 
     ++block_idx;
+    ++slot_idx;
   }
 
   while (!node_list.is_empty()) {
@@ -253,7 +304,8 @@ size_t PrefixCache::insert(Slice<Block>& blocks,
   return blocks.size() * block_size_;
 }
 
-size_t PrefixCache::evict(size_t n_blocks, std::vector<XXH3Key>* evict_keys) {
+size_t PrefixCache::evict(size_t n_blocks, std::vector<XXH3Key>* evict_keys,
+                          std::vector<int32_t>* freed_checkpoint_slots) {
   if (num_blocks_ == 0 || lru_lst_.is_empty()) {
     return 0;
   }
@@ -279,6 +331,11 @@ size_t PrefixCache::evict(size_t n_blocks, std::vector<XXH3Key>* evict_keys) {
     XXH3Key token_hash_key(del_node->block.get_immutable_hash_value());
 
     cached_blocks_.erase(token_hash_key);
+
+    if (freed_checkpoint_slots != nullptr &&
+        del_node->checkpoint_slot_id >= 0) {
+      freed_checkpoint_slots->push_back(del_node->checkpoint_slot_id);
+    }
 
     delete del_node;
     ++evict_count;
