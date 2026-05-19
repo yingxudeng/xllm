@@ -20,6 +20,7 @@ limitations under the License.
 
 #include "core/common/global_flags.h"
 #include "core/framework/batch/batch_input_builder.h"
+#include "core/framework/block/block_manager_impl.h"
 #include "core/framework/request/stopping_checker.h"
 #include "core/runtime/forward_params.h"
 #include "core/runtime/params_utils.h"
@@ -59,6 +60,10 @@ TEST(BatchPackedInputTest, PackedProtoLazyUnpackRestoresSampleIdxes) {
 
   torch::Tensor input_embedding;
   MMData mm_data;
+  BlockManager::Options options;
+  options.num_blocks(2).block_size(4);
+  BlockManagerImpl manager(options);
+
   IncrementalDecoder decoder("", 1, false, false);
   Sequence seq(/*index=*/0,
                /*token_ids=*/{1, 2, 3, 4},
@@ -66,6 +71,8 @@ TEST(BatchPackedInputTest, PackedProtoLazyUnpackRestoresSampleIdxes) {
                mm_data,
                std::move(decoder),
                seq_params);
+
+  seq.add_kv_blocks(manager.allocate(1));
 
   std::vector<Sequence*> sequences = {&seq};
   std::vector<uint32_t> budgets = {4};
