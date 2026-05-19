@@ -129,19 +129,15 @@ class ScopedAtenLoadThreads {
 void prepare_input_params_for_linear_attention(ModelInputParams& input_params) {
   int64_t batch_size = input_params.attention.device.block_tables.size(0);
   input_params.parallel.query_start_loc.resize(batch_size + 1, 0);
-  int64_t max_seq_len = 0;
   for (int64_t i = 0; i < batch_size; ++i) {
     int64_t seq_len =
         static_cast<int64_t>(input_params.attention.host.q_seq_lens[i]);
-    max_seq_len = std::max(max_seq_len, seq_len);
-  }
-
-  for (int64_t i = 0; i < batch_size; ++i) {
-    input_params.parallel.query_start_loc[i + 1] = max_seq_len * (i + 1);
+    input_params.parallel.query_start_loc[i + 1] =
+        input_params.parallel.query_start_loc[i] + seq_len;
   }
 
   torch::Tensor has_initial_state_tensor =
-      input_params.attention.device.kv_seq_lens > 0;
+      input_params.attention.device.kv_cache_tokens_nums > 0;
   torch::Tensor has_initial_state_int64 =
       has_initial_state_tensor.contiguous().to(torch::kCPU).to(torch::kInt64);
   input_params.parallel.has_initial_state =
