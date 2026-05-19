@@ -27,8 +27,8 @@ limitations under the License.
 #include <unordered_map>
 #include <vector>
 
-#include "common/global_flags.h"
 #include "common/types.h"
+#include "framework/config/execution_config.h"
 #include "framework/model/model_input_params.h"
 #include "framework/request/mm_batch_data.h"
 #include "framework/request/mm_data.h"
@@ -423,7 +423,8 @@ struct ForwardInput {
     if (input_host_buffer_has_layout) {
       ForwardInput buffer_inputs;
       const bool materialize_device_buffer =
-          FLAGS_use_contiguous_input_buffer &&
+          ::xllm::ExecutionConfig::get_instance()
+              .use_contiguous_input_buffer() &&
           detail::supports_contiguous_forward_input_buffer(device);
       if (detail::unpack_from_input_host_buffer(
               *this, device, dtype, buffer_inputs, materialize_device_buffer)) {
@@ -434,7 +435,7 @@ struct ForwardInput {
       }
     }
 
-    if (FLAGS_use_contiguous_input_buffer &&
+    if (::xllm::ExecutionConfig::get_instance().use_contiguous_input_buffer() &&
         detail::supports_contiguous_forward_input_buffer(device)) {
       ForwardInput contiguous_inputs;
       if (to_contiguous_input_buffer(device, contiguous_inputs)) {
