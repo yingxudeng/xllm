@@ -32,6 +32,7 @@ class ModelConfig final {
 
   void from_flags();
   void initialize();
+  void normalize_cpp_chat_template(const std::string& model_type);
 
   [[nodiscard]] static const OptionCategory& option_category() {
     static const OptionCategory kOptionCategory = {

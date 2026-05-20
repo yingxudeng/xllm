@@ -43,4 +43,5 @@ cc_library(
     speculative_config.cpp
   DEPS
     gflags::gflags
+    glog::glog
 )
