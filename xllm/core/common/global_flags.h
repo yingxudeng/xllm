@@ -17,6 +17,8 @@ limitations under the License.
 
 #include <gflags/gflags.h>
 
+DECLARE_string(config_json_file);
+
 DECLARE_string(host);
 
 DECLARE_int32(port);
@@ -201,7 +203,7 @@ DECLARE_bool(enable_starve_prevent);
 // --- kvcache store config ---
 DECLARE_uint32(prefetch_timeout);
 
-DECLARE_uint32(prefetch_bacth_size);
+DECLARE_uint32(prefetch_batch_size);
 
 DECLARE_uint32(layers_wise_copy_batchs);
 

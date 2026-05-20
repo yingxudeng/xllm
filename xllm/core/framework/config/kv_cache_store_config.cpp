@@ -16,12 +16,13 @@ limitations under the License.
 #include "core/framework/config/kv_cache_store_config.h"
 
 #include "core/common/global_flags.h"
+#include "core/framework/config/config_json_utils.h"
 
 DEFINE_uint32(prefetch_timeout,
               0,
               "Prefetch timeout for prefetch from kv cache store.");
 
-DEFINE_uint32(prefetch_bacth_size,
+DEFINE_uint32(prefetch_batch_size,
               2,
               "Prefetch from kvcache store copy batch size.");
 
@@ -63,7 +64,7 @@ namespace xllm {
 
 void KVCacheStoreConfig::from_flags() {
   prefetch_timeout(FLAGS_prefetch_timeout)
-      .prefetch_bacth_size(FLAGS_prefetch_bacth_size)
+      .prefetch_batch_size(FLAGS_prefetch_batch_size)
       .layers_wise_copy_batchs(FLAGS_layers_wise_copy_batchs)
       .host_blocks_factor(FLAGS_host_blocks_factor)
       .enable_kvcache_store(FLAGS_enable_kvcache_store)
@@ -75,11 +76,41 @@ void KVCacheStoreConfig::from_flags() {
       .enable_control_h2d_block_num(FLAGS_enable_control_h2d_block_num);
 }
 
+void KVCacheStoreConfig::from_json(const JsonReader& json) {
+  prefetch_timeout(
+      json.value_or<uint32_t>("prefetch_timeout", prefetch_timeout()))
+      .prefetch_batch_size(
+          json.value_or<uint32_t>("prefetch_batch_size", prefetch_batch_size()))
+      .layers_wise_copy_batchs(json.value_or<uint32_t>(
+          "layers_wise_copy_batchs", layers_wise_copy_batchs()))
+      .host_blocks_factor(
+          json.value_or<double>("host_blocks_factor", host_blocks_factor()))
+      .enable_kvcache_store(
+          json.value_or<bool>("enable_kvcache_store", enable_kvcache_store()))
+      .enable_cache_upload(
+          json.value_or<bool>("enable_cache_upload", enable_cache_upload()))
+      .store_protocol(
+          json.value_or<std::string>("store_protocol", store_protocol()))
+      .store_master_server_address(json.value_or<std::string>(
+          "store_master_server_address", store_master_server_address()))
+      .store_metadata_server(json.value_or<std::string>(
+          "store_metadata_server", store_metadata_server()))
+      .store_local_hostname(json.value_or<std::string>("store_local_hostname",
+                                                       store_local_hostname()))
+      .enable_control_h2d_block_num(json.value_or<bool>(
+          "enable_control_h2d_block_num", enable_control_h2d_block_num()));
+}
+
 KVCacheStoreConfig& KVCacheStoreConfig::get_instance() {
   static KVCacheStoreConfig config;
   return config;
 }
 
-void KVCacheStoreConfig::initialize() { from_flags(); }
+void KVCacheStoreConfig::initialize() {
+  from_flags();
+  if (const auto& json_config = config::get_parsed_json_config()) {
+    from_json(*json_config);
+  }
+}
 
 }  // namespace xllm

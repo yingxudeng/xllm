@@ -23,6 +23,8 @@ limitations under the License.
 
 namespace xllm {
 
+class JsonReader;
+
 class KVCacheStoreConfig final {
  public:
   KVCacheStoreConfig() = default;
@@ -31,13 +33,14 @@ class KVCacheStoreConfig final {
   static KVCacheStoreConfig& get_instance();
 
   void from_flags();
+  void from_json(const JsonReader& json);
   void initialize();
 
   [[nodiscard]] static const OptionCategory& option_category() {
     static const OptionCategory kOptionCategory = {
         "KV CACHE STORE OPTIONS",
         {"prefetch_timeout",
-         "prefetch_bacth_size",
+         "prefetch_batch_size",
          "layers_wise_copy_batchs",
          "host_blocks_factor",
          "enable_kvcache_store",
@@ -52,7 +55,7 @@ class KVCacheStoreConfig final {
 
   PROPERTY(uint32_t, prefetch_timeout) = 0;
 
-  PROPERTY(uint32_t, prefetch_bacth_size) = 2;
+  PROPERTY(uint32_t, prefetch_batch_size) = 2;
 
   PROPERTY(uint32_t, layers_wise_copy_batchs) = 4;
 
