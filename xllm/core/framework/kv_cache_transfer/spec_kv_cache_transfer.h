@@ -27,7 +27,8 @@ class SpecKVCacheTransfer : public LlmDataDistTransfer {
   SpecKVCacheTransfer(const std::string& device_ip,
                       const uint16_t listen_port,
                       const InstanceRole& instance_role,
-                      const std::string& model_type = "");
+                      const std::string& model_type = "",
+                      bool enable_lighting_indexer = false);
 
   virtual ~SpecKVCacheTransfer() = default;
 
@@ -61,16 +62,22 @@ class SpecKVCacheTransfer : public LlmDataDistTransfer {
   bool push_kv_blocks(
       std::unordered_map<std::string, KVCacheInfo>& merged_kv_infos,
       std::shared_ptr<NPULayerSynchronizerImpl>& layer_synchronizer,
-      bool is_spec_draft) override;
+      bool is_spec_draft,
+      int32_t kv_split_rank,
+      int32_t kv_split_size) override;
 
   bool push_kv_blocks_spec(
       std::unordered_map<std::string, KVCacheInfo>& merged_kv_infos,
-      std::shared_ptr<NPULayerSynchronizerImpl>& layer_synchronizer);
+      std::shared_ptr<NPULayerSynchronizerImpl>& layer_synchronizer,
+      int32_t kv_split_rank = 0,
+      int32_t kv_split_size = 1);
 
   bool push_kv_blocks_internal(
       std::unordered_map<std::string, KVCacheInfo>& merged_kv_infos,
       std::shared_ptr<NPULayerSynchronizerImpl>& layer_synchronizer,
-      const LayerRegisteredCaches& layer_registered_caches);
+      const LayerRegisteredCaches& layer_registered_caches,
+      int32_t kv_split_rank = 0,
+      int32_t kv_split_size = 1);
 
   void merge_kv_blocks(
       std::unordered_map<std::string, KVCacheInfo>& merged_kv_infos,
