@@ -230,8 +230,8 @@ class MiniMaxM2ModelImpl : public torch::nn::Module {
                       const ModelInputParams& input_params) {
     ModelInputParams modified_input_params = input_params;
     torch::Tensor h;
-    if (input_params.input_embedding.defined()) {
-      h = input_params.input_embedding;
+    if (input_params.embedding.input_embedding.defined()) {
+      h = input_params.embedding.input_embedding;
     } else if (tokens.numel() == 0) {
       h = torch::empty({0, hidden_size_}, embed_tokens_->weight().options());
     } else {
@@ -289,22 +289,22 @@ class MiniMaxM2ModelImpl : public torch::nn::Module {
   layer::AttentionMetadata get_attention_metadata(
       const ModelInputParams& params,
       const torch::Tensor& h) {
-    if (params.q_max_seq_len == 0) {
+    if (params.meta.q_max_seq_len == 0) {
       return layer::AttentionMetadataBuilder::build(params, enable_mla_);
     }
 
-    max_seq_len_ = std::max(params.kv_max_seq_len, max_seq_len_);
+    max_seq_len_ = std::max(params.meta.kv_max_seq_len, max_seq_len_);
     torch::Tensor attn_mask;
     if (FLAGS_enable_chunked_prefill) {
-      const int32_t max_kv_seq = params.kv_max_seq_len;
-      const int32_t num_sequences = params.num_sequences;
+      const int32_t max_kv_seq = params.meta.kv_max_seq_len;
+      const int32_t num_sequences = params.meta.num_sequences;
       if (num_sequences > 0) {
         std::vector<torch::Tensor> req_mask_vec;
         req_mask_vec.reserve(num_sequences);
         for (int32_t j = 0; j < num_sequences; ++j) {
           req_mask_vec.emplace_back(
-              attn_mask_.gen_append_mask(params.q_seq_lens_vec[j],
-                                         params.kv_seq_lens_vec[j],
+              attn_mask_.gen_append_mask(params.attention.host.q_seq_lens[j],
+                                         params.attention.host.kv_seq_lens[j],
                                          max_kv_seq,
                                          h.dtype().toScalarType(),
                                          h.device()));
