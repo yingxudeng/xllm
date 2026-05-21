@@ -876,8 +876,7 @@ struct ModelInputParams {
       params.multi_block_tables.push_back(
           safe_to(table, table.options().device(torch::kCPU), true));
     }
-    params.mtp_shifted_token_ids =
-        safe_to(mtp_shifted_token_ids, device, true);
+    params.mtp_shifted_token_ids = safe_to(mtp_shifted_token_ids, device, true);
 
     // rec_params device conversion for both OneRec and LLM-Rec variants
     if (const auto* onerec_xattn = onerec_xattention_params()) {
