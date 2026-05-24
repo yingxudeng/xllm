@@ -75,7 +75,7 @@ int64_t get_decode_graph_capacity(const runtime::Options& options) {
 }
 
 bool is_qwen3_5_model_type(const std::string& model_type) {
-  return model_type == "qwen3_5" || model_type == "qwen3_5_moe";
+  return model_type == "qwen3_5" || model_type.rfind("qwen3_5_", 0) == 0;
 }
 
 }  // namespace
@@ -1236,8 +1236,7 @@ AclGraphExecutorImpl::AclGraphExecutorImpl(CausalLM* model,
                                            const runtime::Options& options)
     : model_(model), args_(args), device_(device), options_(options) {
   // Create single persistent parameter object shared by all AclGraph instances
-  const bool need_update_attn_mask =
-      args.model_type() == "qwen3_5" || args.model_type() == "qwen3_5_moe";
+  const bool need_update_attn_mask = is_qwen3_5_model_type(args.model_type());
   persistent_param_ = std::make_unique<GraphPersistentParam>(
       args_, device_, options_, need_update_attn_mask);
 }
