@@ -44,6 +44,18 @@ void synchronize_current_npu_stream(c10::DeviceIndex device_index,
 }
 #endif
 
+void copy_ssm_checkpoint_slot(const torch::Tensor& ssm_cache,
+                              int32_t dst_slot_id,
+                              int32_t src_slot_id,
+                              int64_t checkpoint_stride) {
+  const int64_t dst_offset =
+      static_cast<int64_t>(dst_slot_id) * checkpoint_stride;
+  const int64_t src_offset =
+      static_cast<int64_t>(src_slot_id) * checkpoint_stride;
+  ssm_cache.narrow(0, dst_offset, checkpoint_stride)
+      .copy_(ssm_cache.narrow(0, src_offset, checkpoint_stride));
+}
+
 }  // namespace
 
 LinearStateCheckpointManager::LinearStateCheckpointManager(
@@ -70,7 +82,10 @@ void LinearStateCheckpointManager::initialize() {
     if (!conv_cache.defined() || !ssm_cache.defined()) {
       continue;
     }
-    CHECK_EQ(conv_cache.size(0), ssm_cache.size(0));
+    CHECK_GT(conv_cache.size(0), 0) << "conv cache must have positive slots.";
+    CHECK_EQ(ssm_cache.size(0) % conv_cache.size(0), 0)
+        << "ssm cache checkpoint layout mismatch, ssm_rows="
+        << ssm_cache.size(0) << ", conv_rows=" << conv_cache.size(0);
     if (num_linear_state_blocks == 0) {
       num_linear_state_blocks = conv_cache.size(0);
       continue;
@@ -240,10 +255,11 @@ bool LinearStateCheckpointManager::checkpoint_to_slot(
     if (!conv_cache.defined() || !ssm_cache.defined()) {
       continue;
     }
+    const int64_t checkpoint_stride = ssm_cache.size(0) / conv_cache.size(0);
     conv_cache.select(0, checkpoint_slot_id)
         .copy_(conv_cache.select(0, linear_state_id));
-    ssm_cache.select(0, checkpoint_slot_id)
-        .copy_(ssm_cache.select(0, linear_state_id));
+    copy_ssm_checkpoint_slot(
+        ssm_cache, checkpoint_slot_id, linear_state_id, checkpoint_stride);
     copied = true;
   }
 
@@ -282,10 +298,11 @@ bool LinearStateCheckpointManager::restore_from_slot(
     if (!conv_cache.defined() || !ssm_cache.defined()) {
       continue;
     }
+    const int64_t checkpoint_stride = ssm_cache.size(0) / conv_cache.size(0);
     conv_cache.select(0, linear_state_id)
         .copy_(conv_cache.select(0, checkpoint_slot_id));
-    ssm_cache.select(0, linear_state_id)
-        .copy_(ssm_cache.select(0, checkpoint_slot_id));
+    copy_ssm_checkpoint_slot(
+        ssm_cache, linear_state_id, checkpoint_slot_id, checkpoint_stride);
     copied = true;
   }
   if (!copied) {
