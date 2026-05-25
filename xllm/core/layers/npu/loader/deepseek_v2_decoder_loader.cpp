@@ -55,6 +55,7 @@ DeekseekV2DecoderLoader::DeekseekV2DecoderLoader(
       decode_isBF16_(decode_isBF16) {
   auto model_args = context.get_model_args();
   auto options = context.get_tensor_options();
+  enable_kimi_k25_moe_scale_dtype_fix_ = model_args.model_type() == "kimi_k25";
 
   rank_ = parallel_args_.rank();
   first_k_dense_replace_ = model_args.first_k_dense_replace();
@@ -339,6 +340,9 @@ void DeekseekV2DecoderLoader::process_general_weights(
 
   correct_tensor_dtype(tmp_tensor, name);
   working_tensors()[index] = tmp_tensor;
+  if (layer_id_ != n_layers_ && absl::StrContains(name, "layernorm.weight")) {
+    working_tensors()[index + 1] = torch::zeros_like(tmp_tensor);
+  }
 }
 
 void DeekseekV2DecoderLoader::process_mlp_common_weights(
@@ -754,6 +758,14 @@ void DeekseekV2DecoderLoader::merge_host_at_weights() {
   t[IN_BLOCK_SPARSE_MOE_GATE_WEIGHT] =
       t[IN_BLOCK_SPARSE_MOE_GATE_WEIGHT].to(torch::kFloat32);
   if (quantize_type_ == "w8a8_dynamic") {
+    if (enable_kimi_k25_moe_scale_dtype_fix_) {
+      t[IN_MLP_GATEUP_SCALE_EXPERT] =
+          t[IN_MLP_GATEUP_SCALE_EXPERT].to(torch::kBFloat16);
+      t[IN_MLP_DOWN_SCALE_EXPERT] =
+          t[IN_MLP_DOWN_SCALE_EXPERT].to(torch::kBFloat16);
+    }
+    // at_weight_tensors_[IN_BLOCK_SPARSE_MOE_GATE_WEIGHT] =
+    //     at_weight_tensors_[IN_BLOCK_SPARSE_MOE_GATE_WEIGHT].to(torch::kFloat32);
     if (!prefill_isBF16_) {
       t[IN_Q_PROJ_A_DESCALE] = convert_fp16_to_int64(t[IN_Q_PROJ_A_DESCALE]);
       t[IN_Q_PROJ_B_DESCALE] = convert_fp16_to_int64(t[IN_Q_PROJ_B_DESCALE]);

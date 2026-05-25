@@ -720,6 +720,32 @@ void WorkerImpl::prepare_work_before_execute(const ForwardInput& input,
 
     auto& input_params = processed_input.input_params;
 
+    bool empty_shard = input_params.meta.num_sequences == 0 &&
+                       (!processed_input.token_ids.defined() ||
+                        processed_input.token_ids.numel() == 0);
+    const bool need_fake_input_for_empty_shard =
+        empty_shard && !input_params.meta.batch_forward_type.is_empty() &&
+        (context_.get_parallel_args().cp_size() > 1 ||
+         (context_.get_parallel_args().dp_size() > 1 ||
+          context_.get_parallel_args().ep_size() > 1 ||
+          !context_.get_parallel_args().mapping_data().empty()));
+    if (need_fake_input_for_empty_shard) {
+      auto token_options = processed_input.token_ids.defined()
+                               ? processed_input.token_ids.options()
+                               : torch::TensorOptions().dtype(torch::kInt32);
+      auto position_options = processed_input.positions.defined()
+                                  ? processed_input.positions.options()
+                                  : torch::TensorOptions().dtype(torch::kInt32);
+      processed_input.token_ids =
+          torch::ones({1}, token_options.device(device_));
+      processed_input.positions =
+          torch::zeros({1}, position_options.device(device_));
+      empty_shard = false;
+    }
+    if (empty_shard) {
+      return;
+    }
+
     apply_kv_block_swaps(input_params);
 
 #if defined(USE_NPU)
