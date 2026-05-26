@@ -51,8 +51,8 @@ cc_library(
     "-Wl,--whole-archive"
     "-Wl,--no-whole-archive"
     :kv_cache
-    :prefix_cache
     :block
+    :prefix_cache
     :parallel_state
     :state_dict
     :model

@@ -145,6 +145,10 @@ struct AttentionMetadata {
   // custom attention mask
   torch::Tensor attn_mask;
 
+  // DeepSeek V4 sparse attention metadata (optional).
+  // Built by DSAMetadataBuilder and shared across all layers.
+  std::shared_ptr<DSAMetadata> dsa_metadata;
+
 #if defined(USE_NPU)
   // for npu
   torch::Tensor kv_seq_lens_host;
@@ -153,9 +157,6 @@ struct AttentionMetadata {
   // operations that break ACL graph capture.
   torch::Tensor paged_attention_tiling_data;
 
-  // DeepSeek V4 sparse attention metadata (optional).
-  // Built by DSAMetadataBuilder and shared across all layers.
-  std::shared_ptr<DSAMetadata> dsa_metadata;
 #endif
 };
 
