@@ -21,3 +21,25 @@ cc_test(
     :request
     GTest::gtest_main
 )
+
+cc_test(
+  NAME
+    sequence_kv_state_test
+  SRCS
+    sequence_kv_state_test.cpp
+  DEPS
+    :request
+    $<$<BOOL:${USE_MLU}>:torch_mlu>
+    $<$<BOOL:${USE_NPU}>:torch_npu>
+    GTest::gtest_main
+)
+target_link_libraries(sequence_kv_state_test
+                      PUBLIC
+                      Python::Python
+                      $<$<BOOL:${USE_NPU}>:ascendcl>
+                      $<$<BOOL:${USE_NPU}>:hccl>
+                      $<$<BOOL:${USE_NPU}>:c_sec>
+                      $<$<BOOL:${USE_NPU}>:nnopbase>)
+target_link_options(sequence_kv_state_test
+                    PRIVATE
+                    $<$<BOOL:${USE_MLU}>:-Wl,--no-as-needed>)
