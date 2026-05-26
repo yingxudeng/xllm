@@ -486,7 +486,7 @@ void BatchInputBuilder::extract_tokens_and_positions(Sequence* sequence,
     linear_state_cache_op.linear_state_id = state.linear_state_ids.back();
     linear_state_cache_op.request_id = sequence->request_id();
     linear_state_cache_op.restore_prefix_hash =
-        get_prefix_boundary_hash(sequence, n_kv_cache_tokens);
+        compute_prefix_boundary_hash(sequence, n_kv_cache_tokens);
     linear_state_cache_op.save_prefix_hash =
         compute_prefix_boundary_hash(sequence, seq_len);
     state.linear_state_cache_ops.emplace_back(std::move(linear_state_cache_op));

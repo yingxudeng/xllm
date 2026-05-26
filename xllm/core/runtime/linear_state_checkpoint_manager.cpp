@@ -18,6 +18,8 @@ limitations under the License.
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 
+#include <utility>
+
 #if defined(USE_NPU)
 #include "acl/acl.h"
 #include "platform/npu/device_capture_lock.h"
@@ -74,6 +76,7 @@ void LinearStateCheckpointManager::initialize() {
   lru_.clear();
   lru_iters_.clear();
   active_requests_.clear();
+  pending_evicted_prefix_hashes_.clear();
 
   int64_t num_linear_state_blocks = 0;
   for (const auto& kv_cache : kv_caches_) {
@@ -115,6 +118,8 @@ void LinearStateCheckpointManager::initialize() {
 LinearStateCheckpointManager::SaveResult LinearStateCheckpointManager::save(
     const std::vector<LinearStateCacheOp>& cache_ops) {
   SaveResult result;
+  result.evicted_prefix_hashes =
+      std::exchange(pending_evicted_prefix_hashes_, {});
   if (!FLAGS_enable_prefix_cache) {
     return result;
   }
@@ -174,6 +179,18 @@ LinearStateCheckpointManager::restore(
     auto active_it = active_requests_.find(linear_state_id);
     if (!request_id.empty() && active_it != active_requests_.end() &&
         active_it->second == request_id) {
+      const LinearStatePrefixHash& restore_prefix_hash =
+          cache_op.restore_prefix_hash;
+      if (FLAGS_enable_prefix_cache &&
+          !is_zero_prefix_hash(restore_prefix_hash)) {
+        if (checkpoint_to_slot(restore_prefix_hash,
+                               linear_state_id,
+                               &pending_evicted_prefix_hashes_)) {
+          restored_any = true;
+          VLOG(1) << "Qwen3.5 linear state checkpoint saved; "
+                  << "linear_state_id=" << linear_state_id;
+        }
+      }
       actions[i] = RestoreAction::CONTINUED;
       continue;
     }

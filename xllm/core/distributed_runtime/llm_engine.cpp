@@ -76,9 +76,12 @@ void add_linear_state_checkpoints(xllm::BlockManagerPool* block_manager_pool,
     return;
   }
   std::vector<xllm::XXH3Key> saved;
-  saved.reserve(input.linear_state_cache_ops.size());
+  saved.reserve(input.linear_state_cache_ops.size() * 2);
   for (const xllm::LinearStateCacheOp& cache_op :
        input.linear_state_cache_ops) {
+    if (!xllm::is_zero_prefix_hash(cache_op.restore_prefix_hash)) {
+      saved.emplace_back(cache_op.restore_prefix_hash.data());
+    }
     if (!xllm::is_zero_prefix_hash(cache_op.save_prefix_hash)) {
       saved.emplace_back(cache_op.save_prefix_hash.data());
     }

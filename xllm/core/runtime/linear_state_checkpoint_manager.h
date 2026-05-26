@@ -89,6 +89,7 @@ class LinearStateCheckpointManager final {
                      PrefixHashHasher>
       lru_iters_;
   std::vector<int32_t> free_checkpoint_slots_;
+  std::vector<LinearStatePrefixHash> pending_evicted_prefix_hashes_;
   int32_t live_slots_ = 0;
   int32_t checkpoint_slots_ = 0;
   std::unordered_map<int32_t, std::string> active_requests_;
