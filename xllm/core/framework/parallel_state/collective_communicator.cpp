@@ -36,9 +36,110 @@ limitations under the License.
 #include "core/framework/config/parallel_config.h"
 #include "parallel_args.h"
 #include "process_group.h"
+#include "util/json_reader.h"
 #include "util/net.h"
 
 namespace xllm {
+
+#if defined(USE_NPU)
+namespace {
+
+bool rank_table_rank_id_matches(const nlohmann::json& rank_id,
+                                const std::string& target_rank_id) {
+  if (rank_id.is_string()) {
+    return rank_id.get<std::string>() == target_rank_id;
+  }
+  if (rank_id.is_number_integer()) {
+    return std::to_string(rank_id.get<int64_t>()) == target_rank_id;
+  }
+  return false;
+}
+
+std::string get_rank_table_server_host(int32_t global_rank,
+                                       const std::string& fallback_host) {
+  const std::string& rank_tablefile =
+      ::xllm::EPLBConfig::get_instance().rank_tablefile();
+  if (rank_tablefile.empty()) {
+    return fallback_host;
+  }
+
+  JsonReader rank_table_reader;
+  if (!rank_table_reader.parse(rank_tablefile)) {
+    return fallback_host;
+  }
+
+  const nlohmann::json rank_table = rank_table_reader.data();
+  if (!rank_table.is_object()) {
+    return fallback_host;
+  }
+
+  const std::string target_rank_id = std::to_string(global_rank);
+  auto search_server_list =
+      [&target_rank_id](const nlohmann::json& server_list) {
+        if (!server_list.is_array()) {
+          return std::string();
+        }
+
+        for (const nlohmann::json& server : server_list) {
+          if (!server.is_object()) {
+            continue;
+          }
+
+          auto server_id = server.find("server_id");
+          auto devices = server.find("device");
+          if (server_id == server.end() || !server_id->is_string() ||
+              server_id->get<std::string>().empty() ||
+              devices == server.end() || !devices->is_array()) {
+            continue;
+          }
+
+          for (const nlohmann::json& device : *devices) {
+            if (!device.is_object()) {
+              continue;
+            }
+
+            auto rank_id = device.find("rank_id");
+            if (rank_id != device.end() &&
+                rank_table_rank_id_matches(*rank_id, target_rank_id)) {
+              return server_id->get<std::string>();
+            }
+          }
+        }
+        return std::string();
+      };
+
+  auto server_list = rank_table.find("server_list");
+  if (server_list != rank_table.end()) {
+    const std::string host = search_server_list(*server_list);
+    if (!host.empty()) {
+      return host;
+    }
+  }
+
+  auto group_list = rank_table.find("group_list");
+  if (group_list != rank_table.end() && group_list->is_array()) {
+    for (const nlohmann::json& group : *group_list) {
+      if (!group.is_object()) {
+        continue;
+      }
+
+      server_list = group.find("server_list");
+      if (server_list == group.end()) {
+        continue;
+      }
+
+      const std::string host = search_server_list(*server_list);
+      if (!host.empty()) {
+        return host;
+      }
+    }
+  }
+
+  return fallback_host;
+}
+
+}  // namespace
+#endif
 
 CollectiveCommunicator::CollectiveCommunicator(int global_rank,
                                                int world_size,
@@ -168,12 +269,20 @@ void CollectiveCommunicator::create_process_groups(
   int tp_size = world_size / dp_size;
   CHECK_EQ(tp_size * dp_size, world_size);
   int port_offset = global_rank / tp_size + 1;
+  std::string tp_host = host;
+#if defined(USE_NPU)
+  if (::xllm::KernelConfig::get_instance().npu_kernel_backend() == "TORCH" &&
+      dp_size > 1) {
+    const int32_t tp_group_start = (global_rank / tp_size) * tp_size;
+    tp_host = get_rank_table_server_host(tp_group_start, host);
+  }
+#endif
   tp_group_ = create_process_group(global_rank,
                                    world_size,
                                    tp_size,
                                    port + port_offset,
                                    false,
-                                   host,
+                                   tp_host,
                                    "tp_group",
                                    device);
   parallel_args_->tp_group_ = tp_group_.get();
@@ -218,12 +327,20 @@ void CollectiveCommunicator::create_process_groups(
   if (ep_size > 1) {
     int moe_tp_size = world_size / ep_size;
     port_offset = global_rank / moe_tp_size + 1;
+    std::string moe_tp_host = host;
+#if defined(USE_NPU)
+    if (::xllm::KernelConfig::get_instance().npu_kernel_backend() == "TORCH") {
+      const int32_t moe_tp_group_start =
+          (global_rank / moe_tp_size) * moe_tp_size;
+      moe_tp_host = get_rank_table_server_host(moe_tp_group_start, host);
+    }
+#endif
     moe_tp_group_ = create_process_group(global_rank,
                                          world_size,
                                          moe_tp_size,
                                          port + port_offset,
                                          false,
-                                         host,
+                                         moe_tp_host,
                                          "moe_tp_group",
                                          device);
     parallel_args_->moe_tp_group_ = moe_tp_group_.get();
