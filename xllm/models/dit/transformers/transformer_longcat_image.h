@@ -15,7 +15,7 @@ limitations under the License.
 
 #pragma once
 
-#include "transformer_flux.h"
+#include "models/dit/transformers/transformer_flux.h"
 
 namespace xllm {
 

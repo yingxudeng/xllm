@@ -24,17 +24,17 @@ limitations under the License.
 #include <memory>
 #include <string>
 
-#include "autoencoder_kl.h"
-#include "clip_text_model.h"
 #include "core/framework/dit_model_loader.h"
 #include "core/framework/model_context.h"
 #include "core/framework/request/dit_request_state.h"
 #include "core/framework/state_dict/state_dict.h"
 #include "core/framework/state_dict/utils.h"
-#include "flowmatch_euler_discrete_scheduler.h"
+#include "models/dit/autoencoders/autoencoder_kl.h"
+#include "models/dit/encoders/clip_text_model.h"
+#include "models/dit/encoders/t5_encoder.h"
+#include "models/dit/schedulers/flowmatch_euler_discrete_scheduler.h"
+#include "models/dit/transformers/transformer_flux.h"
 #include "models/model_registry.h"
-#include "t5_encoder.h"
-#include "transformer_flux.h"
 
 namespace xllm {
 

@@ -16,7 +16,7 @@ limitations under the License.
 #include <torch/torch.h>
 
 #include "lanczos_resample.h"
-#include "models/dit/flowmatch_euler_discrete_scheduler.h"
+#include "models/dit/schedulers/flowmatch_euler_discrete_scheduler.h"
 
 namespace xllm::dit {
 
@@ -76,7 +76,7 @@ torch::Tensor randn_tensor(const std::vector<int64_t>& shape,
   if (shape.empty()) {
     LOG(FATAL) << "Shape must not be empty.";
   }
-  at::Generator gen = at::detail::createCPUGenerator();
+  torch::Generator gen = torch::make_generator<torch::CPUGeneratorImpl>();
   gen = gen.clone();
   gen.set_current_seed(seed);
   torch::Tensor latents;

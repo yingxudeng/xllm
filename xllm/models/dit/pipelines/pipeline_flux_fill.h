@@ -14,8 +14,8 @@ limitations under the License.
 ==============================================================================*/
 
 #pragma once
-#include "pipeline_flux_base.h"
-#include "transformer_flux.h"
+#include "models/dit/pipelines/pipeline_flux_base.h"
+#include "models/dit/transformers/transformer_flux.h"
 // pipeline_flux_fill compatible with huggingface weights
 // ref to:
 // https://github.com/huggingface/diffusers/blob/main/src/diffusers/pipelines/flux/pipeline_flux_fill.py
@@ -365,7 +365,7 @@ class FluxFillPipelineImpl : public FluxPipelineBaseImpl {
 
     torch::Tensor guidance;
     if (transformer_->guidance_embeds()) {
-      guidance = torch::full(at::IntArrayRef({1}), guidance_scale, options_);
+      guidance = torch::full(torch::IntArrayRef({1}), guidance_scale, options_);
       guidance = guidance.expand({latents.value().size(0)});
     }
 

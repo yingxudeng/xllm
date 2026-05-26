@@ -973,10 +973,13 @@ class FeedForwardImpl : public torch::nn::Module {
         "linear1",
         layer::AddMatmul(dim, inner_dim, /*with_bias=*/true, options_));
     // activation
-    activation_ = register_module(
-        "activation",
-        torch::nn::Functional(std::function<at::Tensor(const at::Tensor&)>(
-            [](const at::Tensor& x) { return torch::gelu(x, "tanh"); })));
+    activation_ =
+        register_module("activation",
+                        torch::nn::Functional(
+                            std::function<torch::Tensor(const torch::Tensor&)>(
+                                [](const torch::Tensor& x) {
+                                  return torch::gelu(x, "tanh");
+                                })));
 
     // linear2
 

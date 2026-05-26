@@ -36,8 +36,8 @@ limitations under the License.
 #include "core/framework/state_dict/state_dict.h"
 #include "core/framework/state_dict/utils.h"
 #include "framework/model_context.h"
+#include "models/dit/encoders/t5_encoder.h"  // reuse T5LayerNorm, T5DenseInterface, T5LayerFFN
 #include "models/model_registry.h"
-#include "t5_encoder.h"  // reuse T5LayerNorm, T5DenseInterface, T5LayerFFN
 
 namespace xllm {
 

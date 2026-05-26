@@ -40,8 +40,8 @@ limitations under the License.
 
 #include "core/runtime/dit_forward_params.h"
 #include "core/util/json_reader.h"
+#include "models/dit/transformers/transformer_longcat_audiodit.h"
 #include "models/model_registry.h"
-#include "transformer_longcat_audiodit.h"
 
 namespace xllm {
 

@@ -41,11 +41,11 @@ limitations under the License.
 #include <string>
 #include <vector>
 
-#include "autoencoder_kl.h"  // randn_tensor
 #include "core/framework/dit_model_loader.h"
 #include "core/framework/model_context.h"
 #include "core/framework/request/dit_request_state.h"
-#include "umt5_encoder.h"
+#include "models/dit/autoencoders/autoencoder_kl.h"  // randn_tensor
+#include "models/dit/encoders/umt5_encoder.h"
 
 namespace xllm {
 

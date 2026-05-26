@@ -14,18 +14,38 @@ limitations under the License.
 ==============================================================================*/
 #pragma once
 
+#include <acl/acl.h>
+#include <torch/torch.h>
+
+#include <algorithm>
+#include <memory>
+#include <string>
+
+#include "core/common/global_flags.h"
 #include "core/framework/config/dit_config.h"
 #include "core/framework/config/parallel_config.h"
+#include "core/framework/dit_cache/dit_cache.h"
+#include "core/framework/dit_model_loader.h"
+#include "core/framework/model/model_input_params.h"
+#include "core/framework/model_context.h"
+#include "core/framework/request/dit_request_state.h"
 #include "core/framework/state_dict/state_dict.h"
-#include "pipeline_qwenimage_base.h"
+#include "core/framework/state_dict/utils.h"
+#include "framework/parallel_state/parallel_state.h"
+#include "models/dit/autoencoders/autoencoder_kl.h"
+#include "models/dit/autoencoders/autoencoder_kl_qwenimage.h"
+#include "models/dit/schedulers/flowmatch_euler_discrete_scheduler.h"
+#include "models/dit/transformers/transformer_qwen_image.h"
+#include "models/dit/utils/util.h"
+#include "models/model_registry.h"
+#include "processors/qwen2_vl_image_processor.h"
 #include "util/tensor_helper.h"
 
 #define CONDITION_IMAGE_SIZE 147456
 #define VAE_IMAGE_SIZE 1048576
 
-namespace xllm::dit::npu {
-namespace qwenimage {
-class QwenImageEditPlusPipelineImpl : public QwenImagePipelineBaseImpl {
+namespace xllm {
+class QwenImageEditPlusPipelineImpl : public torch::nn::Module {
  public:
   QwenImageEditPlusPipelineImpl(const DiTModelContext& context)
       : parallel_args_(context.get_parallel_args()),
@@ -589,6 +609,18 @@ class QwenImageEditPlusPipelineImpl : public QwenImagePipelineBaseImpl {
   }
 
  private:
+  // members from former QwenImagePipelineBaseImpl base class
+  torch::Device device_ = torch::kCPU;
+  torch::ScalarType dtype_;
+  torch::TensorOptions options_;
+  AutoencoderKLQwenImage vae_{nullptr};
+  xllm::VAEImageProcessor vae_image_processor_{nullptr};
+  std::unique_ptr<Qwen2VLImageProcessor> qwen_image_processor_{nullptr};
+  QwenImageTransformer2DModel transformer_{nullptr};
+  std::unique_ptr<Tokenizer> qwen_tokenizer_;
+  std::unique_ptr<Tokenizer> tokenizer_;
+  xllm::FlowMatchEulerDiscreteScheduler scheduler_{nullptr};
+
   int64_t vae_scale_factor_;
   int64_t latent_channels_;
   int64_t tokenizer_max_length_;
@@ -607,5 +639,4 @@ REGISTER_MODEL_ARGS(Qwen2Tokenizer, [&] {});
 TORCH_MODULE(QwenImageEditPlusPipeline);
 
 REGISTER_DIT_MODEL(QwenImageEditPlusPipeline, QwenImageEditPlusPipeline);
-}  // namespace qwenimage
-}  // namespace xllm::dit::npu
+}  // namespace xllm

@@ -33,7 +33,8 @@ limitations under the License.
 #include "core/framework/state_dict/state_dict.h"
 #include "core/layers/common/add_matmul.h"
 #include "framework/model_context.h"
-#include "models/dit/utils/common_util.h"
+#include "models/dit/utils/diagonal_gaussian_distribution.h"
+#include "models/dit/utils/util.h"
 #include "models/model_registry.h"
 
 #ifdef TORCH_HIGHER_THAN_PTA6
@@ -47,8 +48,7 @@ limitations under the License.
 // ref to:
 // https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/autoencoders/autoencoder_kl_qwenimage.py
 
-namespace xllm::dit::npu {
-namespace qwenimage {
+namespace xllm {
 
 class QwenImageBaseModule : public torch::nn::Module {
  public:
@@ -1366,77 +1366,7 @@ class QwenImageDecoder3dImpl : public torch::nn::Module {
 
 TORCH_MODULE(QwenImageDecoder3d);
 
-class DiagonalGaussianDistribution {
- public:
-  DiagonalGaussianDistribution(torch::Tensor parameters,
-                               bool deterministic = false)
-      : parameters_(std::move(parameters)), deterministic_(deterministic) {
-    auto chunks = parameters_.chunk(2, 1);
-    mean_ = chunks[0];
-    logvar_ = chunks[1];
-
-    logvar_ = torch::clamp(logvar_, -30.0f, 20.0f);
-
-    std_ = torch::exp(0.5f * logvar_);
-    var_ = torch::exp(logvar_);
-
-    if (deterministic_) {
-      std_.fill_(0.0f);
-      var_.fill_(0.0f);
-    }
-  }
-
-  torch::Tensor sample(int64_t seed) const {
-    torch::TensorOptions options = mean_.options();
-    std::vector<int64_t> shape(mean_.sizes().begin(), mean_.sizes().end());
-    return mean_ + std_ * xllm::dit::randn_tensor(shape, seed, options);
-  }
-
-  torch::Tensor kl(const std::optional<DiagonalGaussianDistribution>& other =
-                       std::nullopt) const {
-    if (deterministic_) {
-      return torch::tensor(0.0f, mean_.options());
-    }
-
-    if (!other.has_value()) {
-      return 0.5f * torch::sum(torch::pow(mean_, 2) + var_ - 1.0f - logvar_,
-                               {1, 2, 3});
-    } else {
-      const auto& other_dist = other.value();
-      return 0.5f * torch::sum(torch::pow(mean_ - other_dist.mean_, 2) /
-                                       other_dist.var_ +
-                                   var_ / other_dist.var_ - 1.0f - logvar_ +
-                                   other_dist.logvar_,
-                               {1, 2, 3});
-    }
-  }
-
-  torch::Tensor nll(const torch::Tensor& sample,
-                    const std::vector<int64_t>& dims = {1, 2, 3}) const {
-    if (deterministic_) {
-      return torch::tensor(0.0f, mean_.options());
-    }
-    const float logtwopi = std::log(2.0f * M_PI);
-    return 0.5f *
-           torch::sum(logtwopi + logvar_ + torch::pow(sample - mean_, 2) / var_,
-                      dims);
-  }
-
-  torch::Tensor mode() const { return mean_; }
-
-  const torch::Tensor& mean() const { return mean_; }
-  const torch::Tensor& std() const { return std_; }
-  const torch::Tensor& var() const { return var_; }
-  const torch::Tensor& logvar() const { return logvar_; }
-
- private:
-  torch::Tensor parameters_;
-  torch::Tensor mean_;
-  torch::Tensor logvar_;
-  torch::Tensor std_;
-  torch::Tensor var_;
-  bool deterministic_;
-};
+using dit::DiagonalGaussianDistribution;
 
 struct AutoencoderKLOutput {
   DiagonalGaussianDistribution latent_dist;
@@ -2081,5 +2011,4 @@ REGISTER_MODEL_ARGS(AutoencoderKLQwenImage, [&] {
                                    1.916}));
 });
 
-}  // namespace qwenimage
-}  // namespace xllm::dit::npu
+}  // namespace xllm

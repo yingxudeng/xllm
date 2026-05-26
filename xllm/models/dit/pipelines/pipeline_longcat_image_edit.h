@@ -23,7 +23,6 @@
 #include <utility>
 #include <vector>
 
-#include "autoencoder_kl.h"
 #include "core/framework/dit_model_loader.h"
 #include "core/framework/model_context.h"
 #include "core/framework/parallel_state/parallel_args.h"
@@ -34,12 +33,13 @@
 #include "core/framework/tokenizer/tokenizer.h"
 #include "core/layers/common/attention_metadata_builder.h"
 #include "core/layers/cuda/flashinfer_workspace.h"
-#include "flowmatch_euler_discrete_scheduler.h"
+#include "models/dit/autoencoders/autoencoder_kl.h"
+#include "models/dit/pipelines/pipeline_longcat_image.h"
+#include "models/dit/schedulers/flowmatch_euler_discrete_scheduler.h"
+#include "models/dit/transformers/transformer_longcat_image.h"
 #include "models/model_registry.h"
 #include "models/vlm/qwen2_5_vl.h"
-#include "pipeline_longcat_image.h"
 #include "processors/qwen2_vl_image_processor.h"
-#include "transformer_longcat_image.h"
 
 namespace xllm {
 
