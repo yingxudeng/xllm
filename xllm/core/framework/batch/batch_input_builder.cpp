@@ -51,31 +51,6 @@ uint32_t get_sample_source_position(const SampleSlot& sample_slot) {
   return static_cast<uint32_t>(sample_slot.token_position - 1);
 }
 
-std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN> get_prefix_boundary_hash(
-    Sequence* sequence,
-    uint32_t boundary_tokens) {
-  std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN> hash{};
-  const auto blocks = sequence->kv_state().kv_blocks();
-  if (boundary_tokens == 0 || blocks.empty()) {
-    return hash;
-  }
-
-  const uint32_t block_size = blocks[0].size();
-  if (block_size == 0 || boundary_tokens % block_size != 0) {
-    return hash;
-  }
-
-  const size_t block_index = boundary_tokens / block_size - 1;
-  if (block_index >= blocks.size()) {
-    return hash;
-  }
-
-  std::memcpy(hash.data(),
-              blocks[block_index].get_immutable_hash_value(),
-              XXH3_128BITS_HASH_VALUE_LEN);
-  return hash;
-}
-
 std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN> compute_prefix_boundary_hash(
     Sequence* sequence,
     uint32_t boundary_tokens) {
@@ -98,7 +73,15 @@ std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN> compute_prefix_boundary_hash(
   const size_t boundary_blocks = boundary_tokens / block_size;
   const size_t shared_blocks = sequence->kv_state().shared_kv_blocks_num();
   if (boundary_blocks <= shared_blocks) {
-    return get_prefix_boundary_hash(sequence, boundary_tokens);
+    // The boundary lands inside the prefix-cache hit: blocks already carry
+    // their committed hash, so read it directly instead of recomputing.
+    const size_t block_index = boundary_blocks - 1;
+    if (block_index < blocks.size()) {
+      std::memcpy(hash.data(),
+                  blocks[block_index].get_immutable_hash_value(),
+                  XXH3_128BITS_HASH_VALUE_LEN);
+    }
+    return hash;
   }
 
   const uint8_t* previous_hash = nullptr;

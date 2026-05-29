@@ -55,22 +55,17 @@ class LinearStateCheckpointManager final {
   void evict(const std::vector<LinearStatePrefixHash>& prefix_hashes);
 
  private:
-  struct PrefixHashHasher {
-    size_t operator()(const LinearStatePrefixHash& prefix_hash) const {
-      return std::hash<std::string_view>()(
-          std::string_view(reinterpret_cast<const char*>(prefix_hash.data()),
-                           prefix_hash.size()));
-    }
-  };
-
   using CheckpointMap =
-      std::unordered_map<LinearStatePrefixHash, int32_t, PrefixHashHasher>;
+      std::unordered_map<LinearStatePrefixHash, int32_t, PrefixHashHash>;
 
   bool checkpoint_to_slot(const LinearStatePrefixHash& prefix_hash,
                           int32_t linear_state_id,
                           std::vector<LinearStatePrefixHash>* evicted);
   bool restore_from_slot(const LinearStatePrefixHash& prefix_hash,
                          int32_t linear_state_id);
+  // Copies conv/ssm checkpoint state from src_slot_id into dst_slot_id across
+  // all linear-attention layers. Returns false if no cache was copied.
+  bool copy_checkpoint_slots(int32_t dst_slot_id, int32_t src_slot_id);
   int32_t acquire_checkpoint_slot(const LinearStatePrefixHash& prefix_hash,
                                   std::vector<LinearStatePrefixHash>* evicted);
   void release_checkpoint_slot(int32_t slot_id);
@@ -86,7 +81,7 @@ class LinearStateCheckpointManager final {
   std::list<LinearStatePrefixHash> lru_;
   std::unordered_map<LinearStatePrefixHash,
                      std::list<LinearStatePrefixHash>::iterator,
-                     PrefixHashHasher>
+                     PrefixHashHash>
       lru_iters_;
   std::vector<int32_t> free_checkpoint_slots_;
   std::vector<LinearStatePrefixHash> pending_evicted_prefix_hashes_;

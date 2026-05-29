@@ -41,6 +41,11 @@ class ChunkedPrefillScheduler : public ContinuousScheduler {
   size_t get_linear_state_safe_prefill_tokens(Sequence* sequence,
                                               size_t token_budget) const;
 
+  // True when the linear-state prefix cache is active (the model has
+  // linear-attention layers and prefix caching is enabled), which constrains
+  // chunked prefill to resume only at saved state checkpoints.
+  bool linear_state_prefix_cache_active() const;
+
   // build a batch of requests from the priority queue
   virtual std::vector<Batch> prepare_batch() override;
   // 1. for prefill sequence: the allocated_tokens will be within

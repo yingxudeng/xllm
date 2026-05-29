@@ -723,8 +723,7 @@ size_t ChunkedPrefillScheduler::get_linear_state_safe_prefill_tokens(
   const size_t kv_cache_tokens_num = sequence->kv_cache_tokens_num();
   size_t max_handle_num_tokens =
       std::min(kv_cache_tokens_num + token_budget, sequence->num_tokens());
-  if (!has_linear_attention_layers(engine_->model_args()) ||
-      !enable_prefix_cache_ || !sequence->is_prefill_stage()) {
+  if (!linear_state_prefix_cache_active() || !sequence->is_prefill_stage()) {
     return max_handle_num_tokens;
   }
 
@@ -739,6 +738,11 @@ size_t ChunkedPrefillScheduler::get_linear_state_safe_prefill_tokens(
     return 0;
   }
   return aligned_handle_num_tokens;
+}
+
+bool ChunkedPrefillScheduler::linear_state_prefix_cache_active() const {
+  return has_linear_attention_layers(engine_->model_args()) &&
+         enable_prefix_cache_;
 }
 
 bool ChunkedPrefillScheduler::allocate_blocks_for(
@@ -786,8 +790,7 @@ void ChunkedPrefillScheduler::allocate_shared_blocks_for(Sequence* sequence) {
     return;
   }
   if (sequence->is_chunked_prefill_stage()) {
-    if (has_linear_attention_layers(engine_->model_args()) &&
-        enable_prefix_cache_) {
+    if (linear_state_prefix_cache_active()) {
       // Linear-state prefix cache can only resume at saved state checkpoints.
       // Re-match at every chunk boundary and let BlockManagerPool truncate the
       // hit to checkpoint-backed blocks.

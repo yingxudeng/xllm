@@ -42,10 +42,15 @@ class LinearStatePrefixTracker {
   bool enabled() const { return enabled_; }
 
  private:
+  using CheckpointHashSet =
+      std::unordered_set<XXH3Key, FixedStringKeyHash, FixedStringKeyEqual>;
+
+  // Validates dp_rank and returns the checkpoint hash set for that rank.
+  CheckpointHashSet& checkpoint_set(int32_t dp_rank);
+  const CheckpointHashSet& checkpoint_set(int32_t dp_rank) const;
+
   bool enabled_;
-  std::vector<
-      std::unordered_set<XXH3Key, FixedStringKeyHash, FixedStringKeyEqual>>
-      checkpoint_hashes_;
+  std::vector<CheckpointHashSet> checkpoint_hashes_;
   std::vector<PrefixHash> pending_evictions_;
 };
 

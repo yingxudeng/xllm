@@ -18,6 +18,7 @@ limitations under the License.
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 
+#include <string>
 #include <utility>
 
 #if defined(USE_NPU)
@@ -56,6 +57,18 @@ void copy_ssm_checkpoint_slot(const torch::Tensor& ssm_cache,
       static_cast<int64_t>(src_slot_id) * checkpoint_stride;
   ssm_cache.narrow(0, dst_offset, checkpoint_stride)
       .copy_(ssm_cache.narrow(0, src_offset, checkpoint_stride));
+}
+
+std::string prefix_hash_short_hex(const LinearStatePrefixHash& prefix_hash) {
+  static constexpr char kHexDigits[] = "0123456789abcdef";
+  std::string hex;
+  hex.reserve(16);
+  for (size_t i = 0; i < 8 && i < prefix_hash.size(); ++i) {
+    const uint8_t byte = prefix_hash[i];
+    hex.push_back(kHexDigits[(byte >> 4) & 0x0f]);
+    hex.push_back(kHexDigits[byte & 0x0f]);
+  }
+  return hex;
 }
 
 }  // namespace
@@ -147,7 +160,8 @@ LinearStateCheckpointManager::SaveResult LinearStateCheckpointManager::save(
             save_prefix_hash, linear_state_id, &result.evicted_prefix_hashes)) {
       saved_any = true;
       VLOG(1) << "Qwen3.5 linear state checkpoint saved; linear_state_id="
-              << linear_state_id;
+              << linear_state_id
+              << ", prefix_hash=" << prefix_hash_short_hex(save_prefix_hash);
     }
   }
 #if defined(USE_NPU)
@@ -205,7 +219,8 @@ LinearStateCheckpointManager::restore(
 
     if (restore_from_slot(restore_prefix_hash, linear_state_id)) {
       VLOG(1) << "Qwen3.5 linear state checkpoint restored; linear_state_id="
-              << linear_state_id;
+              << linear_state_id
+              << ", prefix_hash=" << prefix_hash_short_hex(restore_prefix_hash);
       active_requests_[linear_state_id] = request_id;
       actions[i] = RestoreAction::RESTORED;
       restored_any = true;
@@ -214,7 +229,8 @@ LinearStateCheckpointManager::restore(
 
     LOG(WARNING) << "Qwen3.5 prefix cache hit lacks linear state checkpoint; "
                  << "falling back to recompute, linear_state_id="
-                 << linear_state_id;
+                 << linear_state_id << ", prefix_hash="
+                 << prefix_hash_short_hex(restore_prefix_hash);
     active_requests_.erase(linear_state_id);
     actions[i] = RestoreAction::COLD_START;
   }
@@ -228,6 +244,9 @@ LinearStateCheckpointManager::restore(
 
 void LinearStateCheckpointManager::evict(
     const std::vector<LinearStatePrefixHash>& prefix_hashes) {
+  if (prefix_hashes.empty()) {
+    return;
+  }
   std::lock_guard<std::mutex> lock(mutex_);
   for (const LinearStatePrefixHash& prefix_hash : prefix_hashes) {
     if (is_zero_prefix_hash(prefix_hash)) {
@@ -265,20 +284,8 @@ bool LinearStateCheckpointManager::checkpoint_to_slot(
     return false;
   }
 
-  bool copied = false;
-  for (const auto& kv_cache : kv_caches_) {
-    torch::Tensor conv_cache = kv_cache.get_conv_cache();
-    torch::Tensor ssm_cache = kv_cache.get_ssm_cache();
-    if (!conv_cache.defined() || !ssm_cache.defined()) {
-      continue;
-    }
-    const int64_t checkpoint_stride = ssm_cache.size(0) / conv_cache.size(0);
-    conv_cache.select(0, checkpoint_slot_id)
-        .copy_(conv_cache.select(0, linear_state_id));
-    copy_ssm_checkpoint_slot(
-        ssm_cache, checkpoint_slot_id, linear_state_id, checkpoint_stride);
-    copied = true;
-  }
+  bool copied = copy_checkpoint_slots(/*dst_slot_id=*/checkpoint_slot_id,
+                                      /*src_slot_id=*/linear_state_id);
 
   if (!copied) {
     if (!had_existing) {
@@ -289,6 +296,11 @@ bool LinearStateCheckpointManager::checkpoint_to_slot(
 
   checkpoints_[prefix_hash] = checkpoint_slot_id;
   touch(prefix_hash);
+  VLOG(1) << "Qwen3.5 linear state checkpoint "
+          << (had_existing ? "refreshed" : "stored")
+          << "; linear_state_id=" << linear_state_id
+          << ", slot_id=" << checkpoint_slot_id
+          << ", prefix_hash=" << prefix_hash_short_hex(prefix_hash);
   return true;
 }
 
@@ -308,6 +320,19 @@ bool LinearStateCheckpointManager::restore_from_slot(
   if (checkpoint_slot_id < 0) {
     return false;
   }
+  if (!copy_checkpoint_slots(/*dst_slot_id=*/linear_state_id,
+                             /*src_slot_id=*/checkpoint_slot_id)) {
+    return false;
+  }
+  touch(prefix_hash);
+  VLOG(1) << "Qwen3.5 linear state checkpoint replayed; linear_state_id="
+          << linear_state_id << ", slot_id=" << checkpoint_slot_id
+          << ", prefix_hash=" << prefix_hash_short_hex(prefix_hash);
+  return true;
+}
+
+bool LinearStateCheckpointManager::copy_checkpoint_slots(int32_t dst_slot_id,
+                                                         int32_t src_slot_id) {
   bool copied = false;
   for (auto& kv_cache : kv_caches_) {
     torch::Tensor conv_cache = kv_cache.get_conv_cache();
@@ -316,17 +341,12 @@ bool LinearStateCheckpointManager::restore_from_slot(
       continue;
     }
     const int64_t checkpoint_stride = ssm_cache.size(0) / conv_cache.size(0);
-    conv_cache.select(0, linear_state_id)
-        .copy_(conv_cache.select(0, checkpoint_slot_id));
+    conv_cache.select(0, dst_slot_id).copy_(conv_cache.select(0, src_slot_id));
     copy_ssm_checkpoint_slot(
-        ssm_cache, linear_state_id, checkpoint_slot_id, checkpoint_stride);
+        ssm_cache, dst_slot_id, src_slot_id, checkpoint_stride);
     copied = true;
   }
-  if (!copied) {
-    return false;
-  }
-  touch(prefix_hash);
-  return true;
+  return copied;
 }
 
 void LinearStateCheckpointManager::touch(
@@ -377,6 +397,9 @@ int32_t LinearStateCheckpointManager::acquire_checkpoint_slot(
       if (evicted != nullptr) {
         evicted->emplace_back(evict_hash);
       }
+      VLOG(1) << "Qwen3.5 linear state checkpoint evicted; slot_id="
+              << evict_it->second
+              << ", prefix_hash=" << prefix_hash_short_hex(evict_hash);
       return erase_checkpoint(evict_it);
     }
     return -1;

@@ -30,15 +30,27 @@ LinearStatePrefixTracker::LinearStatePrefixTracker(int32_t dp_size,
   }
 }
 
+LinearStatePrefixTracker::CheckpointHashSet&
+LinearStatePrefixTracker::checkpoint_set(int32_t dp_rank) {
+  CHECK_GE(dp_rank, 0);
+  CHECK_LT(static_cast<size_t>(dp_rank), checkpoint_hashes_.size());
+  return checkpoint_hashes_[dp_rank];
+}
+
+const LinearStatePrefixTracker::CheckpointHashSet&
+LinearStatePrefixTracker::checkpoint_set(int32_t dp_rank) const {
+  CHECK_GE(dp_rank, 0);
+  CHECK_LT(static_cast<size_t>(dp_rank), checkpoint_hashes_.size());
+  return checkpoint_hashes_[dp_rank];
+}
+
 void LinearStatePrefixTracker::add_checkpoints(
     int32_t dp_rank,
     const std::vector<XXH3Key>& hashes) {
   if (!enabled_ || hashes.empty()) {
     return;
   }
-  CHECK_GE(dp_rank, 0);
-  CHECK_LT(static_cast<size_t>(dp_rank), checkpoint_hashes_.size());
-  auto& set = checkpoint_hashes_[dp_rank];
+  auto& set = checkpoint_set(dp_rank);
   for (const XXH3Key& hash : hashes) {
     set.insert(hash);
   }
@@ -49,10 +61,8 @@ bool LinearStatePrefixTracker::has_checkpoint(int32_t dp_rank,
   if (!enabled_) {
     return false;
   }
-  CHECK_GE(dp_rank, 0);
-  CHECK_LT(static_cast<size_t>(dp_rank), checkpoint_hashes_.size());
-  return checkpoint_hashes_[dp_rank].find(hash) !=
-         checkpoint_hashes_[dp_rank].end();
+  const auto& set = checkpoint_set(dp_rank);
+  return set.find(hash) != set.end();
 }
 
 void LinearStatePrefixTracker::remove_checkpoints(
@@ -61,9 +71,7 @@ void LinearStatePrefixTracker::remove_checkpoints(
   if (!enabled_ || hashes.empty()) {
     return;
   }
-  CHECK_GE(dp_rank, 0);
-  CHECK_LT(static_cast<size_t>(dp_rank), checkpoint_hashes_.size());
-  auto& set = checkpoint_hashes_[dp_rank];
+  auto& set = checkpoint_set(dp_rank);
   for (const XXH3Key& hash : hashes) {
     set.erase(hash);
   }
@@ -75,9 +83,7 @@ void LinearStatePrefixTracker::evict_checkpoints(
   if (!enabled_ || evicted_hashes.empty()) {
     return;
   }
-  CHECK_GE(dp_rank, 0);
-  CHECK_LT(static_cast<size_t>(dp_rank), checkpoint_hashes_.size());
-  auto& set = checkpoint_hashes_[dp_rank];
+  auto& set = checkpoint_set(dp_rank);
   for (const auto& hash : evicted_hashes) {
     if (set.erase(hash) > 0) {
       pending_evictions_.emplace_back(to_prefix_hash(hash));
@@ -96,8 +102,7 @@ size_t LinearStatePrefixTracker::find_safe_prefix_length(
   if (!enabled_) {
     return shared_blocks.size();
   }
-  CHECK_GE(dp_rank, 0);
-  CHECK_LT(static_cast<size_t>(dp_rank), checkpoint_hashes_.size());
+  const auto& set = checkpoint_set(dp_rank);
 
   size_t safe_blocks =
       std::min(existed_shared_blocks_num, shared_blocks.size());
@@ -105,7 +110,7 @@ size_t LinearStatePrefixTracker::find_safe_prefix_length(
        ++block_idx) {
     const XXH3Key prefix_hash(
         shared_blocks[block_idx].get_immutable_hash_value());
-    if (has_checkpoint(dp_rank, prefix_hash)) {
+    if (set.find(prefix_hash) != set.end()) {
       safe_blocks = block_idx + 1;
     }
   }

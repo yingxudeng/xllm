@@ -410,8 +410,6 @@ TEST(BlockManagerPoolTest, DrainsLinearStateEvictions) {
   cached_seq.kv_state().set_kv_cache_tokens_num(cached_seq.num_tokens());
   pool.cache(&cached_seq);
 
-  const XXH3Key hash_0(
-      cached_seq.kv_state().kv_blocks()[0].get_immutable_hash_value());
   const XXH3Key hash_1(
       cached_seq.kv_state().kv_blocks()[1].get_immutable_hash_value());
   pool.add_linear_state_checkpoints(/*dp_rank=*/0, {hash_1});

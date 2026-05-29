@@ -72,6 +72,14 @@ struct FixedStringKeyEqual {
 
 using PrefixHash = std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>;
 
+// Hash functor for using PrefixHash as an unordered_map/set key.
+struct PrefixHashHash {
+  size_t operator()(const PrefixHash& prefix_hash) const {
+    return std::hash<std::string_view>()(std::string_view(
+        reinterpret_cast<const char*>(prefix_hash.data()), prefix_hash.size()));
+  }
+};
+
 inline bool is_zero_prefix_hash(const PrefixHash& prefix_hash) {
   return std::all_of(
       prefix_hash.begin(), prefix_hash.end(), [](uint8_t v) { return v == 0; });

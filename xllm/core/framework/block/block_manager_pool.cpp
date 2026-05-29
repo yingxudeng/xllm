@@ -447,14 +447,23 @@ void BlockManagerPool::trim_shared_blocks_to_linear_state(
     return;
   }
 
+  const size_t matched_shared_blocks = shared_blocks->size();
   const size_t safe_shared_blocks =
       linear_state_tracker_.find_safe_prefix_length(
           dp_rank, *shared_blocks, existed_shared_blocks_num);
-  CHECK_LE(safe_shared_blocks, shared_blocks->size());
-  if (safe_shared_blocks == shared_blocks->size()) {
+  CHECK_LE(safe_shared_blocks, matched_shared_blocks);
+  if (safe_shared_blocks == matched_shared_blocks) {
     return;
   }
 
+  VLOG(1) << "Qwen3.5 prefix cache hit trimmed by missing linear state "
+             "checkpoint; dp_rank="
+          << dp_rank
+          << ", existed_shared_blocks_num=" << existed_shared_blocks_num
+          << ", matched_shared_blocks=" << matched_shared_blocks
+          << ", safe_shared_blocks=" << safe_shared_blocks
+          << ", dropped_blocks="
+          << (matched_shared_blocks - safe_shared_blocks);
   block_managers_[dp_rank]->deallocate(
       Slice<Block>(*shared_blocks).slice(safe_shared_blocks));
   shared_blocks->resize(safe_shared_blocks);
