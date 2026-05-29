@@ -41,12 +41,17 @@ class BlockManagerPool : public KVCacheManager {
     PROPERTY(std::string, model_id);    // Model ID for multi-model support
     // Token-level sliding window size for CompositeBlockManager.
     PROPERTY(uint32_t, sliding_window_size) = 0;
+    // Base SWA/cache-state block rows retained per sequence.
+    PROPERTY(uint32_t, swa_blocks_per_seq) = 0;
+    // Scheduler token budget used to size the shared SWA burst pool.
+    PROPERTY(uint32_t, max_tokens_per_batch) = 0;
     // For CompositeBlockManager.
     PROPERTY(std::vector<uint32_t>, manager_types) = {};
     PROPERTY(std::vector<uint32_t>, compress_ratios) = {};
     PROPERTY(uint32_t, max_seqs_per_batch) = 0;
     // Hasher type bound to the engine (TEXT for LLM, MM for VLM).
     PROPERTY(BlockHasherType, hasher_type) = BlockHasherType::TEXT;
+    PROPERTY(uint32_t, num_single_blocks) = 0;
   };
 
   explicit BlockManagerPool(const Options& options, int32_t dp_size = 1);

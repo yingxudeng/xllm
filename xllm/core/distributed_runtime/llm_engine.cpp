@@ -25,6 +25,7 @@ limitations under the License.
 #include <boost/algorithm/string.hpp>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <memory>
 
 #include "common/device_monitor.h"
@@ -38,6 +39,7 @@ limitations under the License.
 #include "core/framework/config/load_config.h"
 #include "core/framework/config/parallel_config.h"
 #include "core/framework/config/scheduler_config.h"
+#include "framework/block/block_utils.h"
 #include "framework/block/hierarchy_block_manager_pool.h"
 #include "framework/kv_cache/kv_cache_estimation.h"
 #include "framework/kv_cache/kv_cache_shape.h"
@@ -445,6 +447,8 @@ KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
       static_cast<int64_t>(options_.max_seqs_per_batch());
   estimate_options.num_speculative_tokens =
       static_cast<int64_t>(options_.num_speculative_tokens());
+  estimate_options.max_tokens_per_batch =
+      static_cast<int64_t>(options_.max_tokens_per_batch());
   estimate_options.is_draft_engine = options_.is_draft_engine();
   estimate_options.enable_prefix_cache =
       ::xllm::KVCacheConfig::get_instance().enable_prefix_cache();
@@ -508,7 +512,8 @@ bool LLMEngine::allocate_kv_cache(const KVCacheCapacity& kv_cache_cap) {
       .enable_xtensor(::xllm::KVCacheConfig::get_instance().enable_xtensor())
       .num_layers(args_.n_layers())
       .slot_size(kv_cache_cap.slot_size())
-      .model_id(options_.model_id());
+      .model_id(options_.model_id())
+      .max_seqs_per_batch(options_.max_seqs_per_batch());
   if (util::is_deepseek_v4_model_type(args_.model_type())) {
     constexpr uint32_t kManagerTypeBlockManagerImpl = 0;
     constexpr uint32_t kManagerTypeSlidingWindowBlockManager = 1;
@@ -533,10 +538,22 @@ bool LLMEngine::allocate_kv_cache(const KVCacheCapacity& kv_cache_cap) {
       manager_compress_ratios.push_back(ratio);
     }
 
-    options.sliding_window_size(std::max(args_.window_size(), 1))
+    const int64_t semantic_window = std::max(args_.window_size(), 1);
+    const int64_t max_model_len = args_.max_seq_len();
+    const int64_t effective_window =
+        max_model_len > 0 ? std::min<int64_t>(semantic_window, max_model_len)
+                          : semantic_window;
+    const uint32_t swa_blocks_per_seq = static_cast<uint32_t>(
+        get_swa_blocks_per_seq(effective_window, block_size));
+
+    options.sliding_window_size(static_cast<uint32_t>(effective_window))
+        .swa_blocks_per_seq(swa_blocks_per_seq)
+        .max_tokens_per_batch(options_.max_tokens_per_batch())
         .manager_types(std::move(manager_types))
         .compress_ratios(std::move(manager_compress_ratios))
-        .max_seqs_per_batch(options_.max_seqs_per_batch());
+        .max_seqs_per_batch(options_.max_seqs_per_batch())
+        .num_single_blocks(static_cast<uint32_t>(std::min<int64_t>(
+            kv_cache_cap.swa_count(), std::numeric_limits<uint32_t>::max())));
   }
 
   if (options_.host_blocks_factor() > 1.0 || options_.enable_kvcache_store()) {
@@ -1065,6 +1082,28 @@ std::vector<ForwardInput> LLMEngine::prepare_inputs(std::vector<Batch>& batch) {
         args_, threadpool_.get(), cp_size_)));
     dp_global_token_nums[dp_rank] =
         static_cast<int32_t>(batched_inputs[dp_rank].host_token_ids().numel());
+    if (util::is_deepseek_v4_model_type(args_.model_type())) {
+      const int64_t actual_scheduled_tokens = static_cast<int64_t>(
+          batched_inputs[dp_rank].host_token_ids().numel());
+      const int64_t max_tokens_per_batch =
+          static_cast<int64_t>(options_.max_tokens_per_batch());
+      CHECK_LE(actual_scheduled_tokens, max_tokens_per_batch)
+          << "DSV4 actual scheduled tokens exceed max_tokens_per_batch used "
+             "for SWA cache allocation. This can make the shared SWA burst "
+             "pool smaller than the block/table consumer needs and may cause "
+             "SWA KV rows to be overwritten or read from the wrong position. "
+             "Please increase --max_tokens_per_batch, reduce scheduler token "
+             "load, or check chunked-prefill padding. Details: dp_rank="
+          << dp_rank << ", actual_scheduled_tokens=" << actual_scheduled_tokens
+          << ", max_tokens_per_batch=" << max_tokens_per_batch
+          << ", q_max_seq_len="
+          << batched_inputs[dp_rank].input_params.meta.q_max_seq_len
+          << ", kv_max_seq_len="
+          << batched_inputs[dp_rank].input_params.meta.kv_max_seq_len
+          << ", batch_forward_type="
+          << batched_inputs[dp_rank]
+                 .input_params.meta.batch_forward_type.to_string();
+    }
     if (batch_forward_type.is_empty() &&
         !batched_inputs[dp_rank]
              .input_params.meta.batch_forward_type.is_empty()) {
