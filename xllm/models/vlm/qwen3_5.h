@@ -326,7 +326,8 @@ REGISTER_MODEL_ARGS(qwen3_5, [&] {
   SET_ARG(n_routed_experts, 0);
   SET_ARG(n_shared_experts, 0);
 
-  SET_ARG(stop_token_ids, std::unordered_set<int32_t>({args->eos_token_id()}));
+  SET_ARG(stop_token_ids,
+          std::unordered_set<int32_t>({args->eos_token_id(), 248046}));
 });
 
 REGISTER_INPUT_PROCESSOR(qwen3_5_moe, Qwen3_5InputProcessor);
@@ -354,7 +355,8 @@ REGISTER_MODEL_ARGS(qwen3_5_moe, [&] {
   SET_ARG(topk_group, 0);
   SET_ARG(routed_scaling_factor, 1.0f);
 
-  SET_ARG(stop_token_ids, std::unordered_set<int32_t>({args->eos_token_id()}));
+  SET_ARG(stop_token_ids,
+          std::unordered_set<int32_t>({args->eos_token_id(), 248046}));
 });
 
 #undef LOAD_QWEN3_5_VISION_ARGS
