@@ -20,7 +20,9 @@ limitations under the License.
 
 #include "block_manager.h"
 #include "framework/block/kv_cache_manager.h"
+#include "framework/block/linear_state_prefix_tracker.h"
 #include "framework/block/single_block_manager.h"
+#include "util/hash_util.h"
 
 namespace xllm {
 
@@ -30,6 +32,7 @@ class BlockManagerPool : public KVCacheManager {
     PROPERTY(uint32_t, num_blocks) = 0;
     PROPERTY(uint32_t, host_num_blocks) = 0;
     PROPERTY(int32_t, block_size) = 0;
+    PROPERTY(uint32_t, single_block_capacity) = 0;
     PROPERTY(bool, enable_linear_state) = false;
     PROPERTY(bool, enable_prefix_cache) = true;
     PROPERTY(bool, enable_disagg_pd) = false;
@@ -73,7 +76,16 @@ class BlockManagerPool : public KVCacheManager {
   virtual void reset_transfer_infos() override;
 
   virtual void get_merged_kvcache_event(KvCacheEvent* event) const;
+  virtual std::vector<PrefixHash> drain_linear_state_evictions();
   virtual float get_gpu_cache_usage_perc() const;
+
+  void add_linear_state_checkpoints(int32_t dp_rank,
+                                    const std::vector<XXH3Key>& prefix_hashes);
+  bool has_linear_state_checkpoint(int32_t dp_rank,
+                                   const XXH3Key& prefix_hash) const;
+  void remove_linear_state_checkpoints(
+      int32_t dp_rank,
+      const std::vector<XXH3Key>& prefix_hashes);
 
   virtual uint32_t num_blocks() const override;
   virtual int32_t block_size() const override;
@@ -98,8 +110,13 @@ class BlockManagerPool : public KVCacheManager {
   void deallocate_single_block(Sequence* sequence, int32_t dp_rank);
 
  private:
+  void trim_shared_blocks_to_linear_state(int32_t dp_rank,
+                                          size_t existed_shared_blocks_num,
+                                          std::vector<Block>* shared_blocks);
+
   std::vector<std::vector<BlockTransferInfo>> swap_block_transfer_infos_;
   std::vector<std::unique_ptr<SingleBlockManager>> single_block_managers_;
+  LinearStatePrefixTracker linear_state_tracker_;
 
  protected:
   // the options for the block manager

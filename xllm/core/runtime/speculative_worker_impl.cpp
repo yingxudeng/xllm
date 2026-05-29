@@ -312,4 +312,43 @@ void SpeculativeWorkerImpl::prepare_work_before_execute(
     processed_input.positions = safe_to(processed_input.positions, torch::kCPU);
   }
 }
+
+folly::SemiFuture<std::optional<ForwardOutput>>
+SpeculativeWorkerImpl::step_async(const ForwardInput& input) {
+  folly::Promise<std::optional<ForwardOutput>> promise;
+  auto future = promise.getSemiFuture();
+  threadpool_.schedule([this, input, promise = std::move(promise)]() mutable {
+    ForwardInput step_input = input;
+    if (enable_schedule_overlap() && last_step_output_valid_ &&
+        step_input.token_ids.numel() > 0 &&
+        step_input.input_params.batch_forward_type.has_decode()) {
+      step_input = update_input_by_last_step_output(step_input);
+    }
+
+    // The outer speculative worker delegates real model/cache work to
+    // impl_/draft_impl_. Do not use WorkerImpl::step_async(), which assumes
+    // this worker owns KV caches and a linear-state checkpoint manager.
+    std::optional<ForwardOutput> output = this->step(step_input);
+    if (enable_schedule_overlap()) {
+      if (is_driver() || FLAGS_enable_eplb) {
+        std::unique_lock<std::mutex> lock(mtx_);
+        cv_.wait(lock, [this] { return !is_recorded_; });
+        if (output.has_value()) {
+          update_last_step_output(output);
+        } else {
+          last_step_output_valid_ = false;
+        }
+        is_recorded_ = true;
+        cv_.notify_one();
+      } else if (output.has_value()) {
+        update_last_step_output(output);
+      } else {
+        last_step_output_valid_ = false;
+      }
+    }
+
+    promise.setValue(std::move(output));
+  });
+  return future;
+}
 }  // namespace xllm

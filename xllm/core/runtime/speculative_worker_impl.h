@@ -103,6 +103,9 @@ class SpeculativeWorkerImpl : public WorkerImpl {
 
   ForwardInput update_input_by_last_step_output(ForwardInput& inputs) override;
 
+  folly::SemiFuture<std::optional<ForwardOutput>> step_async(
+      const ForwardInput& input) override;
+
   folly::SemiFuture<bool> pull_kv_blocks_async(
       const uint64_t src_cluster_id,
       const std::string& src_addr,

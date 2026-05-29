@@ -46,6 +46,7 @@ class BlockManager {
     PROPERTY(bool, enable_prefix_cache) = true;
     PROPERTY(bool, enable_disagg_pd) = false;
     PROPERTY(bool, enable_cache_upload) = false;
+    PROPERTY(bool, track_prefix_cache_evictions) = false;
   };
 
   explicit BlockManager(Options options) : options_(options) {}
@@ -66,6 +67,8 @@ class BlockManager {
 
   // get merged all dp rank KVCacheEvent
   virtual void get_merged_kvcache_event(KvCacheEvent* event) const = 0;
+
+  virtual std::vector<XXH3Key> drain_evicted_prefix_hashes() { return {}; }
 
   virtual size_t num_blocks_in_prefix_cache() const = 0;
   virtual size_t num_free_blocks() const = 0;
