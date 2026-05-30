@@ -209,7 +209,7 @@ TEST(BlockManagerPoolTest, AllocateAssignsSingleBlockWhenEnabled) {
   Sequence seq = MakeSequence(0, /*prompt_tokens=*/{1, 2, 3});
   EXPECT_TRUE(pool.allocate(&seq));
   EXPECT_TRUE(seq.has_single_block_id());
-  EXPECT_GE(seq.get_single_block_id(), 0);
+  EXPECT_GT(seq.get_single_block_id(), 0);
 }
 
 TEST(BlockManagerPoolTest, DeallocateReleasesSingleBlockId) {
@@ -234,14 +234,14 @@ TEST(BlockManagerPoolTest, DeallocateReleasesSingleBlockId) {
 }
 
 TEST(BlockManagerPoolTest, TryAllocateKvFailureRollsBackSingleBlock) {
-  // unified scheduler-side single-block pool has 2 ids.
   ScopedValue<int32_t> max_seqs_guard(&FLAGS_max_seqs_per_batch, 0);
 
   BlockManagerPool::Options options;
   options.num_blocks(3).host_num_blocks(0).block_size(1).enable_prefix_cache(
       false);
-  options.single_block_capacity(FLAGS_max_seqs_per_batch + 2)
-      .enable_linear_state(true);
+  // id 0 is reserved for padding, so capacity 3 exposes 2 usable single-block
+  // ids, enough for the two sequences allocated after the rollback.
+  options.single_block_capacity(3).enable_linear_state(true);
   BlockManagerPool pool(options, /*dp_size=*/1);
 
   // This sequence needs far more KV blocks than available, forcing KV failure
@@ -265,10 +265,11 @@ TEST(BlockManagerPoolTest, SingleBlockCapacityCanBeLowerThanMaxSeqs) {
   ScopedValue<int32_t> max_seqs_guard(&FLAGS_max_seqs_per_batch, 8);
 
   BlockManagerPool::Options options;
+  // id 0 is reserved for padding, so capacity 4 exposes 3 usable single blocks.
   options.num_blocks(16)
       .host_num_blocks(0)
       .block_size(1)
-      .single_block_capacity(3)
+      .single_block_capacity(4)
       .enable_prefix_cache(false);
   options.enable_linear_state(true);
   BlockManagerPool pool(options, /*dp_size=*/1);
@@ -293,10 +294,12 @@ TEST(BlockManagerPoolTest, DpRankSelectionSkipsExhaustedSingleBlockPool) {
   ScopedValue<int32_t> max_seqs_guard(&FLAGS_max_seqs_per_batch, 8);
 
   BlockManagerPool::Options options;
+  // id 0 is reserved for padding, so capacity 2 exposes 1 usable block per
+  // rank.
   options.num_blocks(16)
       .host_num_blocks(0)
       .block_size(1)
-      .single_block_capacity(1)
+      .single_block_capacity(2)
       .enable_prefix_cache(false);
   options.enable_linear_state(true);
   BlockManagerPool pool(options, /*dp_size=*/2);
@@ -314,10 +317,12 @@ TEST(BlockManagerPoolTest, SingleBlockExhaustionBehavesLikeKvBlockExhaustion) {
   ScopedValue<int32_t> max_seqs_guard(&FLAGS_max_seqs_per_batch, 8);
 
   BlockManagerPool::Options options;
+  // id 0 is reserved for padding, so capacity 2 exposes 1 usable block per
+  // rank.
   options.num_blocks(16)
       .host_num_blocks(0)
       .block_size(1)
-      .single_block_capacity(1)
+      .single_block_capacity(2)
       .enable_prefix_cache(false);
   options.enable_linear_state(true);
   BlockManagerPool pool(options, /*dp_size=*/2);
