@@ -109,6 +109,16 @@ class BlockManagerPool : public KVCacheManager {
   bool allocate_single_block(Sequence* sequence, int32_t dp_rank);
   void deallocate_single_block(Sequence* sequence, int32_t dp_rank);
 
+ protected:
+  // the options for the block manager.
+  // NOTE: `options_` is declared before `linear_state_tracker_` on purpose.
+  // The constructor initializes the tracker from
+  // `options_.enable_linear_state()`, and members are initialized in
+  // declaration order regardless of the constructor initializer-list order.
+  // Keeping `options_` first guarantees it is fully constructed before the
+  // tracker reads from it.
+  Options options_;
+
  private:
   void trim_shared_blocks_to_linear_state(int32_t dp_rank,
                                           size_t existed_shared_blocks_num,
@@ -119,8 +129,6 @@ class BlockManagerPool : public KVCacheManager {
   LinearStatePrefixTracker linear_state_tracker_;
 
  protected:
-  // the options for the block manager
-  Options options_;
   std::vector<std::unique_ptr<BlockManager>> block_managers_;
 };
 
