@@ -63,7 +63,7 @@ class DSAttentionImpl : public torch::nn::Module {
       KVCache& kv_cache,
       KVState& kv_state,
       bool is_prefill,
-      std::string layer_name,
+      bool is_chunked_prefill,
       const std::
           tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>&
               compress_metadata);
