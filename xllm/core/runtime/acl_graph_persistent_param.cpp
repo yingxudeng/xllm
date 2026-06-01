@@ -27,6 +27,7 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "core/common/constants.h"
 #include "core/common/global_flags.h"
 #include "core/framework/config/speculative_config.h"
 #include "core/util/utils.h"
@@ -733,7 +734,7 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
           .slice(/*dim=*/0,
                  /*start=*/actual_batch_size,
                  /*end=*/padded_batch_size)
-          .fill_(options_.max_seqs_per_batch() + 1);
+          .fill_(kPaddingLinearStateId);
     }
   }
   if (params.num_accepted_tokens.defined()) {
@@ -977,8 +978,7 @@ std::optional<ModelInputParams> GraphPersistentParam::update(
       params_for_capture->embedding.linear_state_ids =
           params.embedding.linear_state_ids;
       params_for_capture->embedding.linear_state_ids.resize(
-          static_cast<size_t>(padded_batch_size),
-          options_.max_seqs_per_batch() + 1);
+          static_cast<size_t>(padded_batch_size), kPaddingLinearStateId);
       params_for_capture->embedding.linear_state_indices =
           persistent_linear_state_indices(
               static_cast<uint32_t>(padded_batch_size));
