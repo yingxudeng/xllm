@@ -22,6 +22,7 @@ limitations under the License.
 
 #include "core/framework/config/eplb_config.h"
 #include "core/framework/config/execution_config.h"
+#include "core/framework/config/kernel_config.h"
 #include "core/framework/config/kv_cache_config.h"
 #include "core/framework/config/load_config.h"
 #include "core/framework/config/parallel_config.h"
@@ -85,7 +86,9 @@ void NpuQwen3DecoderLayerImpl::param_from_args(
 
   param.numHiddenLayers = args.n_layers();
   param.enableIntraLayerAddNorm = true;
-  param.enableInterLayerAddNorm = false;
+  if (::xllm::KernelConfig::get_instance().enable_interlayer_addnorm()) {
+    param.enableInterLayerAddNorm = true;
+  }
   param.enablePreFetchWeight =
       ::xllm::LoadConfig::get_instance().enable_prefetch_weight();
   param.enableAclGraphPagedAttention =
@@ -109,6 +112,10 @@ void NpuQwen3DecoderLayerImpl::param_from_args(
         ::xllm::KVCacheConfig::get_instance().enable_prefix_cache() &&
         !::xllm::SchedulerConfig::get_instance().enable_chunked_prefill() &&
         ::xllm::KVCacheConfig::get_instance().block_size() == 128;
+  }
+  num_hidden_layers_ = args.n_layers();
+  if (::xllm::KernelConfig::get_instance().enable_split_rmsnorm_rope()) {
+    param.enableSplitRmsNormRope = true;
   }
 }
 
@@ -225,7 +232,7 @@ int64_t NpuQwen3DecoderLayerImpl::init_node(
   CHECK_NOTNULL(node.operation);
   CHECK_GT(node.operation->GetInputNum(), 0);
   node.inTensors.resize(node.operation->GetInputNum());
-  node.outTensors.resize(1);
+  node.outTensors.resize(node.operation->GetOutputNum());
   size_t inTensorId = 1;
 
   for (size_t weightTensorId = 0; weightTensorId < WEIGHT_COUNT_PER_LAYER;
@@ -233,10 +240,8 @@ int64_t NpuQwen3DecoderLayerImpl::init_node(
     node.inTensors.at(weightTensorId) = &atb_weight_tensors_[weightTensorId];
   }
 
-  node.variantPack.inTensors.reserve(node.inTensors.size());
   node.variantPack.inTensors.resize(node.inTensors.size());
-  node.variantPack.outTensors.reserve(1);
-  node.variantPack.outTensors.resize(1);
+  node.variantPack.outTensors.resize(node.outTensors.size());
 
   return atb::NO_ERROR;
 }
@@ -302,6 +307,10 @@ void NpuQwen3DecoderLayerImpl::build_node_variant_pack(
     int node_id,
     bool use_graph_decode_input) {
   internal_tensors_ = atb_speed::Utils::AtTensor2Tensor(x);
+  if (::xllm::KernelConfig::get_instance().enable_interlayer_addnorm() &&
+      residual_.defined()) {
+    residual_tensors_ = atb_speed::Utils::AtTensor2Tensor(residual_);
+  }
   node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER) = internal_tensors_;
   node.variantPack.inTensors.at(WEIGHT_COUNT_PER_LAYER + 1) =
       atb_speed::Utils::AtTensor2Tensor(cos_pos);
@@ -369,6 +378,11 @@ void NpuQwen3DecoderLayerImpl::build_node_variant_pack(
         input_params.attention.host.q_seq_lens.data();
   }
 
+  if (::xllm::KernelConfig::get_instance().enable_interlayer_addnorm() &&
+      node_id > 0 && residual_.defined()) {
+    node.variantPack.inTensors.at(input_idx++) = residual_tensors_;
+  }
+
   if (!is_prefill && use_graph_decode_input &&
       input_params.graph.tiling_data.defined()) {
     node.variantPack.inTensors.at(input_idx++) =
@@ -382,6 +396,10 @@ void NpuQwen3DecoderLayerImpl::build_node_variant_pack(
   }
 
   node.variantPack.outTensors.at(0) = internal_tensors_;
+  if (::xllm::KernelConfig::get_instance().enable_interlayer_addnorm() &&
+      (node_id < num_hidden_layers_ - 1) && residual_.defined()) {
+    node.variantPack.outTensors.at(1) = residual_tensors_;
+  }
 }
 
 }  // namespace layer
