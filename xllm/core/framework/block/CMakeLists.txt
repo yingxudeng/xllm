@@ -13,7 +13,7 @@ cc_library(
     block_manager_impl.h
     concurrent_block_manager_impl.h
     hierarchy_block_manager_pool.h
-    linear_state_prefix_tracker.h
+    linear_state_slot_pool.h
   SRCS
     block.cpp
     single_block_manager.cpp
@@ -21,7 +21,7 @@ cc_library(
     concurrent_block_manager_impl.cpp
     block_manager_impl.cpp
     hierarchy_block_manager_pool.cpp
-    linear_state_prefix_tracker.cpp
+    linear_state_slot_pool.cpp
   DEPS
     $<$<BOOL:${USE_NPU}>:torch_npu>
     $<$<BOOL:${USE_NPU}>:graph>
@@ -39,6 +39,7 @@ if(USE_NPU)
   set(TEST_SRCS
     block_manager_test.cpp
     single_block_manager_test.cpp
+    linear_state_slot_pool_test.cpp
   )
 
   cc_test(

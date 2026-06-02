@@ -48,7 +48,6 @@ class BlockManagerImpl : public BlockManager {
   void cache(const std::vector<Block>& blocks) override;
 
   void get_merged_kvcache_event(KvCacheEvent* event) const override;
-  std::vector<XXH3Key> drain_evicted_prefix_hashes() override;
 
   size_t num_blocks_in_prefix_cache() const override {
     if (options_.enable_prefix_cache()) {
@@ -114,8 +113,6 @@ class BlockManagerImpl : public BlockManager {
 
   // free block list
   std::vector<int32_t> free_blocks_;
-
-  std::vector<XXH3Key> pending_prefix_cache_evictions_;
 };
 
 }  // namespace xllm

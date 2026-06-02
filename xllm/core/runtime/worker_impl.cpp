@@ -263,7 +263,7 @@ bool WorkerImpl::allocate_kv_cache(const KVCacheShape& kv_cache_shape) {
 
   allocate_kv_caches(kv_caches_, kv_cache_shape, create_options);
   linear_state_checkpoint_mgr_ = std::make_unique<LinearStateCheckpointManager>(
-      kv_caches_, device_.index(), options_.max_seqs_per_batch());
+      kv_caches_, device_.index());
   linear_state_checkpoint_mgr_->initialize();
 
 #if defined(USE_CUDA)
@@ -326,7 +326,7 @@ bool WorkerImpl::allocate_kv_cache_with_transfer(
         kv_caches_, num_layers, kv_cache_shape, dtype_);
   }
   linear_state_checkpoint_mgr_ = std::make_unique<LinearStateCheckpointManager>(
-      kv_caches_, device_.index(), options_.max_seqs_per_batch());
+      kv_caches_, device_.index());
   linear_state_checkpoint_mgr_->initialize();
 
   init_hierarchy_kv_cache_transfer();
@@ -570,16 +570,20 @@ void WorkerImpl::prepare_work_before_execute(const ForwardInput& input,
     if (has_linear_attention_layers(context_.get_model_args()) &&
         linear_state_checkpoint_mgr_ != nullptr) {
       prepare_input_params_for_linear_attention(processed_input.input_params);
-      linear_state_checkpoint_mgr_->evict(
-          processed_input.input_params.linear_state_evict_prefix_hashes);
       auto actions = linear_state_checkpoint_mgr_->restore(
           processed_input.input_params.linear_state_cache_ops);
       for (size_t i = 0; i < actions.size(); ++i) {
+        // RESTORED: the live slot now holds valid recurrent state.
+        // COLD_START: a requested restore could not be served, so the slot
+        // must be recomputed from scratch even if it reused kv tokens.
+        // SKIPPED: leave has_initial_state at its kv-cache default so warm
+        // continued requests stay warm.
         if (actions[i] ==
-                LinearStateCheckpointManager::RestoreAction::CONTINUED ||
-            actions[i] ==
-                LinearStateCheckpointManager::RestoreAction::RESTORED) {
+            LinearStateCheckpointManager::RestoreAction::RESTORED) {
           processed_input.input_params.has_initial_state[i] = 1;
+        } else if (actions[i] ==
+                   LinearStateCheckpointManager::RestoreAction::COLD_START) {
+          processed_input.input_params.has_initial_state[i] = 0;
         }
       }
     }
@@ -736,12 +740,8 @@ folly::SemiFuture<std::optional<ForwardOutput>> WorkerImpl::step_async(
     auto step_and_save_linear_state =
         [this](ForwardInput& fwd_input) -> std::optional<ForwardOutput> {
       auto output = this->step(fwd_input);
-      auto result = this->linear_state_checkpoint_mgr_->save(
+      this->linear_state_checkpoint_mgr_->save(
           fwd_input.input_params.linear_state_cache_ops);
-      if (output.has_value()) {
-        output->linear_state_evicted_prefix_hashes =
-            std::move(result.evicted_prefix_hashes);
-      }
       return output;
     };
 

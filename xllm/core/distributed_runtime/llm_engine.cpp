@@ -52,42 +52,34 @@ limitations under the License.
 
 namespace {
 
-void clear_evicted_linear_state_checkpoints(
-    xllm::BlockManagerPool* block_manager_pool,
-    int32_t dp_rank,
-    const xllm::RawForwardOutput& output) {
+// Resolve the per-op checkpoint slots from the dp rank's LinearStateSlotPool,
+// co-locating eviction with prefix matching in the scheduler. For each op:
+//   - restore_src_slot_id: the checkpoint slot to copy into the live slot
+//     before compute (cold start only; -1 on miss or when no restore is wanted)
+//   - save_dst_slot_id: the slot reserved to hold the live state after compute
+//     (existing checkpoint reused, or a fresh slot, LRU-evicting locally; -1
+//     when no slot can be reclaimed)
+// The worker is a thin executor that copies between these slots and never makes
+// eviction decisions, so no cross-process eviction notification is needed.
+void resolve_linear_state_slots(xllm::BlockManagerPool* block_manager_pool,
+                                int32_t dp_rank,
+                                xllm::RawForwardInput& input) {
   if (block_manager_pool == nullptr) {
     return;
   }
-  std::vector<xllm::XXH3Key> evicted;
-  evicted.reserve(output.linear_state_evicted_prefix_hashes.size());
-  for (const auto& hash : output.linear_state_evicted_prefix_hashes) {
-    if (!xllm::is_zero_prefix_hash(hash)) {
-      evicted.emplace_back(hash.data());
-    }
-  }
-  block_manager_pool->remove_linear_state_checkpoints(dp_rank, evicted);
-}
-
-void add_linear_state_checkpoints(xllm::BlockManagerPool* block_manager_pool,
-                                  int32_t dp_rank,
-                                  const xllm::RawForwardInput& input) {
-  if (block_manager_pool == nullptr) {
+  auto* pool = block_manager_pool->linear_state_slot_pool(dp_rank);
+  if (pool == nullptr) {
     return;
   }
-  std::vector<xllm::XXH3Key> saved;
-  saved.reserve(input.linear_state_cache_ops.size() * 2);
-  for (const xllm::LinearStateCacheOp& cache_op :
-       input.linear_state_cache_ops) {
+  for (xllm::LinearStateCacheOp& cache_op : input.linear_state_cache_ops) {
     if (!xllm::is_zero_prefix_hash(cache_op.restore_prefix_hash)) {
-      saved.emplace_back(cache_op.restore_prefix_hash.data());
+      cache_op.restore_src_slot_id =
+          pool->lookup(xllm::XXH3Key(cache_op.restore_prefix_hash.data()));
     }
     if (!xllm::is_zero_prefix_hash(cache_op.save_prefix_hash)) {
-      saved.emplace_back(cache_op.save_prefix_hash.data());
+      cache_op.save_dst_slot_id =
+          pool->checkpoint(xllm::XXH3Key(cache_op.save_prefix_hash.data()));
     }
-  }
-  if (!saved.empty()) {
-    block_manager_pool->add_linear_state_checkpoints(dp_rank, saved);
   }
 }
 
@@ -677,6 +669,11 @@ bool LLMEngine::allocate_kv_cache(const KVCacheCapacity& kv_cache_cap) {
         static_cast<uint32_t>(calculate_linear_state_live_slots(
             kv_cache_cap.num_linear_state_blocks(),
             options_.max_seqs_per_batch())));
+    // The unified linear-state slot pool spans all physical slots [0, N);
+    // id 0 is reserved as padding and ids [1, N) serve live and checkpoint
+    // rows interchangeably under reference counting.
+    options.linear_state_num_slots(
+        static_cast<int32_t>(kv_cache_cap.num_linear_state_blocks()));
   }
 
   if (options_.host_blocks_factor() > 1.0 || options_.enable_kvcache_store()) {
@@ -1117,8 +1114,6 @@ ForwardOutput LLMEngine::step(std::vector<Batch>& batch) {
       if (result.value().outputs.empty() && layer_forward_interrupted_) {
         throw ForwardInterruptedException();
       }
-      clear_evicted_linear_state_checkpoints(
-          block_manager_pool(), dp_rank, result.value());
       // if src_seq_idxes is not empty, skip sample output processing and
       // process beam search output instead
       if (result.value().src_seq_idxes.size() == 0) {
@@ -1180,15 +1175,6 @@ void LLMEngine::update_last_step_result(std::vector<Batch>& last_batch) {
       raw_forward_outputs.emplace_back(std::move(result.value()));
     } else {
       LOG(FATAL) << "Failed to get last step results, result has no value";
-    }
-  }
-
-  if (options_.enable_schedule_overlap()) {
-    for (int32_t dp_rank = 0;
-         dp_rank < static_cast<int32_t>(raw_forward_outputs.size());
-         ++dp_rank) {
-      clear_evicted_linear_state_checkpoints(
-          block_manager_pool(), dp_rank, raw_forward_outputs[dp_rank]);
     }
   }
 
@@ -1266,7 +1252,7 @@ std::vector<RawForwardInput> LLMEngine::prepare_inputs(
   for (auto dp_rank = 0; dp_rank < dp_size_; ++dp_rank) {
     batched_inputs.emplace_back(std::move(batch[dp_rank].prepare_forward_input(
         args_, threadpool_.get(), cp_size_)));
-    add_linear_state_checkpoints(
+    resolve_linear_state_slots(
         block_manager_pool(), dp_rank, batched_inputs[dp_rank]);
     dp_global_token_nums[dp_rank] =
         batched_inputs[dp_rank].flatten_tokens_vec.size();
@@ -1296,17 +1282,6 @@ std::vector<RawForwardInput> LLMEngine::prepare_inputs(
     }
     if (batched_inputs[dp_rank].batch_forward_type.is_empty()) {
       batched_inputs[dp_rank].batch_forward_type = batch_forward_type;
-    }
-  }
-
-  std::vector<LinearStatePrefixHash> evicted_linear_state_hashes =
-      block_manager_pool()->drain_linear_state_evictions();
-  if (!evicted_linear_state_hashes.empty()) {
-    for (RawForwardInput& input : batched_inputs) {
-      input.linear_state_evict_prefix_hashes.insert(
-          input.linear_state_evict_prefix_hashes.end(),
-          evicted_linear_state_hashes.begin(),
-          evicted_linear_state_hashes.end());
     }
   }
 

@@ -479,17 +479,29 @@ void BatchInputBuilder::extract_tokens_and_positions(Sequence* sequence,
 
   // linear_state_ids must stay aligned with logical batch rows even when the
   // model has no linear-attention layers, because downstream consumers index by
-  // batch row.
-  state.linear_state_ids.emplace_back(sequence->get_single_block_id());
+  // batch row. The slot is drawn from the dedicated LinearStateSlotPool and is
+  // -1 when linear state is disabled.
+  state.linear_state_ids.emplace_back(sequence->get_linear_state_slot_id());
   if (args_ && has_linear_attention_layers(*args_)) {
     LinearStateCacheOp linear_state_cache_op;
     linear_state_cache_op.linear_state_id = state.linear_state_ids.back();
     linear_state_cache_op.request_id = sequence->request_id();
-    linear_state_cache_op.restore_prefix_hash =
-        compute_prefix_boundary_hash(sequence, n_kv_cache_tokens);
+    // Cold-start restore: only on the sequence's first forward, and only when a
+    // block-aligned prefix was reused (its recurrent state lives in a
+    // checkpoint). Continued forwards keep their live slot warm, so they need
+    // no copy-in and must not be reset to cold by the worker. The matching
+    // source slot is resolved later from the LinearStateSlotPool.
+    if (!sequence->linear_state_initialized() && n_kv_cache_tokens > 0) {
+      linear_state_cache_op.restore_prefix_hash =
+          compute_prefix_boundary_hash(sequence, n_kv_cache_tokens);
+    }
+    // Exit-boundary save: persist the live state when this forward lands on a
+    // block boundary so future requests can reuse the prefix. The destination
+    // checkpoint slot is reserved later from the LinearStateSlotPool.
     linear_state_cache_op.save_prefix_hash =
         compute_prefix_boundary_hash(sequence, seq_len);
     state.linear_state_cache_ops.emplace_back(std::move(linear_state_cache_op));
+    sequence->mark_linear_state_initialized();
   }
 
   // Add extra token id

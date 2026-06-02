@@ -359,6 +359,11 @@ bool VLMEngine::allocate_kv_cache(const KVCacheCapacity& kv_cache_cap) {
         static_cast<uint32_t>(calculate_linear_state_live_slots(
             kv_cache_cap.num_linear_state_blocks(),
             options_.max_seqs_per_batch())));
+    // The unified linear-state slot pool spans all physical slots [0, N);
+    // id 0 is reserved as padding and ids [1, N) serve live and checkpoint
+    // rows interchangeably under reference counting.
+    options.linear_state_num_slots(
+        static_cast<int32_t>(kv_cache_cap.num_linear_state_blocks()));
   }
   kv_cache_manager_ = std::make_unique<BlockManagerPool>(options);
 

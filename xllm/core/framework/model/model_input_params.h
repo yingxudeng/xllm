@@ -340,10 +340,20 @@ struct BlockTransferInfo {
 using LinearStatePrefixHash = PrefixHash;
 
 struct LinearStateCacheOp {
+  // Live slot the sequence advances its recurrent state in.
   int32_t linear_state_id = -1;
   std::string request_id;
+  // Restore: prefix hash to restore from, and the checkpoint slot the
+  // scheduler resolved it to. The worker copies `restore_src_slot_id`
+  // -> `linear_state_id` after verifying the slot still holds
+  // `restore_prefix_hash` (see expected_src_hash below).
   LinearStatePrefixHash restore_prefix_hash{};
+  int32_t restore_src_slot_id = -1;
+  // Save: prefix hash to checkpoint, and the checkpoint slot the scheduler
+  // allocated for it. The worker copies `linear_state_id` ->
+  // `save_dst_slot_id`.
   LinearStatePrefixHash save_prefix_hash{};
+  int32_t save_dst_slot_id = -1;
 };
 
 struct ModelInputParams {
@@ -380,7 +390,6 @@ struct ModelInputParams {
       params.linear_state_indices =
           torch::tensor(params.linear_state_ids, torch::kInt).to(device);
     }
-    params.linear_state_evict_prefix_hashes = linear_state_evict_prefix_hashes;
     params.linear_state_cache_ops = linear_state_cache_ops;
     params.request_ids = std::move(request_ids);
     params.extra_token_ids = std::move(extra_token_ids);
@@ -590,9 +599,6 @@ struct ModelInputParams {
 
   // linear state ids of each sequence
   std::vector<int32_t> linear_state_ids;
-
-  // Prefix hashes evicted from KV prefix cache before this forward.
-  std::vector<LinearStatePrefixHash> linear_state_evict_prefix_hashes;
 
   // Structured per-row linear-state cache operations.
   std::vector<LinearStateCacheOp> linear_state_cache_ops;

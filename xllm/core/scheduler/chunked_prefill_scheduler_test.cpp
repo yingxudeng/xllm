@@ -23,6 +23,7 @@ limitations under the License.
 
 #include "common/global_flags.h"
 #include "distributed_runtime/engine.h"
+#include "framework/block/linear_state_slot_pool.h"
 #include "util/utils.h"
 
 namespace xllm {
@@ -79,6 +80,9 @@ class FakeEngine : public Engine {
     opt.enable_linear_state_ = enable_linear_attention;
     if (enable_linear_attention) {
       model_args_.layer_types({"linear_attention"});
+      // The unified linear-state slot pool needs a positive physical capacity;
+      // size it generously so tests never hit slot pressure.
+      opt.linear_state_num_slots_ = num_blocks + 2;
     }
     fake_tokenizer_ = std::make_unique<FakeTokenizer>();
     fake_block_manager_ = std::make_unique<BlockManagerPool>(opt, 1);
@@ -827,8 +831,9 @@ TEST(ChunkedPrefillSchedulerTest,
   engine->block_manager_pool()->cache(cached_seq);
   const XXH3Key checkpoint_hash(
       cached_seq->kv_state().kv_blocks()[1].get_immutable_hash_value());
-  engine->block_manager_pool()->add_linear_state_checkpoints(
-      /*dp_rank=*/0, {checkpoint_hash});
+  engine->block_manager_pool()
+      ->linear_state_slot_pool(/*dp_rank=*/0)
+      ->checkpoint(checkpoint_hash);
   engine->block_manager_pool()->deallocate_without_cache(cached_seq);
 
   scheduler->allocate_shared_blocks_for(active_seq);

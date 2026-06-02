@@ -20,7 +20,7 @@ limitations under the License.
 
 #include "block_manager.h"
 #include "framework/block/kv_cache_manager.h"
-#include "framework/block/linear_state_prefix_tracker.h"
+#include "framework/block/linear_state_slot_pool.h"
 #include "framework/block/single_block_manager.h"
 #include "util/hash_util.h"
 
@@ -34,6 +34,9 @@ class BlockManagerPool : public KVCacheManager {
     PROPERTY(int32_t, block_size) = 0;
     PROPERTY(uint32_t, single_block_capacity) = 0;
     PROPERTY(bool, enable_linear_state) = false;
+    // Total physical linear-state slots [0, N) for the unified slot pool
+    // (= num_linear_state_blocks). Only used when enable_linear_state is true.
+    PROPERTY(int32_t, linear_state_num_slots) = 0;
     PROPERTY(bool, enable_prefix_cache) = true;
     PROPERTY(bool, enable_disagg_pd) = false;
     PROPERTY(bool, enable_cache_upload) = false;
@@ -76,16 +79,12 @@ class BlockManagerPool : public KVCacheManager {
   virtual void reset_transfer_infos() override;
 
   virtual void get_merged_kvcache_event(KvCacheEvent* event) const;
-  virtual std::vector<PrefixHash> drain_linear_state_evictions();
   virtual float get_gpu_cache_usage_perc() const;
 
-  void add_linear_state_checkpoints(int32_t dp_rank,
-                                    const std::vector<XXH3Key>& prefix_hashes);
-  bool has_linear_state_checkpoint(int32_t dp_rank,
-                                   const XXH3Key& prefix_hash) const;
-  void remove_linear_state_checkpoints(
-      int32_t dp_rank,
-      const std::vector<XXH3Key>& prefix_hashes);
+  // Unified linear-state slot pool for the given dp rank, or nullptr when
+  // linear state is disabled. Used by the batch builder to resolve restore/save
+  // checkpoint slots while constructing LinearStateCacheOp entries.
+  LinearStateSlotPool* linear_state_slot_pool(int32_t dp_rank);
 
   virtual uint32_t num_blocks() const override;
   virtual int32_t block_size() const override;
@@ -111,12 +110,6 @@ class BlockManagerPool : public KVCacheManager {
 
  protected:
   // the options for the block manager.
-  // NOTE: `options_` is declared before `linear_state_tracker_` on purpose.
-  // The constructor initializes the tracker from
-  // `options_.enable_linear_state()`, and members are initialized in
-  // declaration order regardless of the constructor initializer-list order.
-  // Keeping `options_` first guarantees it is fully constructed before the
-  // tracker reads from it.
   Options options_;
 
  private:
@@ -124,9 +117,16 @@ class BlockManagerPool : public KVCacheManager {
                                           size_t existed_shared_blocks_num,
                                           std::vector<Block>* shared_blocks);
 
+  // Acquire/release the per-sequence linear-state live slot alongside the
+  // single block. No-ops when linear state is disabled.
+  bool allocate_linear_state_slot(Sequence* sequence, int32_t dp_rank);
+  void release_linear_state_slot(Sequence* sequence, int32_t dp_rank);
+
   std::vector<std::vector<BlockTransferInfo>> swap_block_transfer_infos_;
   std::vector<std::unique_ptr<SingleBlockManager>> single_block_managers_;
-  LinearStatePrefixTracker linear_state_tracker_;
+  // Unified reference-counted pool for linear-state slots, one per dp rank.
+  // Empty when linear state is disabled.
+  std::vector<std::unique_ptr<LinearStateSlotPool>> linear_state_slot_pools_;
 
  protected:
   std::vector<std::unique_ptr<BlockManager>> block_managers_;

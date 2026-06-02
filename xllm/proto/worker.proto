@@ -299,15 +299,15 @@ message LinearStateCacheOp {
   string request_id = 2;
   bytes restore_prefix_hash = 3;
   bytes save_prefix_hash = 4;
+  // Scheduler-resolved checkpoint slots. The worker copies
+  // restore_src_slot_id -> linear_state_id (restore) and
+  // linear_state_id -> save_dst_slot_id (save). -1 means no-op.
+  int32 restore_src_slot_id = 5;
+  int32 save_dst_slot_id = 6;
 }
 
 message LinearStateCacheInput {
   repeated LinearStateCacheOp ops = 1;
-  repeated bytes evict_prefix_hashes = 2;
-}
-
-message LinearStateCacheOutput {
-  repeated bytes evicted_prefix_hashes = 1;
 }
 
  message BatchedForwardInputs {
@@ -341,7 +341,6 @@ message ForwardOutput {
   repeated int32 out_tokens = 6;
   repeated float out_logprobs = 7;
   DiTForwardOutput dit_forward_output = 8;
-  LinearStateCacheOutput linear_state_cache_output = 9;
 }
 
 // master create Collective service
