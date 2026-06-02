@@ -24,6 +24,7 @@ limitations under the License.
 #if defined(USE_NPU)
 #include "acl/acl.h"
 #include "kernels/npu/xllm_ops/xllm_ops_api.h"
+#include "torch_npu/csrc/core/npu/NPUStream.h"
 #elif defined(USE_MLU)
 #include <framework/core/caching_allocator.h>
 #elif defined(USE_CUDA) || defined(USE_ILU)
@@ -48,6 +49,7 @@ limitations under the License.
 #endif
 #include "core/distributed_runtime/master.h"
 #include "framework/kv_cache/kv_cache.h"
+#include "framework/kv_cache/kv_cache_utils.h"
 #include "framework/model/model_input_params.h"
 #include "framework/model/npu_cp_ep_padding.h"
 #include "framework/model_loader.h"
@@ -126,14 +128,30 @@ void prepare_input_params_for_linear_attention(ModelInputParams& input_params) {
         input_params.query_start_loc[i] + seq_len;
   }
 
-  torch::Tensor has_initial_state_tensor =
-      input_params.kv_cache_tokens_nums > 0;
-  torch::Tensor has_initial_state_int64 =
-      has_initial_state_tensor.contiguous().to(torch::kCPU).to(torch::kInt64);
-  input_params.has_initial_state =
-      std::vector<int64_t>(has_initial_state_int64.data_ptr<int64_t>(),
-                           has_initial_state_int64.data_ptr<int64_t>() +
-                               has_initial_state_int64.size(0));
+  if (input_params.kv_cache_tokens_nums_host.empty() &&
+      input_params.kv_cache_tokens_nums.defined()) {
+    torch::Tensor kv_cache_tokens_nums_cpu =
+        input_params.kv_cache_tokens_nums.to(torch::kCPU).to(torch::kInt32);
+    const int32_t* data_ptr = kv_cache_tokens_nums_cpu.data_ptr<int32_t>();
+    input_params.kv_cache_tokens_nums_host.assign(
+        data_ptr, data_ptr + kv_cache_tokens_nums_cpu.numel());
+  }
+
+  CHECK(input_params.has_initial_state.empty() ||
+        input_params.has_initial_state.size() == batch_size);
+  if (input_params.has_initial_state.empty()) {
+    input_params.has_initial_state.assign(batch_size, 0);
+    if (!input_params.kv_cache_tokens_nums_host.empty()) {
+      for (int64_t i = 0; i < batch_size; ++i) {
+        input_params.has_initial_state[i] =
+            input_params.kv_cache_tokens_nums_host[i] > 0 ? 1 : 0;
+      }
+    }
+  }
+
+  input_params.linear_state_indices_host.assign(
+      input_params.linear_state_ids.begin(),
+      input_params.linear_state_ids.end());
 }
 #endif
 
@@ -244,6 +262,9 @@ bool WorkerImpl::allocate_kv_cache(const KVCacheShape& kv_cache_shape) {
       .enable_kv_cache_quant(enable_kv_cache_quant);
 
   allocate_kv_caches(kv_caches_, kv_cache_shape, create_options);
+  linear_state_checkpoint_mgr_ = std::make_unique<LinearStateCheckpointManager>(
+      kv_caches_, device_.index());
+  linear_state_checkpoint_mgr_->initialize();
 
 #if defined(USE_CUDA)
   refresh_cuda_block_copy_runtime_state();
@@ -304,6 +325,9 @@ bool WorkerImpl::allocate_kv_cache_with_transfer(
     kv_cache_transfer_->allocate_kv_cache(
         kv_caches_, num_layers, kv_cache_shape, dtype_);
   }
+  linear_state_checkpoint_mgr_ = std::make_unique<LinearStateCheckpointManager>(
+      kv_caches_, device_.index());
+  linear_state_checkpoint_mgr_->initialize();
 
   init_hierarchy_kv_cache_transfer();
   status_ = Status::READY;
@@ -543,8 +567,25 @@ void WorkerImpl::prepare_work_before_execute(const ForwardInput& input,
       }
     }
 
-    if (has_linear_attention_layers(context_.get_model_args())) {
+    if (has_linear_attention_layers(context_.get_model_args()) &&
+        linear_state_checkpoint_mgr_ != nullptr) {
       prepare_input_params_for_linear_attention(processed_input.input_params);
+      auto actions = linear_state_checkpoint_mgr_->restore(
+          processed_input.input_params.linear_state_cache_ops);
+      for (size_t i = 0; i < actions.size(); ++i) {
+        // RESTORED: the live slot now holds valid recurrent state.
+        // COLD_START: a requested restore could not be served, so the slot
+        // must be recomputed from scratch even if it reused kv tokens.
+        // SKIPPED: leave has_initial_state at its kv-cache default so warm
+        // continued requests stay warm.
+        if (actions[i] ==
+            LinearStateCheckpointManager::RestoreAction::RESTORED) {
+          processed_input.input_params.has_initial_state[i] = 1;
+        } else if (actions[i] ==
+                   LinearStateCheckpointManager::RestoreAction::COLD_START) {
+          processed_input.input_params.has_initial_state[i] = 0;
+        }
+      }
     }
 #endif
   };
@@ -696,8 +737,16 @@ folly::SemiFuture<std::optional<ForwardOutput>> WorkerImpl::step_async(
     }
 
     // run the model on the given input in working thread
+    auto step_and_save_linear_state =
+        [this](ForwardInput& fwd_input) -> std::optional<ForwardOutput> {
+      auto output = this->step(fwd_input);
+      this->linear_state_checkpoint_mgr_->save(
+          fwd_input.input_params.linear_state_cache_ops);
+      return output;
+    };
+
     if (!enable_schedule_overlap()) {
-      const auto output = this->step(input);
+      auto output = step_and_save_linear_state(input);
       promise.setValue(output);
     } else {
       if (last_step_output_valid_ && input.token_ids.numel() > 0 &&
@@ -706,7 +755,7 @@ folly::SemiFuture<std::optional<ForwardOutput>> WorkerImpl::step_async(
         input = update_input_by_last_step_output(input);
       }
 
-      const auto output = this->step(input);
+      auto output = step_and_save_linear_state(input);
       if (output.has_value()) {
         if (is_driver() || FLAGS_enable_eplb) {
           std::unique_lock<std::mutex> lock(mtx_);
