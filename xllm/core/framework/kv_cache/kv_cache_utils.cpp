@@ -97,7 +97,8 @@ int64_t calculate_linear_state_blocks(int64_t cache_size_in_bytes,
                                       int64_t linear_slot_size,
                                       int64_t num_full_attention_layers,
                                       int64_t full_attention_block_size,
-                                      const LinearStateCacheOptions& options) {
+                                      const LinearStateCacheOptions& options,
+                                      bool enable_prefix_cache) {
   CHECK_GE(options.max_linear_state_cache_slots(), 0)
       << "max_linear_state_cache_slots must be greater than or equal to 0.";
   const int64_t max_blocks =
@@ -114,6 +115,20 @@ int64_t calculate_linear_state_blocks(int64_t cache_size_in_bytes,
         << " linear-state blocks, but only " << max_blocks
         << " fit in the configured KV cache budget.";
     return requested_blocks;
+  }
+
+  // Without prefix caching there is no linear-state checkpoint pool to grow, so
+  // only the live slots held by in-flight sequences are ever needed. Those are
+  // bounded by the rate limiter (max_concurrent_requests), not by the per-batch
+  // sequence count, since a sequence keeps its slot while preempted/queued.
+  // Size the pool the same way the full-attention single-block pool is sized in
+  // BlockManagerPool, leaving the rest of the budget to full-attention KV
+  // cache.
+  if (!enable_prefix_cache) {
+    const int64_t live_slot_blocks =
+        FLAGS_max_concurrent_requests + kPaddingLinearStateBlocks;
+    return std::max<int64_t>(std::min<int64_t>(live_slot_blocks, max_blocks),
+                             kPaddingLinearStateBlocks);
   }
 
   const int64_t auto_blocks = calculate_auto_linear_state_blocks(
