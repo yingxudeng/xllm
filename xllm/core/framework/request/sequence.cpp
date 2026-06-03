@@ -690,6 +690,13 @@ void Sequence::add_host_kv_blocks(const std::vector<Block>& blocks) {
   host_kv_state_.add_kv_blocks(blocks);
 }
 
+size_t Sequence::num_prefix_cache_tokens() const {
+  size_t cached_tokens = std::max(kv_state_.shared_kv_tokens_num(),
+                                  host_kv_state_.shared_kv_tokens_num());
+  DCHECK_LE(cached_tokens, num_prompt_tokens_);
+  return cached_tokens;
+}
+
 // release all cache blocks
 void Sequence::reset() {
   kv_state_.reset();
