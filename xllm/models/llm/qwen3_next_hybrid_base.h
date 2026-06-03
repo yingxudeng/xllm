@@ -160,10 +160,18 @@ class Qwen3HybridModelImplBase : public Qwen3HybridModelModule {
  protected:
   torch::Tensor build_attention_mask(const ModelInputParams& input_params) {
 #if defined(USE_NPU)
+    // On NPU the hybrid path never consumes attn_metadata.attn_mask: full
+    // attention runs through the fused-infer / paged-attention kernels (which
+    // carry their own fixed fia_attn_mask or need no mask at all) and linear
+    // attention is mask-free by construction. Materializing a dense
+    // [seq_len, seq_len] mask here is pure waste and, for long sequences,
+    // triggers an NPU OOM. Hand the kernels an empty mask unless a graph buffer
+    // already supplies one.
     if (input_params.graph_buffer.attn_mask.defined()) {
       return input_params.graph_buffer.attn_mask;
     }
-#endif
+    return torch::Tensor();
+#else
     max_seq_len_ = std::max(input_params.kv_max_seq_len, max_seq_len_);
     const bool use_append_mask =
         input_params.is_spec_verify ||
@@ -189,6 +197,7 @@ class Qwen3HybridModelImplBase : public Qwen3HybridModelModule {
                                      device_));
     }
     return torch::cat(req_mask_vec, 0);
+#endif
   }
 
   ModelArgs model_args_;
