@@ -111,7 +111,8 @@ int64_t calculate_linear_state_blocks(int64_t cache_size_in_bytes,
                                       int64_t linear_slot_size,
                                       int64_t num_full_attention_layers,
                                       int64_t full_attention_block_size,
-                                      const LinearStateCacheOptions& options);
+                                      const LinearStateCacheOptions& options,
+                                      bool enable_prefix_cache);
 
 int64_t calculate_linear_state_live_slots(int64_t num_linear_state_blocks,
                                           int64_t max_running_requests);

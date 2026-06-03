@@ -602,7 +602,8 @@ KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
                                     kv_cache_cap.linear_slot_size(),
                                     kv_cache_cap.num_full_attention_layers(),
                                     block_size_in_bytes,
-                                    options_.linear_state_cache_options());
+                                    options_.linear_state_cache_options(),
+                                    options_.enable_prefix_cache());
   kv_cache_cap.linear_cache_size_in_bytes() =
       kv_cache_cap.num_linear_attention_layers() *
       kv_cache_cap.num_linear_state_blocks() * kv_cache_cap.linear_slot_size();
