@@ -15,7 +15,6 @@ limitations under the License.
 
 #include "attention.h"
 
-#include "core/framework/config/speculative_config.h"
 #include "kernels/npu/npu_ops_api.h"
 #include "kernels/ops_api.h"
 
@@ -110,48 +109,28 @@ void AttentionImpl::prefill_forward(torch::Tensor& query,
         "TND");
     output.copy_(std::get<0>(fia_result).view_as(output));
   } else if (attn_metadata.is_chunked_prefill) {
-    const bool speculative_enabled =
-        ::xllm::SpeculativeConfig::get_instance().num_speculative_tokens() > 0;
-    if (speculative_enabled) {
-      torch::Tensor kv_seq_lens = attn_metadata.kv_seq_lens_host.defined()
-                                      ? attn_metadata.kv_seq_lens_host
-                                      : attn_metadata.kv_seq_lens;
-      torch::Tensor q_seq_lens = attn_metadata.q_seq_lens_host.defined()
-                                     ? attn_metadata.q_seq_lens_host
-                                     : attn_metadata.q_seq_lens;
-      xllm::kernel::npu::batch_chunked_paged_prefill(query,
-                                                     k_cache,
-                                                     v_cache.value(),
-                                                     scale_,
-                                                     attn_metadata.block_table,
-                                                     kv_seq_lens,
-                                                     attn_metadata.attn_mask,
-                                                     q_seq_lens,
-                                                     output);
-    } else {
-      torch::Tensor k = k_cache.view({k_cache.size(0), k_cache.size(1), -1});
-      torch::Tensor v = v_cache.value().view(
-          {v_cache.value().size(0), v_cache.value().size(1), -1});
-      auto fia_result = xllm::kernel::npu::npu_fused_infer_attention(
-          query,
-          k,
-          v,
-          attn_metadata.fia_attn_mask.defined()
-              ? std::make_optional(attn_metadata.fia_attn_mask)
-              : std::nullopt,
-          attn_metadata.block_table.defined()
-              ? std::make_optional(attn_metadata.block_table)
-              : std::nullopt,
-          attn_metadata.q_cu_seq_lens_host_vec,
-          attn_metadata.kv_seq_lens_host_vec,
-          num_heads_,
-          num_kv_heads_,
-          scale_,
-          /*block_size=*/k_cache.size(1),
-          /*sparse_mode=*/3,
-          "TND");
-      output.copy_(std::get<0>(fia_result).view_as(output));
-    }
+    torch::Tensor k = k_cache.view({k_cache.size(0), k_cache.size(1), -1});
+    torch::Tensor v = v_cache.value().view(
+        {v_cache.value().size(0), v_cache.value().size(1), -1});
+    auto fia_result = xllm::kernel::npu::npu_fused_infer_attention(
+        query,
+        k,
+        v,
+        attn_metadata.fia_attn_mask.defined()
+            ? std::make_optional(attn_metadata.fia_attn_mask)
+            : std::nullopt,
+        attn_metadata.block_table.defined()
+            ? std::make_optional(attn_metadata.block_table)
+            : std::nullopt,
+        attn_metadata.q_cu_seq_lens_host_vec,
+        attn_metadata.kv_seq_lens_host_vec,
+        num_heads_,
+        num_kv_heads_,
+        scale_,
+        /*block_size=*/k_cache.size(1),
+        /*sparse_mode=*/3,
+        "TND");
+    output.copy_(std::get<0>(fia_result).view_as(output));
   }
 }
 
