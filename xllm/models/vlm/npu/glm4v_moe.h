@@ -35,7 +35,7 @@ limitations under the License.
 #include "models/vlm/mposition/mposition.h"
 #include "models/vlm/utils/multimodal_utils.h"
 #include "processors/glm4v_image_processor.h"
-#include "processors/glm4v_input_processor.h"
+#include "processors/glm4v_video_processor.h"
 
 namespace xllm::npu::model {
 
@@ -109,13 +109,23 @@ class Glm4vMoeForConditionalGenerationImpl : public torch::nn::Module {
       }
     }
     if (video_input) {
-      torch::Tensor video_pixels =
-          video_input->pixel_values_videos.to(options_);
+      std::vector<torch::Tensor> temp_frames_hw;
       torch::Tensor video_grid =
           video_input->video_grid_thw.to(options_.device());
+      for (int i = 0; i < video_input->video_grid_thw.size(0); ++i) {
+        auto t = video_grid[i][0].item<int32_t>();
+        auto h = video_grid[i][1].item<int32_t>();
+        auto w = video_grid[i][2].item<int32_t>();
+        auto repeated_row =
+            torch::tensor({1, h, w}).unsqueeze(0).repeat({t, 1});
+        temp_frames_hw.push_back(repeated_row);
+      }
+      auto flatten_video_grid_thw = torch::cat(temp_frames_hw, 0);
+      torch::Tensor video_pixels =
+          video_input->pixel_values_videos.to(options_);
+      auto video_embeds = visual_(video_pixels, flatten_video_grid_thw);
       std::vector<int32_t> video_token_nums =
           get_mm_token_nums(input_params.multimodal.mm_data, MMType::VIDEO);
-      auto video_embeds = visual_(video_pixels, video_grid);
       multimodal_embeds["video|embedding"] =
           split_by_token_nums(video_embeds, video_token_nums);
     }
@@ -200,9 +210,11 @@ class Glm4vMoeForConditionalGenerationImpl : public torch::nn::Module {
 };
 TORCH_MODULE(Glm4vMoeForConditionalGeneration);
 
-REGISTER_INPUT_PROCESSOR(glm4v_moe, GLM4VInputProcessor);
+using Glm4vMoeMultimodalProcessor = MultimodalProcessor<GLM4VPromptProcessor,
+                                                        Glm4VImageProcessor,
+                                                        Glm4VVideoProcessor>;
+REGISTER_MULTIMODAL_PROCESSOR(glm4v_moe, Glm4vMoeMultimodalProcessor);
 REGISTER_CAUSAL_VLM_MODEL(glm4v_moe, Glm4vMoeForConditionalGeneration);
-REGISTER_IMAGE_PROCESSOR(glm4v_moe, Glm4VImageProcessor);
 REGISTER_MPOSITION_GENERATOR(glm4v_moe, xllm::Glm4VMPositionGenerator);
 // register the model args
 REGISTER_MODEL_ARGS(glm4v_moe, [&] {

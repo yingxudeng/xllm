@@ -1,4 +1,4 @@
-/* Copyright 2026 The xLLM Authors. All Rights Reserved.
+/* Copyright 2025 The xLLM Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,23 +18,35 @@ limitations under the License.
 #include <torch/torch.h>
 
 #include <cstdint>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "core/framework/model/model_args.h"
-#include "processors/image_processor.h"
+#include "core/framework/multimodal/mm_input.h"
+#include "processors/video_processor.h"
 
 namespace xllm {
 
-class Glm4VImageProcessor final : public ImageProcessor {
+class Qwen3VLVideoProcessor final : public VideoProcessor {
  public:
-  explicit Glm4VImageProcessor(const ModelArgs& args);
+  explicit Qwen3VLVideoProcessor(const ModelArgs& args);
 
-  bool process(const std::vector<torch::Tensor>& images,
-               std::vector<MMDataItem>& output_items) const override;
+  bool process(const torch::Tensor& origin_video,
+               const VideoMetadata& metadata,
+               MMDataItem& output_item) const override;
 
-  bool process_image(const std::vector<torch::Tensor>& images,
-                     std::vector<torch::Tensor>& pixel_values,
-                     std::vector<torch::Tensor>& thw) const;
+ private:
+  bool process_video(const torch::Tensor& origin_video,
+                     VideoMetadata& metadata,
+                     torch::Tensor& pixel_values,
+                     torch::Tensor& thw) const;
+
+  torch::Tensor sample_frames(const VideoMetadata& metadata,
+                              int32_t min_frames,
+                              int32_t max_frames,
+                              int32_t num_frames = -1,
+                              double set_fps = -1.0) const;
 
  private:
   bool do_convert_rgb_ = true;
@@ -45,16 +57,18 @@ class Glm4VImageProcessor final : public ImageProcessor {
   torch::Tensor image_mean_;
   torch::Tensor image_std_;
 
-  int32_t max_pixels_ = 12845056;
-  int32_t min_pixels_ = 3136;
-
   int32_t merge_size_ = 2;
   int32_t patch_size_ = 14;
 
   int32_t resample_ = 3;
   double rescale_factor_ = 0.00392156862745098;
 
+  std::unordered_map<std::string, int32_t> size_;
   int32_t temporal_patch_size_ = 2;
+
+  bool do_sample_frame_ = true;
+  int32_t min_frames_ = 4;
+  int32_t max_frames_ = 768;
 };
 
 }  // namespace xllm

@@ -17,34 +17,33 @@ limitations under the License.
 
 #include <torch/torch.h>
 
+#include <array>
 #include <cstdint>
+#include <map>
 #include <vector>
 
-#include "core/framework/model/model_args.h"
 namespace xllm {
 
-class CLIPImageProcessor {
- public:
-  explicit CLIPImageProcessor(const ModelArgs& args);
+using ImageShape = std::array<int64_t, 3>;
 
-  torch::Tensor process_images(const torch::Tensor& images) const;
-
- private:
-  std::vector<int64_t> get_resize_output_image_size(
-      const torch::Tensor& image,
-      int32_t shortest_edge) const;
-
- private:
-  bool do_resize_;
-  bool do_center_crop_;
-  bool do_rescale_;
-  bool do_normalize_;
-  int32_t shortest_edge_;
-  int32_t resample_;
-  double rescale_factor_;
-  std::pair<int32_t, int32_t> crop_size_;
-  torch::Tensor image_mean_;
-  torch::Tensor image_std_;
+struct ImageBatchBucket {
+  std::vector<size_t> indices;
+  std::vector<torch::Tensor> images;
 };
+
+inline std::map<ImageShape, ImageBatchBucket> group_images_by_shape(
+    const std::vector<torch::Tensor>& images) {
+  std::map<ImageShape, ImageBatchBucket> buckets;
+  const size_t image_size = images.size();
+  for (size_t index = 0; index < image_size; ++index) {
+    const torch::Tensor& image = images[index];
+    const auto sizes = image.sizes();
+    ImageShape shape = {sizes[0], sizes[1], sizes[2]};
+    ImageBatchBucket& bucket = buckets[shape];
+    bucket.indices.push_back(index);
+    bucket.images.push_back(image);
+  }
+  return buckets;
+}
 
 }  // namespace xllm

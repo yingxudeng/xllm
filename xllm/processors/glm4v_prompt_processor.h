@@ -21,12 +21,11 @@ limitations under the License.
 #include <vector>
 
 #include "core/framework/model/model_args.h"
-#include "core/framework/multimodal/mm_data.h"
-#include "processors/input_processor.h"
+#include "processors/prompt_processor.h"
 
 namespace xllm {
 
-class GLM4VInputProcessor : public InputProcessor {
+class GLM4VPromptProcessor final : public PromptProcessor {
   enum class TokenType {
     INVALID,
     IMAGE,
@@ -34,10 +33,11 @@ class GLM4VInputProcessor : public InputProcessor {
   };
 
  public:
-  explicit GLM4VInputProcessor(const ModelArgs& args);
+  explicit GLM4VPromptProcessor(const ModelArgs& args);
 
   void process(std::string& prompt, const MMData& mm_data) override;
-  void find_mm_spans(const std::vector<int>& prompt, MMData& mm_data) override;
+  void find_mm_spans(const std::vector<int32_t>& token_ids,
+                     MMData& mm_data) override;
 
  private:
   std::pair<TokenType, size_t> find_vision_token(const std::string& prompt,

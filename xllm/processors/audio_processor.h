@@ -15,40 +15,34 @@ limitations under the License.
 
 #pragma once
 
-#include <cstdint>
-#include <string>
-#include <utility>
+#include <torch/torch.h>
 
+#include "core/common/macros.h"
 #include "core/framework/model/model_args.h"
 #include "core/framework/multimodal/mm_data.h"
-#include "processors/input_processor.h"
+#include "core/framework/multimodal/mm_input.h"
 
 namespace xllm {
 
-class Qwen2_5_VLInputProcessor : public InputProcessor {
-  enum class TokenType {
-    INVALID,
-    IMAGE,
-    VIDEO,
-  };
-
+class AudioProcessor {
  public:
-  explicit Qwen2_5_VLInputProcessor(const ModelArgs& args);
+  virtual ~AudioProcessor() = default;
 
-  void process(std::string& prompt, const MMData& mm_data) override;
-  void find_mm_spans(const std::vector<int>& prompt, MMData& mm_data) override;
+  virtual bool process(const torch::Tensor& origin_audio,
+                       const AudioMetadata& metadata,
+                       MMDataItem& output_item) const = 0;
+};
 
- private:
-  std::pair<TokenType, size_t> find_vision_token(const std::string& prompt,
-                                                 size_t begin);
-
-  const std::string image_token_ = "<|image_pad|>";
-  const std::string video_token_ = "<|video_pad|>";
-  int32_t vision_start_token_id_;
-  int32_t vision_end_token_id_;
-  int32_t image_token_id_;
-  int32_t video_token_id_;
-  int32_t merge_size_ = 0;
+class AudioNoneProcessor final : public AudioProcessor {
+ public:
+  AudioNoneProcessor() = default;
+  explicit AudioNoneProcessor(const ModelArgs&) {};
+  bool process(const torch::Tensor& origin_audio,
+               const AudioMetadata& metadata,
+               MMDataItem& output_item) const override {
+    LOG(ERROR) << "Audio processor is not configured.";
+    return false;
+  }
 };
 
 }  // namespace xllm

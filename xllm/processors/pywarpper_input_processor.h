@@ -17,18 +17,18 @@ limitations under the License.
 
 #include <vector>
 
-#include "image_processor.h"
+#include "core/framework/model/model_args.h"
+#include "core/framework/multimodal/mm_data.h"
+#include "core/framework/multimodal/mm_input.h"
 
 namespace xllm {
 
-struct MMData;
-
-class PyWarpperImageProcessor : public ImageProcessor {
+class PyWarpperInputProcessor {
  public:
-  PyWarpperImageProcessor(const ModelArgs&);
-  ~PyWarpperImageProcessor() override = default;
+  explicit PyWarpperInputProcessor(const ModelArgs&);
+  ~PyWarpperInputProcessor() = default;
 
-  bool process(const MMInput& mm_inputs, MMData& mm_datas) override;
+  bool process(const MMInput& mm_inputs, MMData& mm_datas);
 };
 
 }  // namespace xllm

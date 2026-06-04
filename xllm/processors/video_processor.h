@@ -15,36 +15,35 @@ limitations under the License.
 
 #pragma once
 
+#include <glog/logging.h>
 #include <torch/torch.h>
 
-#include <cstdint>
-#include <vector>
-
 #include "core/framework/model/model_args.h"
+#include "core/framework/multimodal/mm_data.h"
+#include "core/framework/multimodal/mm_input.h"
+
 namespace xllm {
 
-class CLIPImageProcessor {
+class VideoProcessor {
  public:
-  explicit CLIPImageProcessor(const ModelArgs& args);
+  virtual ~VideoProcessor() = default;
 
-  torch::Tensor process_images(const torch::Tensor& images) const;
+  virtual bool process(const torch::Tensor& origin_video,
+                       const VideoMetadata& metadata,
+                       MMDataItem& output_item) const = 0;
+};
 
- private:
-  std::vector<int64_t> get_resize_output_image_size(
-      const torch::Tensor& image,
-      int32_t shortest_edge) const;
+class VideoNoneProcessor final : public VideoProcessor {
+ public:
+  VideoNoneProcessor() = default;
+  explicit VideoNoneProcessor(const ModelArgs&) {}
 
- private:
-  bool do_resize_;
-  bool do_center_crop_;
-  bool do_rescale_;
-  bool do_normalize_;
-  int32_t shortest_edge_;
-  int32_t resample_;
-  double rescale_factor_;
-  std::pair<int32_t, int32_t> crop_size_;
-  torch::Tensor image_mean_;
-  torch::Tensor image_std_;
+  bool process(const torch::Tensor& origin_video,
+               const VideoMetadata& metadata,
+               MMDataItem& output_item) const override {
+    LOG(ERROR) << "Video processor is not configured.";
+    return false;
+  }
 };
 
 }  // namespace xllm
