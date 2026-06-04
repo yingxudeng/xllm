@@ -51,6 +51,14 @@ def get_device_type() -> str:
 
     if torch.cuda.is_available():
         try:
+            from torch.utils.cpp_extension import HIP_HOME
+            if HIP_HOME and "dtk" in HIP_HOME.lower():
+                return "dcu"
+        except Exception:
+            pass
+
+    if torch.cuda.is_available():
+        try:
             import ixformer
             return "ilu"
         except ImportError:
@@ -105,6 +113,11 @@ def get_torch_version(device: str) -> Optional[str]:
     except ImportError:
         return None
 
+def get_torch_cmake_prefix_path() -> str:
+    import torch
+
+    return torch.utils.cmake_prefix_path
+
 def get_version() -> str:
     # first read from environment variable
     version: Optional[str] = os.getenv("XLLM_VERSION")
@@ -119,7 +132,7 @@ def get_version() -> str:
 
     if not version:
         raise RuntimeError("❌ Unable to find version string.")
-    
+
     version_suffix = os.getenv("XLLM_VERSION_SUFFIX")
     if version_suffix:
         version += version_suffix
@@ -144,7 +157,7 @@ def check_and_install_pre_commit() -> None:
     # check if .git is a directory
     if not os.path.isdir(".git"):
         return
-    
+
     if not os.path.exists(".git/hooks/pre-commit"):
         ok, _, _ = _run_command(["pre-commit", "install"], check=True)
         if not ok:

@@ -23,25 +23,28 @@ DEFINE_bool(
     false,
     "Whether to enable graph execution for decode phase. When enabled, "
     "the engine uses graph mode (CUDA Graph for GPU, ACL Graph for NPU, "
-    "or MLU Graph) to optimize decode performance by reducing kernel "
-    "launch overhead and device idle time.");
+    "MLU Graph, or DCU Graph) to optimize decode performance by reducing "
+    "kernel launch overhead and device idle time.");
 
 DEFINE_bool(enable_graph_mode_decode_no_padding,
             false,
             "Whether to enable graph execution for decode phase without "
-            "padding. If true, graph will be caputured with every actual num "
+            "padding. If true, graph will be captured with every actual num "
             "tokens, as stride is 1.");
 
 DEFINE_bool(enable_prefill_piecewise_graph,
             false,
-            "Whether to enable piecewise CUDA graph for prefill phase. "
-            "When enabled, attention operations use eager mode while other "
-            "operations are captured in CUDA graphs.");
+            "Whether to enable piecewise graph execution for prefill phase "
+            "when graph mode is enabled. When enabled, attention operations "
+            "use eager mode while other operations are captured in device "
+            "graphs.");
+
+constexpr bool kEnableGraphVmmPoolDefault = true;
 
 DEFINE_bool(enable_graph_vmm_pool,
-            true,
-            "Whether to enable VMM-backed CUDA graph memory pool for "
-            "multi-shape graph memory reuse.");
+            kEnableGraphVmmPoolDefault,
+            "Whether to enable VMM-backed graph memory pool for multi-shape "
+            "graph memory reuse.");
 
 DEFINE_int32(max_tokens_for_graph_mode,
              2048,
