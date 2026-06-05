@@ -27,6 +27,8 @@ class PrefillOnlyScheduler final : public ContinuousScheduler {
  private:
   // build a batch of requests from the priority queue
   virtual std::vector<Batch> prepare_batch() override;
+  size_t get_prefill_token_budget(Sequence* sequence,
+                                  size_t remaining_token_budget) const;
   void handle_prefill_requests(
       double& latency_budget,
       double& estimate_latency,
