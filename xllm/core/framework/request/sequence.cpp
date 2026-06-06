@@ -721,6 +721,8 @@ void Sequence::reset() {
   is_timeout_set_ = false;
   volatile_num_prompt_tokens_ = num_tokens_;
   single_block_ = Block();
+  linear_state_slot_ = Block();
+  linear_state_initialized_ = false;
 }
 
 void Sequence::add_shared_kv_blocks(std::vector<Block>&& blocks) {

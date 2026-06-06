@@ -91,6 +91,18 @@ void initialize_configs() {
   SpeculativeConfig::get_instance().initialize();
 }
 
+bool is_linear_attention_model_type(const std::string& model_type) {
+  static const std::unordered_set<std::string> linear_attention_model_types = {
+      "qwen3_5",
+      "qwen3_5_text",
+      "qwen3_5_moe",
+      "qwen3_5_moe_text",
+      "qwen3_5_mtp",
+      "qwen3_5_moe_mtp",
+      "qwen3_next"};
+  return linear_attention_model_types.contains(model_type);
+}
+
 Options create_options(const std::string& instance_name, bool is_local) {
   const ServiceConfig& service_config = ServiceConfig::get_instance();
   const ModelConfig& model_config = ModelConfig::get_instance();
@@ -112,6 +124,10 @@ Options create_options(const std::string& instance_name, bool is_local) {
   const DiTConfig& dit_config = DiTConfig::get_instance();
   const RecConfig& rec_config = RecConfig::get_instance();
 
+  LinearStateCacheOptions linear_state_cache_options;
+  linear_state_cache_options.max_linear_state_cache_slots(
+      kv_cache_config.max_linear_state_cache_slots());
+
   Options options;
 #if defined(USE_NPU)
   options.npu_kernel_backend(kernel_config.npu_kernel_backend());
@@ -128,6 +144,7 @@ Options create_options(const std::string& instance_name, bool is_local) {
       .max_cache_size(kv_cache_config.max_cache_size())
       .max_memory_utilization(kv_cache_config.max_memory_utilization())
       .enable_prefix_cache(kv_cache_config.enable_prefix_cache())
+      .linear_state_cache_options(linear_state_cache_options)
       .max_tokens_per_batch(scheduler_config.max_tokens_per_batch())
       .max_seqs_per_batch(scheduler_config.max_seqs_per_batch())
       .max_tokens_per_chunk_for_prefill(
@@ -302,6 +319,30 @@ void validate_config(const std::string& model_type) {
     disagg_pd_config.normalize_dcu(scheduler_config);
   }
 #endif
+
+  if (kv_cache_config.enable_prefix_cache() &&
+      is_linear_attention_model_type(model_type) &&
+      !scheduler_config.enable_chunked_prefill()) {
+    LOG(WARNING) << "Linear-attention prefix cache requires block-aligned "
+                    "chunked prefill to save matching linear states; forcing "
+                    "enable_chunked_prefill=true.";
+    scheduler_config.enable_chunked_prefill(true);
+  }
+
+  if (kv_cache_config.enable_prefix_cache() &&
+      is_linear_attention_model_type(model_type) &&
+      scheduler_config.enable_chunked_prefill()) {
+    if (scheduler_config.max_tokens_per_chunk_for_prefill() %
+            kv_cache_config.block_size() !=
+        0) {
+      LOG(FATAL) << "linear-attention prefix cache saves linear-state "
+                    "checkpoints at chunk-end boundaries, so "
+                    "max_tokens_per_chunk_for_prefill ("
+                 << scheduler_config.max_tokens_per_chunk_for_prefill()
+                 << ") must be a multiple of block_size ("
+                 << kv_cache_config.block_size() << ").";
+    }
+  }
 
 #if defined(USE_NPU)
   // enable_xtensor / enable_rolling_load imply enable_manual_loader

@@ -18,6 +18,7 @@ limitations under the License.
 
 #include <torch/torch.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -28,6 +29,7 @@ limitations under the License.
 #include "core/framework/multimodal/mm_data.h"
 #include "framework/request/sequence.h"
 #include "runtime/forward_params.h"
+#include "util/hash_util.h"
 #include "util/threadpool.h"
 
 namespace xllm {
@@ -123,6 +125,7 @@ class BatchInputBuilder {
     // Additional data
     std::vector<int32_t> embedding_ids;
     std::vector<int32_t> linear_state_ids;
+    std::vector<LinearStateCacheOp> linear_state_cache_ops;
     std::vector<std::string> request_ids;
     std::vector<int32_t> extra_token_ids;
     std::vector<int32_t> mtp_shifted_token_ids;

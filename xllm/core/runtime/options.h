@@ -23,6 +23,7 @@ limitations under the License.
 #include <vector>
 
 #include "common/macros.h"
+#include "common/options.h"
 #include "common/types.h"
 
 namespace xllm {
@@ -58,6 +59,8 @@ struct Options {
 
   // maximum encoder cache size in MB (0 disables encoder cache)
   PROPERTY(int64_t, max_encoder_cache_size) = 0;
+
+  PROPERTY(LinearStateCacheOptions, linear_state_cache_options);
 
   // number of decoding tokens per sequence
   // in speculative decoding, it is the number of speculative tokens + 1

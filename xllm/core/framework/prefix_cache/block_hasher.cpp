@@ -80,6 +80,33 @@ void mm_xxh3_128bits_hash(const std::vector<const uint8_t*>& mm_hash_values,
   std::memcpy(hash_value, &mm_hash, sizeof(mm_hash));
 }
 
+std::vector<PrefixHash> compute_linear_state_prefix_hashes(
+    const Slice<int32_t>& token_ids,
+    size_t block_size,
+    size_t boundary_tokens) {
+  if (block_size == 0 || boundary_tokens == 0) {
+    return {};
+  }
+  if (boundary_tokens % block_size != 0 || boundary_tokens > token_ids.size()) {
+    return {};
+  }
+
+  const size_t boundary_blocks = boundary_tokens / block_size;
+  std::vector<PrefixHash> hashes;
+  hashes.reserve(boundary_blocks);
+  const uint8_t* previous_hash = nullptr;
+  for (size_t block_idx = 0; block_idx < boundary_blocks; ++block_idx) {
+    PrefixHash hash{};
+    xxh3_128bits_hash(
+        previous_hash,
+        token_ids.slice(block_idx * block_size, (block_idx + 1) * block_size),
+        hash.data());
+    hashes.emplace_back(hash);
+    previous_hash = hashes.back().data();
+  }
+  return hashes;
+}
+
 std::unique_ptr<BlockHasher> BlockHasher::create(BlockHasherType type,
                                                  const MMData& mm_data,
                                                  int32_t start_token_idx) {

@@ -20,6 +20,7 @@ limitations under the License.
 #include <torch/torch.h>
 
 #include <memory>
+#include <mutex>
 
 #include "common/types.h"
 #include "executor.h"

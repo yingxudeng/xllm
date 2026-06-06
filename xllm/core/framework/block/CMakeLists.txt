@@ -1,6 +1,7 @@
 include(cc_binary)
 include(cc_library)
 
+
 cc_library(
   NAME
     block_utils
@@ -13,7 +14,7 @@ cc_library(
 )
 
 cc_library(
-  NAME 
+  NAME
     block
   HDRS
     block.h
@@ -25,7 +26,7 @@ cc_library(
     hierarchy_block_manager_pool.h
     sliding_window_block_manager.h
     composite_block_manager.h
-  SRCS 
+  SRCS
     block.cpp
     single_block_manager.cpp
     block_manager_pool.cpp
@@ -41,6 +42,7 @@ cc_library(
     :request
     :common
     :prefix_cache
+    :linear_state_prefix_cache
     glog::glog
     Boost::serialization
     SMHasherSupport

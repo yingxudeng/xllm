@@ -20,6 +20,7 @@ limitations under the License.
 
 #include <iostream>
 #include <thread>
+#include <vector>
 
 #include "common/metrics.h"
 #include "core/framework/multimodal/mm_data.h"
@@ -129,7 +130,7 @@ size_t PrefixCache::insert(Slice<Block>& blocks) {
 
 size_t PrefixCache::evict(size_t n_blocks) {
   std::vector<XXH3Key> evict_keys;
-  return evict(n_blocks, &evict_keys);
+  return evict_impl(n_blocks, &evict_keys);
 }
 
 size_t PrefixCache::insert(const Slice<int32_t>& token_ids,
@@ -255,7 +256,8 @@ size_t PrefixCache::insert(Slice<Block>& blocks,
   return blocks.size() * block_size_;
 }
 
-size_t PrefixCache::evict(size_t n_blocks, std::vector<XXH3Key>* evict_keys) {
+size_t PrefixCache::evict_impl(size_t n_blocks,
+                               std::vector<XXH3Key>* evict_keys) {
   if (num_blocks_ == 0 || lru_lst_.is_empty()) {
     return 0;
   }

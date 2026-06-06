@@ -208,6 +208,27 @@ class Sequence final {
     single_block_ = std::move(single_block);
   }
   Block reset_single_block() { return std::move(single_block_); }
+
+  // Linear-state (Qwen3.5 GDN) live slot. Decoupled from `single_block_` so it
+  // is drawn from the dedicated LinearStatePrefixCache id space, not the
+  // generic single-block pool that also backs embedding ids.
+  bool has_linear_state_slot() const { return linear_state_slot_.is_valid(); }
+  int32_t get_linear_state_slot_id() const {
+    return has_linear_state_slot() ? linear_state_slot_.id() : -1;
+  }
+  void set_linear_state_slot(Block&& linear_state_slot) {
+    linear_state_slot_ = std::move(linear_state_slot);
+  }
+  Block reset_linear_state_slot() { return std::move(linear_state_slot_); }
+
+  // Whether the linear-state live slot already holds valid recurrent state for
+  // this sequence. False until the first forward initializes it (restored from
+  // a checkpoint or computed cold). The batch builder uses this to emit a
+  // cold-start restore only on the first forward; continued forwards keep their
+  // slot warm and must not be reset to cold by the worker.
+  bool linear_state_initialized() const { return linear_state_initialized_; }
+  void mark_linear_state_initialized() { linear_state_initialized_ = true; }
+  void reset_linear_state_initialized() { linear_state_initialized_ = false; }
   const std::string& request_id() const { return request_id_; }
   // get input embedding
   torch::Tensor get_input_embedding() const { return input_embedding_; }
@@ -527,8 +548,17 @@ class Sequence final {
   size_t volatile_num_prompt_tokens_ = 0;
 
   // Scheduler-side logical single-block handle. Transport expands this into
-  // embedding_ids / linear_state_ids as needed by worker-side physical caches.
+  // embedding_ids as needed by the worker-side embedding cache.
   Block single_block_;
+
+  // Scheduler-side linear-state (Qwen3.5 GDN) live slot handle, drawn from the
+  // dedicated LinearStatePrefixCache. Transport expands this into
+  // linear_state_ids.
+  Block linear_state_slot_;
+
+  // Whether linear_state_slot_ holds valid recurrent state for this sequence.
+  // Reset to false in reset() so a re-allocated slot cold-starts.
+  bool linear_state_initialized_ = false;
 
   // is the sequence finished
   mutable bool finished_ = false;

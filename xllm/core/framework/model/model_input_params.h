@@ -19,6 +19,7 @@ limitations under the License.
 #include <torch/torch.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <optional>
@@ -845,6 +846,23 @@ struct ParallelInput {
   }
 };
 
+using LinearStatePrefixHash = PrefixHash;
+
+struct LinearStateCacheOp {
+  // Live slot the sequence advances its recurrent state in.
+  int32_t linear_state_id = -1;
+  // Restore: prefix hash to restore from, and the checkpoint slot the
+  // scheduler resolved it to. The worker copies `restore_src_slot_id`
+  // -> `linear_state_id`.
+  LinearStatePrefixHash restore_prefix_hash{};
+  int32_t restore_src_slot_id = -1;
+  // Save: prefix hash to checkpoint, and the checkpoint slot the scheduler
+  // allocated for it. The worker copies `linear_state_id` ->
+  // `save_dst_slot_id`.
+  LinearStatePrefixHash save_prefix_hash{};
+  int32_t save_dst_slot_id = -1;
+};
+
 struct ExpertInput {
   torch::Tensor expert_load_data;
   torch::Tensor expert_array;
@@ -894,6 +912,7 @@ struct ModelInputParams {
     params.expert = expert.to(device);
     params.graph = graph.to(device);
     params.dit_forward_input = dit_forward_input.to(device);
+    params.linear_state_cache_ops = linear_state_cache_ops;
     params.is_spec_verify = is_spec_verify;
     params.num_accepted_tokens = safe_to(num_accepted_tokens, device, true);
     params.dsa_topk_indices = safe_to(dsa_topk_indices, device, true);
@@ -1020,6 +1039,10 @@ struct ModelInputParams {
 
   // Shifted target token ids for MTP training/evaluation paths.
   torch::Tensor mtp_shifted_token_ids;
+
+  // Structured per-row linear-state cache operations.
+  std::vector<LinearStateCacheOp> linear_state_cache_ops;
+
   bool is_spec_verify = false;
   torch::Tensor num_accepted_tokens;
   torch::Tensor dsa_topk_indices;

@@ -17,6 +17,7 @@ limitations under the License.
 #include "block_manager_impl.h"
 
 #include <unordered_set>
+#include <utility>
 
 #include "framework/prefix_cache/prefix_cache_factory.h"
 namespace xllm {
@@ -172,6 +173,8 @@ std::vector<Block> BlockManagerImpl::allocate_shared(
         shared_blocks.empty() ? 0
                               : shared_blocks.size() * shared_blocks[0].size();
     COUNTER_ADD(prefix_cache_match_length_total, prefix_length);
+    VLOG(1) << "Prefix cache matched " << shared_blocks.size()
+            << " blocks, prefix_length=" << prefix_length;
 
     // update effective block usage
     for (const auto& block : shared_blocks) {

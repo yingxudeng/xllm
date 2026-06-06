@@ -30,4 +30,8 @@ inline constexpr char kContentLength[] = "Content-Length";
 // sequences are handed ids in [1, num_blocks - 1] only.
 inline constexpr int32_t kPaddingLinearStateId = 0;
 
+// The linear-state slot pool reserves the padding row plus one extra guard slot
+// so cache sizing and live-slot accounting keep a non-cacheable baseline.
+inline constexpr int64_t kPaddingLinearStateBlocks = 2;
+
 }  // namespace xllm

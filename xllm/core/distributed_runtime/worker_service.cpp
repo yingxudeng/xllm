@@ -28,12 +28,13 @@ limitations under the License.
 #include "common/types.h"
 #include "core/distributed_runtime/comm_channel.h"
 #include "core/framework/config/eplb_config.h"
-#include "core/runtime/params_utils.h"
 #include "framework/kv_cache/kv_cache_shape.h"
+#include "framework/model/model_input_params.h"
 #include "framework/request/sequence.h"
 #include "framework/sampling/sampling_params.h"
 #include "runtime/forward_params.h"
 #include "runtime/params_utils.h"
+#include "util/hash_util.h"
 #include "util/timer.h"
 
 namespace xllm {
@@ -127,6 +128,17 @@ void stabilize_schedule_overlap_host_views(ForwardInput& input) {
   input.positions_host = clone_cpu_tensor_view(input.positions_host);
   input.input_params.attention.host.block_tables =
       clone_cpu_tensor_view(input.input_params.attention.host.block_tables);
+}
+
+bool has_linear_state_save(const ForwardInput& input) {
+  for (const LinearStateCacheOp& cache_op :
+       input.input_params.linear_state_cache_ops) {
+    if (cache_op.save_dst_slot_id >= 0 &&
+        !is_zero_prefix_hash(cache_op.save_prefix_hash)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace
@@ -283,6 +295,7 @@ void WorkerService::step(ForwardInput& fwd_input,
       }
     }
   } else {
+    const bool wait_for_linear_state_save = has_linear_state_save(fwd_input);
     auto int_options = torch::TensorOptions().device(torch::kCPU);
     if (worker_->is_driver()) {
       // construct fake output tensor
@@ -290,6 +303,12 @@ void WorkerService::step(ForwardInput& fwd_input,
           get_num_decode_seqs_for_schedule_overlap(fwd_input);
       next_tokens = torch::arange(
           -1, -1 * (num_decode_seqs + 1), -1, int_options.dtype(torch::kInt32));
+    }
+    if (wait_for_linear_state_save) {
+      auto forward_outputs = std::move(future).get();
+      CHECK(forward_outputs.has_value())
+          << "Failed to execute model before linear-state checkpoint save";
+    } else if (worker_->is_driver()) {
       std::move(future).deferValue([](auto&&) {});
     }
     expert_load_data = torch::zeros({1, 1}, int_options.dtype(torch::kInt64));

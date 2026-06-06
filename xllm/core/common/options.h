@@ -27,6 +27,11 @@ limitations under the License.
 
 namespace xllm {
 
+struct LinearStateCacheOptions {
+  // Active linear-state slots. 0 derives capacity from the KV cache budget.
+  PROPERTY(int64_t, max_linear_state_cache_slots) = 0;
+};
+
 class Options {
  public:
   Options() = default;
@@ -65,6 +70,8 @@ class Options {
 
   // maximum encoder cache size in MB (0 disables encoder cache)
   PROPERTY(int64_t, max_encoder_cache_size) = 0;
+
+  PROPERTY(LinearStateCacheOptions, linear_state_cache_options);
 
   // max tokens num per batch
   PROPERTY(int32_t, max_tokens_per_batch) = 20480;

@@ -61,6 +61,8 @@ limitations under the License.
 #include "core/distributed_runtime/master.h"
 #include "core/runtime/worker_rendezvous.h"
 #include "framework/kv_cache/kv_cache.h"
+#include "framework/kv_cache/kv_cache_utils.h"
+#include "framework/kv_cache/linear_state_restore.h"
 #include "framework/model/model_input_params.h"
 #include "framework/model_loader.h"
 #include "framework/parallel_state/npu_cp_ep_padding.h"
@@ -879,6 +881,10 @@ void WorkerImpl::prepare_work_before_execute_on_stream(
 
     if (has_linear_attention_layers(context_.get_model_args())) {
       prepare_input_params_for_linear_attention(processed_input.input_params);
+      restore_linear_state_slots(
+          kv_caches_,
+          processed_input.input_params.linear_state_cache_ops,
+          processed_input.input_params.parallel.has_initial_state);
     }
 #endif
   };
