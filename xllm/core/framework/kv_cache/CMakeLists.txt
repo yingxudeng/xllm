@@ -48,3 +48,13 @@ target_link_libraries(embedding_cache_test
                       $<$<BOOL:${USE_NPU}>:hccl>
                       $<$<BOOL:${USE_NPU}>:c_sec>
                       $<$<BOOL:${USE_NPU}>:nnopbase>)
+
+cc_test(
+  NAME
+    kv_cache_utils_test
+  SRCS
+    kv_cache_utils_test.cpp
+  DEPS
+    :kv_cache
+    GTest::gtest_main
+)

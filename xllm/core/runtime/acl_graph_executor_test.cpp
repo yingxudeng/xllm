@@ -675,11 +675,20 @@ TEST_F(AclGraphExecutorTest, BatchInputCarriesLinearStateIds) {
   ASSERT_FALSE(batch->empty());
   ASSERT_FALSE(sequences_.empty());
 
+  // embedding_ids come from the single_block slot, while linear_state_ids come
+  // from the dedicated linear_state_block slot; the two are decoupled and carry
+  // independent ids through transport.
   auto& seq = sequences_.back();
+  auto embedding_block = block_manager_->allocate(1);
+  ASSERT_EQ(embedding_block.size(), 1);
+  const int32_t expected_embedding_id = embedding_block[0].id();
+  seq.set_single_block(std::move(embedding_block[0]));
+
   auto linear_state_block = block_manager_->allocate(1);
   ASSERT_EQ(linear_state_block.size(), 1);
   const int32_t expected_linear_state_id = linear_state_block[0].id();
-  seq.set_single_block(std::move(linear_state_block[0]));
+  seq.set_linear_state_block(std::move(linear_state_block[0]));
+  ASSERT_NE(expected_embedding_id, expected_linear_state_id);
 
   auto forward_input = batch->prepare_forward_input(
       options_.num_decoding_tokens(), 0, model_args_);
@@ -688,8 +697,7 @@ TEST_F(AclGraphExecutorTest, BatchInputCarriesLinearStateIds) {
   EXPECT_EQ(forward_input.input_params.linear_state_ids[0],
             expected_linear_state_id);
   ASSERT_EQ(forward_input.input_params.embedding_ids.size(), 1);
-  EXPECT_EQ(forward_input.input_params.embedding_ids[0],
-            expected_linear_state_id);
+  EXPECT_EQ(forward_input.input_params.embedding_ids[0], expected_embedding_id);
 }
 
 TEST(AclGraphExecutorHybridTest, KvCacheSupportsLinearOnlyLayers) {

@@ -19,6 +19,7 @@ limitations under the License.
 #include <torch/torch.h>
 
 #include <algorithm>
+#include <array>
 #include <nlohmann/json.hpp>
 #include <numeric>
 #include <optional>
@@ -34,6 +35,7 @@ limitations under the License.
 #include "framework/sampling/sampling_params.h"
 #include "platform/device.h"
 #include "runtime/dit_forward_params.h"
+#include "util/hash_util.h"
 
 namespace xllm {
 
@@ -245,6 +247,7 @@ struct RawForwardInput {
   std::vector<int> embedding_ids;
   // linear state ids of each sequence
   std::vector<int> linear_state_ids;
+  std::vector<LinearStateCacheOp> linear_state_cache_ops;
   // request ids of each sequence
   std::vector<std::string> request_ids;
   // swap

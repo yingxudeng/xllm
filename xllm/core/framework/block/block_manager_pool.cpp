@@ -32,6 +32,9 @@ BlockManagerPool::BlockManagerPool(const Options& options, int32_t dp_size)
   CHECK(dp_size > 0) << "dp_size must be greater than 0";
   block_managers_.reserve(dp_size);
   single_block_managers_.reserve(dp_size);
+  const uint32_t single_block_capacity =
+      options_.single_block_capacity() > 0 ? options_.single_block_capacity()
+                                           : FLAGS_max_concurrent_requests + 2;
 
   BlockManager::Options block_options;
   block_options.num_blocks(options_.num_blocks())
@@ -72,9 +75,20 @@ BlockManagerPool::BlockManagerPool(const Options& options, int32_t dp_size)
     // pool. Worker-side embedding and linear-state caches remain physically
     // separate and are addressed via transport fields.
     single_block_managers_.emplace_back(std::make_unique<SingleBlockManager>(
-        /*num_blocks=*/FLAGS_max_concurrent_requests + 2,
+        /*num_blocks=*/single_block_capacity,
         /*resource_name=*/"single block",
         /*exhaustion_message=*/"No more single-block ids available"));
+  }
+
+  if (options_.enable_linear_state()) {
+    CHECK_GT(options_.linear_state_num_slots(), 0)
+        << "linear_state_num_slots must be set when linear state is enabled";
+    linear_state_slot_pools_.reserve(dp_size);
+    for (int32_t i = 0; i < dp_size; ++i) {
+      linear_state_slot_pools_.emplace_back(
+          std::make_unique<LinearStateSlotPool>(
+              options_.linear_state_num_slots()));
+    }
   }
   reset_transfer_infos();
 }
@@ -85,9 +99,13 @@ int32_t BlockManagerPool::get_manager_with_max_free_blocks() const {
   }
 
   size_t max_index = 0;
-  size_t max_free = block_managers_[0]->num_free_blocks();
+  size_t max_free = 0;
 
-  for (size_t i = 1; i < block_managers_.size(); ++i) {
+  for (size_t i = 0; i < block_managers_.size(); ++i) {
+    if (options_.enable_linear_state() &&
+        single_block_managers_[i]->num_free_blocks() == 0) {
+      continue;
+    }
     const size_t current_free = block_managers_[i]->num_free_blocks();
     if (current_free > max_free) {
       max_free = current_free;
@@ -114,6 +132,8 @@ bool BlockManagerPool::allocate_single_block(Sequence* sequence,
   CHECK_GE(dp_rank, 0);
   CHECK_LT(static_cast<size_t>(dp_rank), single_block_managers_.size());
   if (sequence->has_single_block_id()) {
+    // Both per-sequence slots are acquired together; if one is held the other
+    // must be too.
     return true;
   }
 
@@ -123,6 +143,13 @@ bool BlockManagerPool::allocate_single_block(Sequence* sequence,
     return false;
   }
   sequence->set_single_block(std::move(single_blocks[0]));
+
+  if (!allocate_linear_state_slot(sequence, dp_rank)) {
+    // Roll back the single block so the pair stays consistent.
+    auto single_block = sequence->reset_single_block();
+    single_block_managers_[dp_rank]->deallocate({&single_block, 1});
+    return false;
+  }
   return true;
 }
 
@@ -131,11 +158,50 @@ void BlockManagerPool::deallocate_single_block(Sequence* sequence,
   DCHECK(sequence != nullptr);
   CHECK_GE(dp_rank, 0);
   CHECK_LT(static_cast<size_t>(dp_rank), single_block_managers_.size());
+  release_linear_state_slot(sequence, dp_rank);
   auto single_block = sequence->reset_single_block();
   if (!single_block.is_valid()) {
     return;
   }
   single_block_managers_[dp_rank]->deallocate({&single_block, 1});
+}
+
+bool BlockManagerPool::allocate_linear_state_slot(Sequence* sequence,
+                                                  int32_t dp_rank) {
+  if (!options_.enable_linear_state()) {
+    return true;
+  }
+  CHECK_LT(static_cast<size_t>(dp_rank), linear_state_slot_pools_.size());
+  if (sequence->has_linear_state_slot()) {
+    return true;
+  }
+  Block slot = linear_state_slot_pools_[dp_rank]->acquire_live();
+  if (!slot.is_valid()) {
+    LOG(ERROR) << "Failed to acquire linear state slot!";
+    return false;
+  }
+  sequence->set_linear_state_block(std::move(slot));
+  return true;
+}
+
+void BlockManagerPool::release_linear_state_slot(Sequence* sequence,
+                                                 int32_t dp_rank) {
+  if (!options_.enable_linear_state()) {
+    return;
+  }
+  CHECK_LT(static_cast<size_t>(dp_rank), linear_state_slot_pools_.size());
+  // Dropping the handle returns the live slot to the pool. Boundary
+  // checkpoints made while running already captured any reusable state.
+  sequence->reset_linear_state_block();
+}
+
+LinearStateSlotPool* BlockManagerPool::linear_state_slot_pool(int32_t dp_rank) {
+  if (!options_.enable_linear_state()) {
+    return nullptr;
+  }
+  CHECK_GE(dp_rank, 0);
+  CHECK_LT(static_cast<size_t>(dp_rank), linear_state_slot_pools_.size());
+  return linear_state_slot_pools_[dp_rank].get();
 }
 
 void BlockManagerPool::deallocate(Request* request) {
@@ -267,7 +333,17 @@ bool BlockManagerPool::try_allocate(Sequence* sequence) {
     // not need to be recalculated and can be reused directly.
     shared_blocks = block_managers_[dp_rank]->allocate_shared(
         sequence->tokens(), existed_shared_blocks);
-
+    // Leave at least one token for the current forward; see the cap rationale
+    // in trim_shared_blocks_to_linear_state.
+    const size_t max_reusable_blocks =
+        sequence->num_tokens() == 0
+            ? 0
+            : (sequence->num_tokens() - 1) / options_.block_size();
+    trim_shared_blocks_to_linear_state(
+        dp_rank,
+        sequence->kv_state().shared_kv_blocks_num(),
+        max_reusable_blocks,
+        &shared_blocks);
     if (!shared_blocks.empty()) {
       sequence->add_kv_blocks(shared_blocks);
       sequence->kv_state().incr_shared_kv_blocks_num(shared_blocks.size());
@@ -337,6 +413,17 @@ void BlockManagerPool::allocate_shared(Sequence* sequence) {
     std::vector<Block> shared_blocks =
         block_managers_[dp_rank]->allocate_shared(sequence->tokens(),
                                                   existed_shared_blocks);
+    // Leave at least one token for the current forward; see the cap rationale
+    // in trim_shared_blocks_to_linear_state.
+    const size_t max_reusable_blocks =
+        sequence->num_tokens() == 0
+            ? 0
+            : (sequence->num_tokens() - 1) / options_.block_size();
+    trim_shared_blocks_to_linear_state(
+        dp_rank,
+        sequence->kv_state().shared_kv_blocks_num(),
+        max_reusable_blocks,
+        &shared_blocks);
     sequence->add_shared_kv_blocks(std::move(shared_blocks));
   }
 }
@@ -396,6 +483,50 @@ std::vector<size_t> BlockManagerPool::num_used_blocks() const {
 double BlockManagerPool::kv_cache_utilization() const {
   int32_t dp_rank = get_manager_with_max_free_blocks();
   return block_managers_[dp_rank]->kv_cache_utilization();
+}
+
+void BlockManagerPool::trim_shared_blocks_to_linear_state(
+    int32_t dp_rank,
+    size_t existed_shared_blocks_num,
+    size_t max_reusable_blocks,
+    std::vector<Block>* shared_blocks) {
+  if (!options_.enable_linear_state() || shared_blocks->empty()) {
+    return;
+  }
+
+  // Limit KV prefix reuse to the longest prefix whose block-aligned boundary
+  // still has a linear-state checkpoint in the slot pool, so a reused prefix
+  // always has restorable recurrent state. Checkpoints already known from a
+  // prior step (existed_shared_blocks_num) stay safe.
+  //
+  // `max_reusable_blocks` additionally caps reuse so at least one token is left
+  // for the current forward. Without it, an exact-prompt match could later be
+  // popped one block back (see KVCacheState::add_shared_kv_blocks) onto a
+  // non-checkpoint boundary, leaving the sequence unable to restore its
+  // recurrent state.
+  CHECK_LT(static_cast<size_t>(dp_rank), linear_state_slot_pools_.size());
+  LinearStateSlotPool* pool = linear_state_slot_pools_[dp_rank].get();
+  const size_t total_blocks = shared_blocks->size();
+  size_t safe_shared_blocks = std::min(existed_shared_blocks_num, total_blocks);
+  // Already-held blocks are never trimmed; the cap only bounds new reuse.
+  const size_t reusable_limit =
+      std::max(safe_shared_blocks, std::min(total_blocks, max_reusable_blocks));
+  for (size_t block_idx = safe_shared_blocks; block_idx < reusable_limit;
+       ++block_idx) {
+    const XXH3Key prefix_hash(
+        (*shared_blocks)[block_idx].get_immutable_hash_value());
+    if (pool->has_checkpoint(prefix_hash)) {
+      safe_shared_blocks = block_idx + 1;
+    }
+  }
+  CHECK_LE(safe_shared_blocks, total_blocks);
+  if (safe_shared_blocks == total_blocks) {
+    return;
+  }
+
+  block_managers_[dp_rank]->deallocate(
+      Slice<Block>(*shared_blocks).slice(safe_shared_blocks));
+  shared_blocks->resize(safe_shared_blocks);
 }
 
 // currently use only for profile, which not need prefix cache.

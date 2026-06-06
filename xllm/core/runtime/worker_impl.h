@@ -19,7 +19,10 @@ limitations under the License.
 #include <sys/mman.h>
 #include <torch/torch.h>
 
+#include <array>
 #include <memory>
+#include <mutex>
+#include <unordered_map>
 
 #include "common/types.h"
 #include "executor.h"
@@ -40,6 +43,8 @@ limitations under the License.
 #include "framework/xtensor/xtensor.h"
 #include "options.h"
 #include "platform/device.h"
+#include "runtime/linear_state_checkpoint_manager.h"
+#include "util/hash_util.h"
 #include "util/threadpool.h"
 #if defined(USE_NPU)
 #include "framework/kv_cache_transfer/mooncake_weight_transfer.h"
@@ -206,6 +211,8 @@ class WorkerImpl {
   int64_t get_num_layers() const;
 
   bool wakeup_local(const WakeupOptions& options);
+
+  std::unique_ptr<LinearStateCheckpointManager> linear_state_checkpoint_mgr_;
 
 #if defined(USE_CUDA)
   void refresh_cuda_block_copy_runtime_state();
