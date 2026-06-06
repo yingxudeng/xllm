@@ -333,8 +333,17 @@ bool BlockManagerPool::try_allocate(Sequence* sequence) {
     // not need to be recalculated and can be reused directly.
     shared_blocks = block_managers_[dp_rank]->allocate_shared(
         sequence->tokens(), existed_shared_blocks);
+    // Leave at least one token for the current forward; see the cap rationale
+    // in trim_shared_blocks_to_linear_state.
+    const size_t max_reusable_blocks =
+        sequence->num_tokens() == 0
+            ? 0
+            : (sequence->num_tokens() - 1) / options_.block_size();
     trim_shared_blocks_to_linear_state(
-        dp_rank, sequence->kv_state().shared_kv_blocks_num(), &shared_blocks);
+        dp_rank,
+        sequence->kv_state().shared_kv_blocks_num(),
+        max_reusable_blocks,
+        &shared_blocks);
     if (!shared_blocks.empty()) {
       sequence->add_kv_blocks(shared_blocks);
       sequence->kv_state().incr_shared_kv_blocks_num(shared_blocks.size());
@@ -404,8 +413,17 @@ void BlockManagerPool::allocate_shared(Sequence* sequence) {
     std::vector<Block> shared_blocks =
         block_managers_[dp_rank]->allocate_shared(sequence->tokens(),
                                                   existed_shared_blocks);
+    // Leave at least one token for the current forward; see the cap rationale
+    // in trim_shared_blocks_to_linear_state.
+    const size_t max_reusable_blocks =
+        sequence->num_tokens() == 0
+            ? 0
+            : (sequence->num_tokens() - 1) / options_.block_size();
     trim_shared_blocks_to_linear_state(
-        dp_rank, sequence->kv_state().shared_kv_blocks_num(), &shared_blocks);
+        dp_rank,
+        sequence->kv_state().shared_kv_blocks_num(),
+        max_reusable_blocks,
+        &shared_blocks);
     sequence->add_shared_kv_blocks(std::move(shared_blocks));
   }
 }
@@ -470,6 +488,7 @@ double BlockManagerPool::kv_cache_utilization() const {
 void BlockManagerPool::trim_shared_blocks_to_linear_state(
     int32_t dp_rank,
     size_t existed_shared_blocks_num,
+    size_t max_reusable_blocks,
     std::vector<Block>* shared_blocks) {
   if (!options_.enable_linear_state() || shared_blocks->empty()) {
     return;
@@ -479,11 +498,20 @@ void BlockManagerPool::trim_shared_blocks_to_linear_state(
   // still has a linear-state checkpoint in the slot pool, so a reused prefix
   // always has restorable recurrent state. Checkpoints already known from a
   // prior step (existed_shared_blocks_num) stay safe.
+  //
+  // `max_reusable_blocks` additionally caps reuse so at least one token is left
+  // for the current forward. Without it, an exact-prompt match could later be
+  // popped one block back (see KVCacheState::add_shared_kv_blocks) onto a
+  // non-checkpoint boundary, leaving the sequence unable to restore its
+  // recurrent state.
   CHECK_LT(static_cast<size_t>(dp_rank), linear_state_slot_pools_.size());
   LinearStateSlotPool* pool = linear_state_slot_pools_[dp_rank].get();
-  size_t safe_shared_blocks =
-      std::min(existed_shared_blocks_num, shared_blocks->size());
-  for (size_t block_idx = safe_shared_blocks; block_idx < shared_blocks->size();
+  const size_t total_blocks = shared_blocks->size();
+  size_t safe_shared_blocks = std::min(existed_shared_blocks_num, total_blocks);
+  // Already-held blocks are never trimmed; the cap only bounds new reuse.
+  const size_t reusable_limit =
+      std::max(safe_shared_blocks, std::min(total_blocks, max_reusable_blocks));
+  for (size_t block_idx = safe_shared_blocks; block_idx < reusable_limit;
        ++block_idx) {
     const XXH3Key prefix_hash(
         (*shared_blocks)[block_idx].get_immutable_hash_value());
@@ -491,8 +519,8 @@ void BlockManagerPool::trim_shared_blocks_to_linear_state(
       safe_shared_blocks = block_idx + 1;
     }
   }
-  CHECK_LE(safe_shared_blocks, shared_blocks->size());
-  if (safe_shared_blocks == shared_blocks->size()) {
+  CHECK_LE(safe_shared_blocks, total_blocks);
+  if (safe_shared_blocks == total_blocks) {
     return;
   }
 

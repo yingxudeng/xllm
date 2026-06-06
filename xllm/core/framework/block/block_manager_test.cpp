@@ -434,4 +434,120 @@ TEST(BlockManagerPoolTest, LinearStatePrefixCacheMatchesOnlyCheckpointHashes) {
   pool.deallocate_without_cache(&hit_seq);
 }
 
+// An exact prompt match must leave at least one token for the current forward.
+// The matched tail boundary (h2 here) is checkpointed, but reusing it would pop
+// back to the previous, uncheckpointed boundary (h1) and lose restorable state,
+// so prefix reuse must be 0 instead.
+TEST(BlockManagerPoolTest, ExactPromptCannotReuseUncheckpointedTailBoundary) {
+  ScopedValue<int32_t> max_seqs_guard(&FLAGS_max_seqs_per_batch, 4);
+
+  BlockManagerPool::Options options;
+  options.num_blocks(32).host_num_blocks(0).block_size(4).enable_prefix_cache(
+      true);
+  options.single_block_capacity(FLAGS_max_seqs_per_batch + 2)
+      .enable_linear_state(true)
+      .linear_state_num_slots(64);
+  BlockManagerPool pool(options, /*dp_size=*/1);
+
+  Sequence cached_seq =
+      MakeSequence(0, /*prompt_tokens=*/{1, 2, 3, 4, 5, 6, 7, 8});
+  ASSERT_TRUE(pool.allocate(&cached_seq));
+  cached_seq.kv_state().set_kv_cache_tokens_num(cached_seq.num_tokens());
+  pool.cache(&cached_seq);
+  const XXH3Key tail_hash(
+      cached_seq.kv_state().kv_blocks()[1].get_immutable_hash_value());
+  pool.deallocate_without_cache(&cached_seq);
+
+  LinearStateSlotPool* slot_pool = pool.linear_state_slot_pool(/*dp_rank=*/0);
+  ASSERT_NE(slot_pool, nullptr);
+  EXPECT_GE(slot_pool->checkpoint(tail_hash), 1);
+
+  // Exact 8-token prompt: max_reusable_blocks = floor((8 - 1) / 4) = 1, so the
+  // checkpointed boundary at block 2 is out of reach and reuse falls to 0.
+  Sequence exact_seq =
+      MakeSequence(1, /*prompt_tokens=*/{1, 2, 3, 4, 5, 6, 7, 8});
+  ASSERT_TRUE(pool.allocate(&exact_seq, exact_seq.num_tokens()));
+  EXPECT_EQ(exact_seq.kv_state().shared_kv_blocks_num(), 0u);
+  pool.deallocate_without_cache(&exact_seq);
+}
+
+// One token past the checkpoint boundary leaves work for the current forward,
+// so the checkpointed boundary becomes reusable.
+TEST(BlockManagerPoolTest, PromptPastCheckpointReusesCheckpointBoundary) {
+  ScopedValue<int32_t> max_seqs_guard(&FLAGS_max_seqs_per_batch, 4);
+
+  BlockManagerPool::Options options;
+  options.num_blocks(32).host_num_blocks(0).block_size(4).enable_prefix_cache(
+      true);
+  options.single_block_capacity(FLAGS_max_seqs_per_batch + 2)
+      .enable_linear_state(true)
+      .linear_state_num_slots(64);
+  BlockManagerPool pool(options, /*dp_size=*/1);
+
+  Sequence cached_seq =
+      MakeSequence(0, /*prompt_tokens=*/{1, 2, 3, 4, 5, 6, 7, 8});
+  ASSERT_TRUE(pool.allocate(&cached_seq));
+  cached_seq.kv_state().set_kv_cache_tokens_num(cached_seq.num_tokens());
+  pool.cache(&cached_seq);
+  const XXH3Key tail_hash(
+      cached_seq.kv_state().kv_blocks()[1].get_immutable_hash_value());
+  pool.deallocate_without_cache(&cached_seq);
+
+  LinearStateSlotPool* slot_pool = pool.linear_state_slot_pool(/*dp_rank=*/0);
+  ASSERT_NE(slot_pool, nullptr);
+  EXPECT_GE(slot_pool->checkpoint(tail_hash), 1);
+
+  // 9-token prompt: max_reusable_blocks = floor((9 - 1) / 4) = 2, so the
+  // checkpointed boundary at block 2 is reusable.
+  Sequence hit_seq =
+      MakeSequence(1, /*prompt_tokens=*/{1, 2, 3, 4, 5, 6, 7, 8, 9});
+  ASSERT_TRUE(pool.allocate(&hit_seq, hit_seq.num_tokens()));
+  EXPECT_EQ(hit_seq.kv_state().shared_kv_blocks_num(), 2u);
+  pool.deallocate_without_cache(&hit_seq);
+}
+
+// With checkpoints at both an inner and the exact tail boundary, an exact
+// prompt match must stop at the inner checkpoint: the tail boundary would leave
+// no token for the forward.
+TEST(BlockManagerPoolTest, ExactPromptStopsAtEarlierCheckpoint) {
+  ScopedValue<int32_t> max_seqs_guard(&FLAGS_max_seqs_per_batch, 4);
+
+  BlockManagerPool::Options options;
+  options.num_blocks(32).host_num_blocks(0).block_size(4).enable_prefix_cache(
+      true);
+  options.single_block_capacity(FLAGS_max_seqs_per_batch + 2)
+      .enable_linear_state(true)
+      .linear_state_num_slots(64);
+  BlockManagerPool pool(options, /*dp_size=*/1);
+
+  Sequence cached_seq =
+      MakeSequence(0,
+                   /*prompt_tokens=*/{
+                       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16});
+  ASSERT_TRUE(pool.allocate(&cached_seq));
+  cached_seq.kv_state().set_kv_cache_tokens_num(cached_seq.num_tokens());
+  pool.cache(&cached_seq);
+  const XXH3Key inner_hash(
+      cached_seq.kv_state().kv_blocks()[1].get_immutable_hash_value());
+  const XXH3Key tail_hash(
+      cached_seq.kv_state().kv_blocks()[3].get_immutable_hash_value());
+  pool.deallocate_without_cache(&cached_seq);
+
+  LinearStateSlotPool* slot_pool = pool.linear_state_slot_pool(/*dp_rank=*/0);
+  ASSERT_NE(slot_pool, nullptr);
+  EXPECT_GE(slot_pool->checkpoint(inner_hash), 1);
+  EXPECT_GE(slot_pool->checkpoint(tail_hash), 1);
+
+  // Exact 16-token prompt: max_reusable_blocks = floor((16 - 1) / 4) = 3, so
+  // the tail checkpoint at block 4 is out of reach; reuse stops at the inner
+  // checkpoint (block 2).
+  Sequence exact_seq =
+      MakeSequence(1,
+                   /*prompt_tokens=*/{
+                       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16});
+  ASSERT_TRUE(pool.allocate(&exact_seq, exact_seq.num_tokens()));
+  EXPECT_EQ(exact_seq.kv_state().shared_kv_blocks_num(), 2u);
+  pool.deallocate_without_cache(&exact_seq);
+}
+
 }  // namespace xllm

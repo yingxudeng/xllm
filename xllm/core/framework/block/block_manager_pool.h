@@ -115,6 +115,7 @@ class BlockManagerPool : public KVCacheManager {
  private:
   void trim_shared_blocks_to_linear_state(int32_t dp_rank,
                                           size_t existed_shared_blocks_num,
+                                          size_t max_reusable_blocks,
                                           std::vector<Block>* shared_blocks);
 
   // Acquire/release the per-sequence linear-state live slot alongside the

@@ -122,6 +122,27 @@ std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN> compute_prefix_boundary_hash(
   return hash;
 }
 
+// Whether a block-aligned boundary should hold a linear-state checkpoint.
+// Checkpoints are a sparse overlay on the shared KV prefix-hash chain: with a
+// stride of `checkpoint_stride_tokens` only the boundaries that are a multiple
+// of the stride are persisted (e.g. block_size=1024, stride=4096 -> h4, h8,
+// ...), the others stay null and are recomputed on reuse. A stride of 0 falls
+// back to checkpointing every block boundary (dense, backward-compatible).
+bool should_save_linear_checkpoint(uint32_t boundary_tokens,
+                                   uint32_t block_size) {
+  if (boundary_tokens == 0 || block_size == 0) {
+    return false;
+  }
+  if (boundary_tokens % block_size != 0) {
+    return false;
+  }
+  const int32_t stride = FLAGS_linear_state_checkpoint_stride_tokens;
+  if (stride <= 0) {
+    return true;
+  }
+  return boundary_tokens % static_cast<uint32_t>(stride) == 0;
+}
+
 }  // namespace
 
 BatchInputBuilder::BatchInputBuilder(
@@ -496,10 +517,17 @@ void BatchInputBuilder::extract_tokens_and_positions(Sequence* sequence,
           compute_prefix_boundary_hash(sequence, n_kv_cache_tokens);
     }
     // Exit-boundary save: persist the live state when this forward lands on a
-    // block boundary so future requests can reuse the prefix. The destination
-    // checkpoint slot is reserved later from the LinearStateSlotPool.
-    linear_state_cache_op.save_prefix_hash =
-        compute_prefix_boundary_hash(sequence, seq_len);
+    // linear-state checkpoint boundary so future requests can reuse the prefix.
+    // Checkpoints are sparse (every checkpoint_stride_tokens), so off-stride
+    // block boundaries leave save_prefix_hash zero and the engine skips them.
+    // The destination checkpoint slot is reserved later from the
+    // LinearStateSlotPool.
+    const auto kv_blocks = sequence->kv_state().kv_blocks();
+    const uint32_t block_size = kv_blocks.empty() ? 0u : kv_blocks[0].size();
+    if (should_save_linear_checkpoint(seq_len, block_size)) {
+      linear_state_cache_op.save_prefix_hash =
+          compute_prefix_boundary_hash(sequence, seq_len);
+    }
     state.linear_state_cache_ops.emplace_back(std::move(linear_state_cache_op));
     sequence->mark_linear_state_initialized();
   }

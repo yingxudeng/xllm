@@ -112,6 +112,14 @@ void validate_flags(const std::string& model_type) {
     LOG(FATAL) << "Model is not supported currently, model type: "
                << model_type;
   }
+  if (FLAGS_linear_state_checkpoint_stride_tokens > 0 &&
+      (FLAGS_block_size <= 0 ||
+       FLAGS_linear_state_checkpoint_stride_tokens % FLAGS_block_size != 0)) {
+    LOG(FATAL) << "linear_state_checkpoint_stride_tokens ("
+               << FLAGS_linear_state_checkpoint_stride_tokens
+               << ") must be a positive multiple of block_size ("
+               << FLAGS_block_size << ").";
+  }
   if (FLAGS_enable_prefill_sp &&
       !prefill_sp_supported_model_set.contains(model_type)) {
     LOG(FATAL) << "enable_prefill_sp is not supported for model_type="
