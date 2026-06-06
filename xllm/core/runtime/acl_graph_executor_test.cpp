@@ -21,12 +21,14 @@ limitations under the License.
 
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "core/framework/batch/batch.h"
 #include "core/framework/block/block.h"
 #include "core/framework/block/block_manager_impl.h"
 #include "core/framework/kv_cache/kv_cache.h"
+#include "core/framework/kv_cache/kv_cache_utils.h"
 #include "core/framework/model/model_args.h"
 #include "core/framework/model/model_output.h"
 #include "core/framework/model_loader.h"
@@ -675,11 +677,20 @@ TEST_F(AclGraphExecutorTest, BatchInputCarriesLinearStateIds) {
   ASSERT_FALSE(batch->empty());
   ASSERT_FALSE(sequences_.empty());
 
+  // embedding_ids come from the single_block slot, while linear_state_ids come
+  // from the dedicated linear_state_slot slot; the two are decoupled and carry
+  // independent ids through transport.
   auto& seq = sequences_.back();
-  auto linear_state_block = block_manager_->allocate(1);
-  ASSERT_EQ(linear_state_block.size(), 1);
-  const int32_t expected_linear_state_id = linear_state_block[0].id();
-  seq.set_single_block(std::move(linear_state_block[0]));
+  auto embedding_block = block_manager_->allocate(1);
+  ASSERT_EQ(embedding_block.size(), 1);
+  const int32_t expected_embedding_id = embedding_block[0].id();
+  seq.set_single_block(std::move(embedding_block[0]));
+
+  auto linear_state_slot = block_manager_->allocate(1);
+  ASSERT_EQ(linear_state_slot.size(), 1);
+  const int32_t expected_linear_state_id = linear_state_slot[0].id();
+  seq.set_linear_state_slot(std::move(linear_state_slot[0]));
+  ASSERT_NE(expected_embedding_id, expected_linear_state_id);
 
   auto forward_input = batch->prepare_forward_input(
       options_.num_decoding_tokens(), 0, model_args_);
@@ -688,8 +699,27 @@ TEST_F(AclGraphExecutorTest, BatchInputCarriesLinearStateIds) {
   EXPECT_EQ(forward_input.input_params.linear_state_ids[0],
             expected_linear_state_id);
   ASSERT_EQ(forward_input.input_params.embedding_ids.size(), 1);
-  EXPECT_EQ(forward_input.input_params.embedding_ids[0],
-            expected_linear_state_id);
+  EXPECT_EQ(forward_input.input_params.embedding_ids[0], expected_embedding_id);
+
+  forward_input.input_params.has_initial_state = {0};
+  forward_input = forward_input.to(*device_, torch::kFloat32);
+  npu::GraphPersistentParam persistent_param(model_args_, *device_, options_);
+  std::optional<ModelInputParams> params_for_capture = persistent_param.update(
+      forward_input.token_ids,
+      first_full_attention_cache(kv_caches_).get_k_cache(),
+      first_full_attention_cache(kv_caches_).get_v_cache(),
+      forward_input.positions,
+      forward_input.input_params,
+      /*padded_num_tokens=*/2,
+      /*return_capture_params=*/true);
+  ASSERT_TRUE(params_for_capture.has_value());
+  EXPECT_EQ(params_for_capture->num_sequences, 2);
+  EXPECT_EQ(
+      params_for_capture->linear_state_ids,
+      std::vector<int32_t>({expected_linear_state_id, kPaddingLinearStateId}));
+  ASSERT_EQ(params_for_capture->has_initial_state.size(), 2);
+  EXPECT_EQ(params_for_capture->has_initial_state[0], 0);
+  EXPECT_EQ(params_for_capture->has_initial_state[1], 0);
 }
 
 TEST(AclGraphExecutorHybridTest, KvCacheSupportsLinearOnlyLayers) {
