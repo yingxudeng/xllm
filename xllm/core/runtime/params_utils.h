@@ -85,4 +85,5 @@ bool proto_to_dit_forward_output(const proto::DiTForwardOutput& pb_dit_outputs,
 
 bool torch_tensor_to_proto_tensor(const torch::Tensor& torch_tensor,
                                   proto::Tensor* proto_tensor);
+
 }  // namespace xllm

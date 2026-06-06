@@ -108,7 +108,10 @@ const OptionCategory kRecOptions = {"REC OPTIONS",
 
 const OptionCategory kPrefixCacheOptions = {
     "PREFIX CACHE OPTIONS",
-    {"enable_prefix_cache", "xxh3_128bits_seed"}};
+    {"enable_prefix_cache",
+     "xxh3_128bits_seed",
+     "max_linear_state_cache_slots",
+     "linear_state_checkpoint_stride_tokens"}};
 
 const OptionCategory kOtherOptions = {
     "OTHER OPTIONS",

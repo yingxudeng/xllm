@@ -29,6 +29,7 @@ cc_library(
     :runtime
     :common
     glog::glog
+    xxHash
 )
 
 cc_test(

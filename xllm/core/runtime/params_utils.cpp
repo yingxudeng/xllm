@@ -16,8 +16,11 @@ limitations under the License.
 #include "runtime/params_utils.h"
 
 #include <absl/strings/str_join.h>
+#include <google/protobuf/repeated_ptr_field.h>
 #include <torch/torch.h>
 
+#include <array>
+#include <cstring>
 #include <optional>
 
 #include "common/global_flags.h"
@@ -39,6 +42,21 @@ void aprint(std::vector<T> v, const std::string& name, int global_rank) {
             << ", value = " << value;
 }
 
+LinearStatePrefixHash prefix_hash_from_proto(const std::string& pb_hash) {
+  if (pb_hash.empty()) {
+    return {};
+  }
+  CHECK_EQ(pb_hash.size(), XXH3_128BITS_HASH_VALUE_LEN);
+  LinearStatePrefixHash hash{};
+  std::memcpy(hash.data(), pb_hash.data(), XXH3_128BITS_HASH_VALUE_LEN);
+  return hash;
+}
+
+std::string prefix_hash_to_proto(const LinearStatePrefixHash& hash) {
+  return std::string(reinterpret_cast<const char*>(hash.data()),
+                     XXH3_128BITS_HASH_VALUE_LEN);
+}
+
 void normalize_linear_state_ids(std::vector<int32_t>& linear_state_ids,
                                 int32_t num_sequences) {
   if (num_sequences <= 0) {
@@ -53,6 +71,56 @@ void normalize_linear_state_ids(std::vector<int32_t>& linear_state_ids,
       << "linear_state_ids size (" << linear_state_ids.size()
       << ") must match num_sequences (" << num_sequences << ")";
 }
+
+std::vector<LinearStateCacheOp> linear_state_cache_ops_from_proto(
+    const google::protobuf::RepeatedPtrField<proto::LinearStateCacheOp>&
+        pb_ops) {
+  std::vector<LinearStateCacheOp> ops;
+  ops.reserve(pb_ops.size());
+  for (const proto::LinearStateCacheOp& pb_op : pb_ops) {
+    LinearStateCacheOp op;
+    op.linear_state_id = pb_op.linear_state_id();
+    op.restore_prefix_hash =
+        prefix_hash_from_proto(pb_op.restore_prefix_hash());
+    op.restore_src_slot_id = pb_op.restore_src_slot_id();
+    op.save_prefix_hash = prefix_hash_from_proto(pb_op.save_prefix_hash());
+    op.save_dst_slot_id = pb_op.save_dst_slot_id();
+    ops.emplace_back(std::move(op));
+  }
+  return ops;
+}
+
+void linear_state_cache_ops_to_proto(
+    const std::vector<LinearStateCacheOp>& ops,
+    google::protobuf::RepeatedPtrField<proto::LinearStateCacheOp>* pb_ops) {
+  pb_ops->Reserve(ops.size());
+  for (const LinearStateCacheOp& op : ops) {
+    proto::LinearStateCacheOp* pb_op = pb_ops->Add();
+    pb_op->set_linear_state_id(op.linear_state_id);
+    pb_op->set_restore_prefix_hash(
+        prefix_hash_to_proto(op.restore_prefix_hash));
+    pb_op->set_restore_src_slot_id(op.restore_src_slot_id);
+    pb_op->set_save_prefix_hash(prefix_hash_to_proto(op.save_prefix_hash));
+    pb_op->set_save_dst_slot_id(op.save_dst_slot_id);
+  }
+}
+
+void linear_state_ids_from_cache_ops(
+    std::vector<int32_t>& linear_state_ids,
+    const std::vector<LinearStateCacheOp>& linear_state_cache_ops,
+    int32_t num_sequences) {
+  if (linear_state_cache_ops.empty()) {
+    normalize_linear_state_ids(linear_state_ids, num_sequences);
+    return;
+  }
+  CHECK_EQ(linear_state_cache_ops.size(), static_cast<size_t>(num_sequences));
+  linear_state_ids.resize(linear_state_cache_ops.size());
+  const size_t num_ops = linear_state_cache_ops.size();
+  for (size_t i = 0; i < num_ops; ++i) {
+    linear_state_ids[i] = linear_state_cache_ops[i].linear_state_id;
+  }
+}
+
 }  // namespace
 
 void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
@@ -147,16 +215,18 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
   std::vector<int32_t> embedding_ids =
       std::vector<int32_t>(pb_forward_input->embedding_ids().begin(),
                            pb_forward_input->embedding_ids().end());
-  std::vector<int32_t> linear_state_ids =
-      std::vector<int32_t>(pb_forward_input->linear_state_ids().begin(),
-                           pb_forward_input->linear_state_ids().end());
-  normalize_linear_state_ids(linear_state_ids, num_sequences);
+  std::vector<int32_t> linear_state_ids;
+  std::vector<LinearStateCacheOp> linear_state_cache_ops =
+      linear_state_cache_ops_from_proto(
+          pb_forward_input->linear_state_cache_input().ops());
   std::vector<int32_t> extra_token_ids =
       std::vector<int32_t>(pb_forward_input->extra_token_ids().begin(),
                            pb_forward_input->extra_token_ids().end());
   std::vector<std::string> request_ids =
       std::vector<std::string>(pb_forward_input->request_ids().begin(),
                                pb_forward_input->request_ids().end());
+  linear_state_ids_from_cache_ops(
+      linear_state_ids, linear_state_cache_ops, num_sequences);
 
   std::vector<BlockTransferInfo> swap_blocks;
   swap_blocks.reserve(pb_forward_input->swap_blocks().size());
@@ -252,6 +322,7 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
   input_params.dp_is_decode = std::move(dp_is_decode);
   input_params.embedding_ids = std::move(embedding_ids);
   input_params.linear_state_ids = std::move(linear_state_ids);
+  input_params.linear_state_cache_ops = std::move(linear_state_cache_ops);
   input_params.request_ids = std::move(request_ids);
   input_params.extra_token_ids = std::move(extra_token_ids);
 
@@ -535,8 +606,9 @@ void forward_input_to_proto(const RawForwardInput& inputs,
 
   ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_embedding_ids(),
                       inputs.embedding_ids);
-  ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_linear_state_ids(),
-                      inputs.linear_state_ids);
+  linear_state_cache_ops_to_proto(
+      inputs.linear_state_cache_ops,
+      pb_forward_input->mutable_linear_state_cache_input()->mutable_ops());
   ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_request_ids(),
                       inputs.request_ids);
   ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_extra_token_ids(),
@@ -633,7 +705,7 @@ void forward_output_to_proto(const torch::Tensor& next_tokens,
                              const std::vector<torch::Tensor>& dit_images,
                              proto::ForwardOutput* pb_forward_output) {
   Timer timer;
-  int32_t num_seqs = next_tokens.size(0);
+  int32_t num_seqs = next_tokens.defined() ? next_tokens.size(0) : 0;
   if (embeddings.defined() && embeddings.numel() > 0) {
     num_seqs = std::max(num_seqs, static_cast<int32_t>(embeddings.size(0)));
   }

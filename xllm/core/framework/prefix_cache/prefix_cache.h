@@ -110,7 +110,7 @@ class PrefixCache {
 
   size_t insert(Slice<Block>& blocks, std::vector<XXH3Key>* insert_keys);
 
-  size_t evict(size_t n_blocks, std::vector<XXH3Key>* evict_keys);
+  size_t evict_impl(size_t n_blocks, std::vector<XXH3Key>* evict_keys);
 
   struct Node {
     Block block;
