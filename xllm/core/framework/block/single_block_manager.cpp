@@ -41,13 +41,17 @@ SingleBlockManager::SingleBlockManager(uint32_t num_blocks,
       resource_name_(std::move(resource_name)),
       exhaustion_message_(std::move(exhaustion_message)) {
   CHECK_GT(num_blocks, 0) << "No blocks to allocate";
+  // Reserve id 0 as padding. Scheduler-visible single-block ids start at 1 so
+  // linear-state live slots stay in the worker live region and never overlap
+  // the checkpoint rows.
   in_use_ids_.resize(num_blocks, false);
   usage_accounted_ids_.resize(num_blocks, false);
-  free_ids_.reserve(num_blocks);
-  for (uint32_t id = 0; id < num_blocks; ++id) {
-    free_ids_.push_back(static_cast<int32_t>(num_blocks - id - 1));
+  in_use_ids_[0] = true;
+  free_ids_.reserve(num_blocks - 1);
+  for (uint32_t id = 1; id < num_blocks; ++id) {
+    free_ids_.emplace_back(static_cast<int32_t>(num_blocks - id));
   }
-  num_free_blocks_.store(num_blocks, std::memory_order_relaxed);
+  num_free_blocks_.store(free_ids_.size(), std::memory_order_relaxed);
 }
 
 std::vector<Block> SingleBlockManager::allocate(size_t num_blocks) {
@@ -62,7 +66,7 @@ std::vector<Block> SingleBlockManager::allocate(size_t num_blocks) {
     size_t prev_count =
         num_free_blocks_.fetch_sub(1, std::memory_order_relaxed);
     const int32_t block_id = free_ids_[prev_count - 1];
-    CHECK_GE(block_id, 0);
+    CHECK_GT(block_id, 0);
     CHECK_LT(static_cast<size_t>(block_id), in_use_ids_.size());
     CHECK(!in_use_ids_[block_id])
         << resource_name_ << " id " << block_id << " was allocated repeatedly";
@@ -85,7 +89,7 @@ Block SingleBlockManager::allocate() {
   }
   size_t prev_count = num_free_blocks_.fetch_sub(1, std::memory_order_relaxed);
   const int32_t block_id = free_ids_[prev_count - 1];
-  CHECK_GE(block_id, 0);
+  CHECK_GT(block_id, 0);
   CHECK_LT(static_cast<size_t>(block_id), in_use_ids_.size());
   CHECK(!in_use_ids_[block_id])
       << resource_name_ << " id " << block_id << " was allocated repeatedly";
@@ -157,7 +161,8 @@ double SingleBlockManager::kv_cache_utilization() const {
 }
 
 void SingleBlockManager::free(int32_t block_id) {
-  if (block_id < 0) {
+  // id 0 is the reserved padding slot and is never returned to the pool.
+  if (block_id <= 0) {
     return;
   }
   std::lock_guard<std::mutex> lock(mutex_);

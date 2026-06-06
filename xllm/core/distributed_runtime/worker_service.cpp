@@ -28,13 +28,29 @@ limitations under the License.
 #include "core/distributed_runtime/comm_channel.h"
 #include "core/runtime/params_utils.h"
 #include "framework/kv_cache/kv_cache_shape.h"
+#include "framework/model/model_input_params.h"
 #include "framework/request/sequence.h"
 #include "framework/sampling/sampling_params.h"
 #include "runtime/forward_params.h"
 #include "runtime/params_utils.h"
+#include "util/hash_util.h"
 #include "util/timer.h"
 
 namespace xllm {
+namespace {
+
+bool has_linear_state_save(const ForwardInput& input) {
+  for (const LinearStateCacheOp& cache_op :
+       input.input_params.linear_state_cache_ops) {
+    if (cache_op.save_dst_slot_id >= 0 &&
+        !is_zero_prefix_hash(cache_op.save_prefix_hash)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
 
 WorkerService::WorkerService(runtime::Options options,
                              const torch::Device& device)
@@ -167,12 +183,19 @@ void WorkerService::step(ForwardInput& fwd_input,
       }
     }
   } else {
+    const bool wait_for_linear_state_save = has_linear_state_save(fwd_input);
     auto int_options = torch::TensorOptions().device(torch::kCPU);
     if (worker_->is_driver()) {
       // construct fake output tensor
       int32_t num_decode_seqs = fwd_input.sampling_params.sample_idxes.size(0);
       next_tokens = torch::arange(
           -1, -1 * (num_decode_seqs + 1), -1, int_options.dtype(torch::kInt32));
+    }
+    if (wait_for_linear_state_save) {
+      auto forward_outputs = std::move(future).get();
+      CHECK(forward_outputs.has_value())
+          << "Failed to execute model before linear-state checkpoint save";
+    } else if (worker_->is_driver()) {
       std::move(future).deferValue([](auto&&) {});
     }
     expert_load_data = torch::zeros({1, 1}, int_options.dtype(torch::kInt64));

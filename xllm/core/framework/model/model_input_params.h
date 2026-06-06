@@ -18,6 +18,8 @@ limitations under the License.
 
 #include <torch/torch.h>
 
+#include <array>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -335,6 +337,24 @@ struct BlockTransferInfo {
   }
 };
 
+using LinearStatePrefixHash = PrefixHash;
+
+struct LinearStateCacheOp {
+  // Live slot the sequence advances its recurrent state in.
+  int32_t linear_state_id = -1;
+  // Restore: prefix hash to restore from, and the checkpoint slot the
+  // scheduler resolved it to. The worker copies `restore_src_slot_id`
+  // -> `linear_state_id` after verifying the slot still holds
+  // `restore_prefix_hash`.
+  LinearStatePrefixHash restore_prefix_hash{};
+  int32_t restore_src_slot_id = -1;
+  // Save: prefix hash to checkpoint, and the checkpoint slot the scheduler
+  // allocated for it. The worker copies `linear_state_id` ->
+  // `save_dst_slot_id`.
+  LinearStatePrefixHash save_prefix_hash{};
+  int32_t save_dst_slot_id = -1;
+};
+
 struct ModelInputParams {
   ModelInputParams to(const torch::Device& device) const {
     ModelInputParams params;
@@ -369,6 +389,7 @@ struct ModelInputParams {
       params.linear_state_indices =
           torch::tensor(params.linear_state_ids, torch::kInt).to(device);
     }
+    params.linear_state_cache_ops = linear_state_cache_ops;
     params.request_ids = std::move(request_ids);
     params.extra_token_ids = std::move(extra_token_ids);
     params.is_spec_verify = is_spec_verify;
@@ -400,6 +421,10 @@ struct ModelInputParams {
     params.ring_cache_seqlen_host = ring_cache_seqlen_host;
 #if defined(USE_NPU) || defined(USE_MLU)
     params.layer_synchronizer = layer_synchronizer;
+#endif
+#if defined(USE_NPU)
+    params.query_start_loc = query_start_loc;
+    params.has_initial_state = has_initial_state;
 #endif
     params.expert_load_data = expert_load_data;
     params.expert_array = expert_array;
@@ -572,6 +597,9 @@ struct ModelInputParams {
 
   // linear state ids of each sequence
   std::vector<int32_t> linear_state_ids;
+
+  // Structured per-row linear-state cache operations.
+  std::vector<LinearStateCacheOp> linear_state_cache_ops;
 
   // IntTensor: [n_seq]
   torch::Tensor linear_state_indices;

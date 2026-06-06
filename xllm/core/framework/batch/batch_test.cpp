@@ -19,6 +19,7 @@ limitations under the License.
 #include <absl/time/clock.h>
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdint>
 #include <optional>
 
@@ -28,6 +29,7 @@ limitations under the License.
 #include "framework/block/block_manager_impl.h"
 #include "framework/kv_cache/kv_cache.h"
 #include "framework/model/model_args.h"
+#include "framework/prefix_cache/prefix_cache.h"
 #include "framework/request/stopping_checker.h"
 #include "framework/sampling/sampling_params.h"
 #include "platform/device.h"
@@ -35,6 +37,56 @@ limitations under the License.
 #include "runtime/params_utils.h"
 
 namespace xllm {
+namespace {
+using LinearStatePrefixHash = std::array<uint8_t, XXH3_128BITS_HASH_VALUE_LEN>;
+
+LinearStatePrefixHash make_linear_state_prefix_hash(uint8_t base) {
+  LinearStatePrefixHash hash{};
+  for (size_t i = 0; i < hash.size(); ++i) {
+    hash[i] = static_cast<uint8_t>(base + i);
+  }
+  return hash;
+}
+
+LinearStateCacheOp make_linear_state_cache_op(int32_t linear_state_id,
+                                              uint8_t restore_base,
+                                              uint8_t save_base,
+                                              int32_t restore_src_slot_id,
+                                              int32_t save_dst_slot_id) {
+  LinearStateCacheOp op;
+  op.linear_state_id = linear_state_id;
+  op.restore_prefix_hash = make_linear_state_prefix_hash(restore_base);
+  op.restore_src_slot_id = restore_src_slot_id;
+  op.save_prefix_hash = make_linear_state_prefix_hash(save_base);
+  op.save_dst_slot_id = save_dst_slot_id;
+  return op;
+}
+
+LinearStatePrefixHash compute_prefix_boundary_hash_for_test(
+    const std::vector<int32_t>& token_ids,
+    uint32_t block_size,
+    uint32_t boundary_tokens) {
+  LinearStatePrefixHash hash{};
+  if (boundary_tokens == 0 || block_size == 0 ||
+      boundary_tokens % block_size != 0 ||
+      static_cast<size_t>(boundary_tokens) > token_ids.size()) {
+    return hash;
+  }
+
+  const Slice<int32_t> token_slice(token_ids);
+  const uint8_t* previous_hash = nullptr;
+  const uint32_t boundary_blocks = boundary_tokens / block_size;
+  for (uint32_t block_idx = 0; block_idx < boundary_blocks; ++block_idx) {
+    const size_t start = static_cast<size_t>(block_idx) * block_size;
+    const size_t end = start + block_size;
+    xxh3_128bits_hash(
+        previous_hash, token_slice.slice(start, end), hash.data());
+    previous_hash = hash.data();
+  }
+  return hash;
+}
+
+}  // namespace
 
 template <typename T>
 bool equal(const torch::Tensor& t, const std::vector<T>& d) {
@@ -481,7 +533,7 @@ TEST(BatchTest, DecodeMinBatchSizeDoesNotPadTransportState) {
             std::vector<int32_t>({-1}));
 }
 
-TEST(BatchTest, DecodeSingleBlockIdsStaySplitInTransportButShareSlotValue) {
+TEST(BatchTest, DecodeEmbeddingAndLinearStateIdsAreDecoupled) {
   const uint32_t n_blocks = 8;
   const uint32_t block_size = 4;
   BlockManager::Options options;
@@ -509,10 +561,19 @@ TEST(BatchTest, DecodeSingleBlockIdsStaySplitInTransportButShareSlotValue) {
   seq.kv_state().incr_kv_cache_tokens_num(/*size=*/3);
   seq.append_token(4);
 
-  auto slot_block = manager.allocate(1);
-  ASSERT_EQ(slot_block.size(), 1u);
-  const int32_t expected_slot_id = slot_block[0].id();
-  seq.set_single_block(std::move(slot_block[0]));
+  // embedding_ids draw from single_block, linear_state_ids from the dedicated
+  // linear_state_slot; the two are independent slot spaces and must carry
+  // their own ids through transport.
+  auto embedding_block = manager.allocate(1);
+  ASSERT_EQ(embedding_block.size(), 1u);
+  const int32_t expected_embedding_id = embedding_block[0].id();
+  seq.set_single_block(std::move(embedding_block[0]));
+
+  auto linear_state_slot = manager.allocate(1);
+  ASSERT_EQ(linear_state_slot.size(), 1u);
+  const int32_t expected_linear_state_id = linear_state_slot[0].id();
+  seq.set_linear_state_slot(std::move(linear_state_slot[0]));
+  ASSERT_NE(expected_embedding_id, expected_linear_state_id);
 
   std::vector<Sequence*> sequences = {&seq};
   std::vector<uint32_t> allowed_max_tokens = {1};
@@ -535,11 +596,91 @@ TEST(BatchTest, DecodeSingleBlockIdsStaySplitInTransportButShareSlotValue) {
 
   ASSERT_EQ(forward_input.input_params.embedding_ids.size(), 1u);
   ASSERT_EQ(forward_input.input_params.linear_state_ids.size(), 1u);
-  EXPECT_EQ(forward_input.input_params.embedding_ids[0], expected_slot_id);
-  EXPECT_EQ(forward_input.input_params.linear_state_ids[0], expected_slot_id);
+  EXPECT_EQ(forward_input.input_params.embedding_ids[0], expected_embedding_id);
+  EXPECT_EQ(forward_input.input_params.linear_state_ids[0],
+            expected_linear_state_id);
 }
 
-TEST(BatchTest, ProtoRoundTripPreservesAndDefaultsLinearStateIds) {
+TEST(BatchTest, LinearStateCheckpointSavesOnlyAtPrefillStepBoundary) {
+  torch::Device device(Device::type_torch(), 0);
+  const uint32_t n_blocks = 16;
+  const uint32_t block_size = 4;
+  BlockManager::Options options;
+  options.num_blocks(n_blocks).block_size(block_size);
+  BlockManagerImpl manager(options);
+
+  RequestSamplingParam sampling_param;
+  StoppingChecker stopping_checker;
+  stopping_checker.set_max_generated_tokens(4);
+  SequenceParams seq_params;
+  seq_params.seq_capacity = 32;
+  seq_params.stopping_checker = &stopping_checker;
+  seq_params.sampling_param = &sampling_param;
+  seq_params.skip_special_tokens = true;
+  seq_params.echo = false;
+  seq_params.logprobs = false;
+  seq_params.enable_schedule_overlap = false;
+
+  torch::Tensor input_embedding;
+  MMData mm_data;
+  const std::vector<int32_t> aligned_tokens = {
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
+  IncrementalDecoder aligned_decoder("", 20, false, false);
+  Sequence aligned_seq(/*index=*/0,
+                       aligned_tokens,
+                       input_embedding,
+                       mm_data,
+                       std::move(aligned_decoder),
+                       seq_params);
+  aligned_seq.add_kv_blocks(manager.allocate(5));
+
+  const std::vector<int32_t> off_boundary_tokens = {21, 22, 23, 24, 25, 26, 27,
+                                                    28, 29, 30, 31, 32, 33, 34,
+                                                    35, 36, 37, 38, 39, 40};
+  IncrementalDecoder off_boundary_decoder("", 20, false, false);
+  Sequence off_boundary_seq(/*index=*/1,
+                            off_boundary_tokens,
+                            input_embedding,
+                            mm_data,
+                            std::move(off_boundary_decoder),
+                            seq_params);
+  off_boundary_seq.add_kv_blocks(manager.allocate(5));
+
+  const std::vector<int32_t> decode_tokens = {
+      41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56};
+  IncrementalDecoder decode_decoder("", 16, false, false);
+  Sequence decode_seq(/*index=*/2,
+                      decode_tokens,
+                      input_embedding,
+                      mm_data,
+                      std::move(decode_decoder),
+                      seq_params);
+  decode_seq.add_kv_blocks(manager.allocate(5));
+  decode_seq.kv_state().incr_kv_cache_tokens_num(/*size=*/16);
+  decode_seq.append_token(57);
+  decode_seq.mark_linear_state_initialized();
+
+  Batch batch;
+  batch.add(&aligned_seq, /*allowed_max_token=*/16);
+  batch.add(&off_boundary_seq, /*allowed_max_token=*/15);
+  batch.add(&decode_seq, /*allowed_max_token=*/1);
+
+  ModelArgs args;
+  args.layer_types({"linear_attention"});
+  ForwardInput forward_input = batch.prepare_forward_input(
+      /*num_decoding_tokens=*/1, /*min_decoding_bach_size=*/0, args);
+
+  const auto& cache_ops = forward_input.input_params.linear_state_cache_ops;
+  ASSERT_EQ(cache_ops.size(), 3u);
+  EXPECT_EQ(cache_ops[0].save_prefix_hash,
+            compute_prefix_boundary_hash_for_test(
+                aligned_tokens, block_size, /*boundary_tokens=*/16));
+  EXPECT_FALSE(is_zero_prefix_hash(cache_ops[0].save_prefix_hash));
+  EXPECT_TRUE(is_zero_prefix_hash(cache_ops[1].save_prefix_hash));
+  EXPECT_TRUE(is_zero_prefix_hash(cache_ops[2].save_prefix_hash));
+}
+
+TEST(BatchTest, ProtoRoundTripPreservesAndDefaultsLinearStateMetadata) {
   RawForwardInput raw_input;
   raw_input.batch_forward_type = BatchForwardType::DECODE;
   raw_input.flatten_tokens_vec = {1, 2};
@@ -553,6 +694,18 @@ TEST(BatchTest, ProtoRoundTripPreservesAndDefaultsLinearStateIds) {
   raw_input.block_tables_vec = {{0}, {0}};
   raw_input.num_sequences = 2;
   raw_input.linear_state_ids = {7, 9};
+  raw_input.linear_state_cache_ops = {
+      make_linear_state_cache_op(/*linear_state_id=*/7,
+                                 /*restore_base=*/1,
+                                 /*save_base=*/33,
+                                 /*restore_src_slot_id=*/5,
+                                 /*save_dst_slot_id=*/11),
+      make_linear_state_cache_op(/*linear_state_id=*/9,
+                                 /*restore_base=*/17,
+                                 /*save_base=*/49,
+                                 /*restore_src_slot_id=*/-1,
+                                 /*save_dst_slot_id=*/12)};
+  raw_input.request_ids = {"fallback-0", "fallback-1"};
 
   proto::ForwardInput pb_forward_input;
   forward_input_to_proto(raw_input, &pb_forward_input);
@@ -563,16 +716,36 @@ TEST(BatchTest, ProtoRoundTripPreservesAndDefaultsLinearStateIds) {
                          /*num_decoding_tokens=*/1);
   EXPECT_EQ(round_trip.input_params.linear_state_ids,
             std::vector<int32_t>({7, 9}));
+  EXPECT_EQ(round_trip.input_params.linear_state_cache_ops.size(), 2u);
+  EXPECT_EQ(round_trip.input_params.linear_state_cache_ops[0].linear_state_id,
+            7);
+  EXPECT_EQ(
+      round_trip.input_params.linear_state_cache_ops[0].restore_prefix_hash,
+      make_linear_state_prefix_hash(/*base=*/1));
+  EXPECT_EQ(round_trip.input_params.linear_state_cache_ops[0].save_prefix_hash,
+            make_linear_state_prefix_hash(/*base=*/33));
+  EXPECT_EQ(
+      round_trip.input_params.linear_state_cache_ops[0].restore_src_slot_id, 5);
+  EXPECT_EQ(round_trip.input_params.linear_state_cache_ops[0].save_dst_slot_id,
+            11);
+  EXPECT_EQ(
+      round_trip.input_params.linear_state_cache_ops[1].restore_src_slot_id,
+      -1);
+  EXPECT_EQ(round_trip.input_params.linear_state_cache_ops[1].save_dst_slot_id,
+            12);
 
-  proto::ForwardInput legacy_pb = pb_forward_input;
-  legacy_pb.clear_linear_state_ids();
+  EXPECT_EQ(pb_forward_input.linear_state_cache_input().ops_size(), 2);
 
-  ForwardInput legacy_round_trip;
-  proto_to_forward_input(&legacy_pb,
-                         legacy_round_trip,
+  proto::ForwardInput empty_cache_pb = pb_forward_input;
+  empty_cache_pb.clear_linear_state_cache_input();
+
+  ForwardInput default_round_trip;
+  proto_to_forward_input(&empty_cache_pb,
+                         default_round_trip,
                          /*num_decoding_tokens=*/1);
-  EXPECT_EQ(legacy_round_trip.input_params.linear_state_ids,
+  EXPECT_EQ(default_round_trip.input_params.linear_state_ids,
             std::vector<int32_t>({-1, -1}));
+  EXPECT_TRUE(default_round_trip.input_params.linear_state_cache_ops.empty());
 }
 
 TEST(BatchTest, SharedMemoryRoundTripPreservesAndDefaultsLinearStateIds) {

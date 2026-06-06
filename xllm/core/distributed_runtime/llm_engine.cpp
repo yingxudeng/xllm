@@ -26,6 +26,7 @@ limitations under the License.
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <unordered_map>
 
 #include "common/device_monitor.h"
 #include "common/global_flags.h"
@@ -34,6 +35,7 @@ limitations under the License.
 #include "common/options.h"
 #include "framework/block/hierarchy_block_manager_pool.h"
 #include "framework/kv_cache/kv_cache_shape.h"
+#include "framework/kv_cache/kv_cache_utils.h"
 #include "framework/model/model_args.h"
 #include "framework/model_loader.h"
 #include "framework/xtensor/page_allocator.h"
@@ -48,6 +50,7 @@ limitations under the License.
 #include "util/utils.h"
 
 namespace {
+
 int64_t get_kv_cache_dtype_size_in_bytes(const std::string& kv_cache_dtype,
                                          int64_t model_dtype_size) {
   if (kv_cache_dtype == "auto") {
@@ -541,7 +544,6 @@ KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
   }
 #endif
 
-  kv_cache_cap.num_linear_state_blocks() = FLAGS_max_concurrent_requests + 2;
   for (int64_t layer_id = 0; layer_id < kv_cache_cap.n_layers(); ++layer_id) {
     if (is_full_attention_layer(args_, layer_id)) {
       ++kv_cache_cap.num_full_attention_layers();
@@ -554,6 +556,14 @@ KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
   const int64_t block_size = kv_cache_cap.block_size();
   const int64_t block_size_in_bytes =
       block_size * (slot_size + index_slot_size + scale_slot_size);
+  kv_cache_cap.num_linear_state_blocks() =
+      calculate_linear_state_blocks(kv_cache_cap.cache_size_in_bytes(),
+                                    kv_cache_cap.num_linear_attention_layers(),
+                                    kv_cache_cap.linear_slot_size(),
+                                    kv_cache_cap.num_full_attention_layers(),
+                                    block_size_in_bytes,
+                                    options_.linear_state_cache_options(),
+                                    options_.enable_prefix_cache());
   kv_cache_cap.linear_cache_size_in_bytes() =
       kv_cache_cap.num_linear_attention_layers() *
       kv_cache_cap.num_linear_state_blocks() * kv_cache_cap.linear_slot_size();
@@ -564,12 +574,8 @@ KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
     CHECK_GT(kv_cache_cap.cache_size_in_bytes(),
              kv_cache_cap.linear_cache_size_in_bytes())
         << "failed to reserve linear state cache for linear-attention layers: "
-        << "max_concurrent_requests (" << FLAGS_max_concurrent_requests
-        << ") is too large. Please reduce max_concurrent_requests to less than "
-        << kv_cache_cap.cache_size_in_bytes() /
-                   (kv_cache_cap.num_linear_attention_layers() *
-                    kv_cache_cap.linear_slot_size()) -
-               2;
+        << "max_linear_state_cache_slots "
+        << options_.linear_state_cache_options().max_linear_state_cache_slots();
   }
   CHECK_GT(available_full_cache_size_in_bytes, 0)
       << "no memory left for full-attention kv cache after reserving linear "
@@ -583,16 +589,25 @@ KVCacheCapacity LLMEngine::estimate_kv_cache_capacity() {
 }
 
 bool LLMEngine::allocate_kv_cache(const KVCacheCapacity& kv_cache_cap) {
-  LOG(INFO) << "kv cache capacity: "
-            << readable_size(kv_cache_cap.cache_size_in_bytes())
-            << ", blocks: " << kv_cache_cap.n_blocks()
-            << ", slot_size: " << kv_cache_cap.slot_size()
-            << ", linear_slot_size: " << kv_cache_cap.linear_slot_size()
-            << ", linear_blocks: " << kv_cache_cap.num_linear_state_blocks()
-            << ", reserved_linear_bytes: "
-            << readable_size(kv_cache_cap.linear_cache_size_in_bytes())
-            << ", n_layers: " << kv_cache_cap.n_layers()
-            << ", kv_cache_dtype: " << options_.kv_cache_dtype();
+  LOG(INFO)
+      << "kv cache capacity: "
+      << readable_size(kv_cache_cap.cache_size_in_bytes())
+      << ", blocks: " << kv_cache_cap.n_blocks()
+      << ", slot_size: " << kv_cache_cap.slot_size()
+      << ", linear_slot_size: " << kv_cache_cap.linear_slot_size()
+      << ", linear_blocks: " << kv_cache_cap.num_linear_state_blocks()
+      << ", linear_state_slots: "
+      << (has_linear_attention_layers(args_)
+              ? calculate_linear_state_live_slots(
+                    kv_cache_cap.num_linear_state_blocks(),
+                    options_.max_seqs_per_batch())
+              : 0)
+      << ", max_linear_state_cache_slots: "
+      << options_.linear_state_cache_options().max_linear_state_cache_slots()
+      << ", reserved_linear_bytes: "
+      << readable_size(kv_cache_cap.linear_cache_size_in_bytes())
+      << ", n_layers: " << kv_cache_cap.n_layers()
+      << ", kv_cache_dtype: " << options_.kv_cache_dtype();
 
   CHECK_GT(kv_cache_cap.n_blocks(), 0) << "no memory for kv cache";
   const int32_t block_size = static_cast<int32_t>(kv_cache_cap.block_size());
@@ -618,6 +633,17 @@ bool LLMEngine::allocate_kv_cache(const KVCacheCapacity& kv_cache_cap) {
       .num_layers(args_.n_layers())
       .slot_size(kv_cache_cap.slot_size())
       .model_id(options_.model_id());
+  if (enable_gdn_attention) {
+    options.single_block_capacity(
+        static_cast<uint32_t>(calculate_linear_state_live_slots(
+            kv_cache_cap.num_linear_state_blocks(),
+            options_.max_seqs_per_batch())));
+    // The unified linear-state slot pool spans all physical slots [0, N);
+    // id 0 is reserved as padding and ids [1, N) serve live and checkpoint
+    // rows interchangeably under reference counting.
+    options.linear_state_num_slots(
+        static_cast<int32_t>(kv_cache_cap.num_linear_state_blocks()));
+  }
 
   if (options_.host_blocks_factor() > 1.0 || options_.enable_kvcache_store()) {
     kv_cache_manager_ =
@@ -1001,10 +1027,14 @@ ForwardOutput LLMEngine::step(std::vector<Batch>& batch) {
       << "Split DP batch failed with dp_size as " << dp_size_
       << " and actual batch size as " << batch.size() << ".";
 
-  auto raw_forward_inputs = prepare_inputs(batch);
+  std::vector<BlockManagerPool::LinearStateCheckpointReservations>
+      linear_state_checkpoint_reservations;
+  auto raw_forward_inputs =
+      prepare_inputs(batch, &linear_state_checkpoint_reservations);
   DCHECK(dp_size_ == raw_forward_inputs.size())
       << "The processed raw forward inputs size " << raw_forward_inputs.size()
       << " is not equal to dp size " << dp_size_ << ".";
+  DCHECK_EQ(linear_state_checkpoint_reservations.size(), dp_size_);
 
   std::vector<folly::SemiFuture<std::optional<RawForwardOutput>>> futures;
   futures.reserve(worker_clients_num_);
@@ -1044,19 +1074,37 @@ ForwardOutput LLMEngine::step(std::vector<Batch>& batch) {
   // wait for the all future to complete
   auto results = folly::collectAll(futures).get();
 
+  assert(dp_size_ == worker_clients_num_ / dp_local_size_);
+  for (uint32_t dp_rank = 0; dp_rank < dp_size_; ++dp_rank) {
+    const uint32_t worker_begin = dp_rank * dp_local_size_;
+    const uint32_t worker_end = worker_begin + dp_local_size_;
+    for (uint32_t worker_rank = worker_begin; worker_rank < worker_end;
+         ++worker_rank) {
+      if (!results[worker_rank].hasValue() || !results[worker_rank].value()) {
+        LOG(FATAL) << "Failed to execute model, result has no value";
+      }
+    }
+
+    const auto& result = results[worker_begin].value();
+    if (result.value().outputs.empty() && layer_forward_interrupted_) {
+      throw ForwardInterruptedException();
+    }
+  }
+
   if (FLAGS_enable_eplb && !options_.enable_schedule_overlap()) {
     process_eplb_data(results);
   }
 
-  assert(dp_size_ == worker_clients_num_ / dp_local_size_);
+  for (BlockManagerPool::LinearStateCheckpointReservations& reservations :
+       linear_state_checkpoint_reservations) {
+    block_manager_pool()->cache(std::move(reservations));
+  }
+
   size_t dp_rank = 0;
   for (auto worker_rank = 0; worker_rank < worker_clients_num_;
        worker_rank += dp_local_size_) {
     auto result = results[worker_rank].value();
     if (result.has_value()) {
-      if (result.value().outputs.empty() && layer_forward_interrupted_) {
-        throw ForwardInterruptedException();
-      }
       // if src_seq_idxes is not empty, skip sample output processing and
       // process beam search output instead
       if (result.value().src_seq_idxes.size() == 0) {
@@ -1107,10 +1155,6 @@ void LLMEngine::update_last_step_result(std::vector<Batch>& last_batch) {
   // wait for the all future to complete
   auto last_step_results = folly::collectAll(futures).get();
 
-  if (FLAGS_enable_eplb) {
-    process_eplb_data(last_step_results);
-  }
-
   for (auto worker_rank = 0; worker_rank < worker_clients_num_;
        worker_rank += dp_local_tp_size_) {
     auto result = last_step_results[worker_rank / stride].value();
@@ -1119,6 +1163,10 @@ void LLMEngine::update_last_step_result(std::vector<Batch>& last_batch) {
     } else {
       LOG(FATAL) << "Failed to get last step results, result has no value";
     }
+  }
+
+  if (FLAGS_enable_eplb) {
+    process_eplb_data(last_step_results);
   }
 
   for (auto i = 0; i < last_batch.size(); i++) {
@@ -1180,7 +1228,12 @@ void LLMEngine::process_eplb_data(
 }
 
 std::vector<RawForwardInput> LLMEngine::prepare_inputs(
-    std::vector<Batch>& batch) {
+    std::vector<Batch>& batch,
+    std::vector<BlockManagerPool::LinearStateCheckpointReservations>*
+        linear_state_checkpoint_reservations) {
+  DCHECK(linear_state_checkpoint_reservations != nullptr);
+  linear_state_checkpoint_reservations->clear();
+  linear_state_checkpoint_reservations->reserve(dp_size_);
   std::vector<RawForwardInput> batched_inputs;
   batched_inputs.reserve(dp_size_ * cp_size_);
   // some dp related variables
@@ -1195,6 +1248,21 @@ std::vector<RawForwardInput> LLMEngine::prepare_inputs(
   for (auto dp_rank = 0; dp_rank < dp_size_; ++dp_rank) {
     batched_inputs.emplace_back(std::move(batch[dp_rank].prepare_forward_input(
         args_, threadpool_.get(), cp_size_)));
+    std::vector<Sequence*> sequences = batch[dp_rank].get_sequences();
+    linear_state_checkpoint_reservations->emplace_back(
+        block_manager_pool()->resolve_linear_state_cache_ops(
+            dp_rank,
+            &batched_inputs[dp_rank].linear_state_cache_ops,
+            sequences));
+    if (batched_inputs[dp_rank].linear_state_ids.size() ==
+        batched_inputs[dp_rank].linear_state_cache_ops.size()) {
+      for (size_t i = 0;
+           i < batched_inputs[dp_rank].linear_state_cache_ops.size();
+           ++i) {
+        batched_inputs[dp_rank].linear_state_ids[i] =
+            batched_inputs[dp_rank].linear_state_cache_ops[i].linear_state_id;
+      }
+    }
     dp_global_token_nums[dp_rank] =
         batched_inputs[dp_rank].flatten_tokens_vec.size();
     if (batch_forward_type.is_empty() &&

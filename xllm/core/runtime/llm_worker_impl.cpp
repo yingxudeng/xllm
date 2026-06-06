@@ -170,6 +170,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
         }
       }
     }
+    save_linear_state_checkpoints(input.input_params);
     if (FLAGS_enable_eplb) {
       return output;
     }
@@ -236,6 +237,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::step_internal(
   COUNTER_ADD(execution_latency_seconds_model, timer.elapsed_seconds());
   DeviceMonitor::get_instance().update_active_activation_memory(
       device_.index());
+  save_linear_state_checkpoints(input.input_params);
 
   return output;
 }
