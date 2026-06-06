@@ -26,6 +26,7 @@ class PrefixCacheWithUpload final : public PrefixCache {
   // evict blocks hold by the prefix cache
   // return the actual number of evicted blocks
   size_t evict(size_t n_blocks) override;
+  size_t evict(size_t n_blocks, std::vector<XXH3Key>* evict_keys) override;
 
   virtual KvCacheEvent* get_upload_kvcache_events() override;
 
