@@ -119,9 +119,17 @@ void wait_metadata_ready_event(const ForwardInput& input, Stream& stream) {
       << "failed to wait speculative metadata ready event";
 }
 
-void clear_output_embeddings(ForwardOutput& output) {
+void clear_sample_embeddings(ForwardOutput& output) {
   output.sample_output.embeddings = torch::Tensor();
+}
+
+void clear_selected_embeddings(ForwardOutput& output) {
   output.sample_output.selected_embeddings = torch::Tensor();
+}
+
+void clear_all_output_embeddings(ForwardOutput& output) {
+  clear_sample_embeddings(output);
+  clear_selected_embeddings(output);
 }
 
 void clear_ready_events(ForwardInput& input) {
@@ -186,6 +194,35 @@ bool has_mtp_prefill_placeholder_extra_token(
   return std::find(extra_token_ids.begin(),
                    extra_token_ids.end(),
                    placeholder) != extra_token_ids.end();
+}
+
+void check_mtp_decode_states(
+    const std::vector<EmbeddingCache::DecodeState>& states,
+    const std::vector<std::string>& request_ids,
+    const torch::Tensor& token_ids_host) {
+  CHECK(!request_ids.empty())
+      << "MTP decode requires request ids for bootstrap state validation";
+  CHECK_EQ(states.size(), request_ids.size())
+      << "MTP decode request/state count mismatch";
+  CHECK_GE(token_ids_host.numel(), static_cast<int64_t>(states.size()))
+      << "MTP decode token/state count mismatch";
+
+  Slice<int32_t> token_ids = {token_ids_host.data_ptr<int32_t>(),
+                              static_cast<size_t>(token_ids_host.numel())};
+  for (int32_t i = 0; i < static_cast<int32_t>(states.size()); ++i) {
+    const EmbeddingCache::DecodeState& state = states[i];
+    const int32_t token_id = token_ids[i];
+    CHECK(state.valid) << "MTP decode missing target state, request_id="
+                       << request_ids[i];
+    CHECK_EQ(state.request_id, request_ids[i])
+        << "MTP decode target state request mismatch";
+    CHECK_EQ(state.token_id, token_id)
+        << "MTP decode target state token mismatch, request_id="
+        << request_ids[i];
+    CHECK(state.embedding.defined())
+        << "MTP decode target state embedding is undefined, request_id="
+        << request_ids[i];
+  }
 }
 
 // CP partition keeps the final -1 placeholder on exactly one rank's shard.
@@ -619,7 +656,7 @@ std::optional<ForwardOutput> MTPWorkerImpl::step_empty(
     auto draft_output = run_llm_no_sync_impl(
         *draft_impl_, input, *prepare_stream_, *compute_stream_);
     (void)draft_output;
-    clear_output_embeddings(*output);
+    clear_all_output_embeddings(*output);
     return output;
   } else {
     ForwardInput new_input = input;
@@ -650,7 +687,7 @@ std::optional<ForwardOutput> MTPWorkerImpl::step_empty(
         run_llm_no_sync_impl(
             *impl_, new_input, *prepare_stream_, *compute_stream_)
             .value();
-    clear_output_embeddings(output);
+    clear_all_output_embeddings(output);
     return output;
   }
 }
@@ -715,14 +752,27 @@ std::optional<ForwardOutput> MTPWorkerImpl::step_prefill(
         output.sample_output.selected_embeddings.defined()
             ? output.sample_output.selected_embeddings
             : embeddings;
+    torch::Tensor bootstrap_embeddings = target_hidden;
+    if (bootstrap_embeddings.size(0) !=
+        static_cast<int64_t>(
+            input.input_params.embedding.embedding_ids.size())) {
+      torch::Tensor bootstrap_idxes =
+          input.sampling_params.selected_token_idxes.to(
+              torch::dtype(torch::kLong).device(bootstrap_embeddings.device()));
+      bootstrap_embeddings =
+          bootstrap_embeddings.index_select(/*dim=*/0, bootstrap_idxes);
+    }
+    output.sample_output.embeddings = bootstrap_embeddings.detach();
     embedding_cache_->write_prefill_target_context(
         input.input_params.embedding.embedding_ids,
         input.input_params.embedding.request_ids,
         output.sample_output.next_tokens,
         target_hidden,
         input.sampling_params.selected_token_idxes);
+    clear_selected_embeddings(output);
+  } else {
+    clear_all_output_embeddings(output);
   }
-  clear_output_embeddings(output);
 
   if (!enable_schedule_overlap() && !driver_ && !dp_driver_) {
     return std::nullopt;
@@ -792,6 +842,46 @@ std::optional<ForwardOutput> MTPWorkerImpl::step_decode(
   ForwardInput current_draft_input, validate_input, next_step_input;
   Timer timer;
 
+  CHECK(embedding_cache_ != nullptr) << "MTP embedding cache is not allocated";
+
+  const auto& embedding = input.input_params.embedding;
+  if (embedding.mtp_bootstrap_embeddings.defined()) {
+    CHECK(input.token_ids_host.defined())
+        << "MTP bootstrap requires host token ids";
+    CHECK(input.token_ids_host.device().is_cpu())
+        << "MTP bootstrap host token ids must be on CPU";
+    CHECK_EQ(input.token_ids_host.scalar_type(), torch::kInt)
+        << "MTP bootstrap host token ids must be int32";
+
+    torch::Tensor bootstrap_embeddings =
+        safe_to(embedding.mtp_bootstrap_embeddings,
+                torch::dtype(dtype_).device(device_));
+    CHECK_EQ(bootstrap_embeddings.size(0),
+             static_cast<int64_t>(embedding.mtp_bootstrap_row_idxes.size()))
+        << "MTP bootstrap row count mismatch";
+
+    Slice<int32_t> token_ids = {
+        input.token_ids_host.data_ptr<int32_t>(),
+        static_cast<size_t>(input.token_ids_host.numel())};
+    for (int32_t i = 0;
+         i < static_cast<int32_t>(embedding.mtp_bootstrap_row_idxes.size());
+         ++i) {
+      const int32_t row_idx = embedding.mtp_bootstrap_row_idxes[i];
+      CHECK_GE(row_idx, 0) << "MTP bootstrap row index should be valid";
+      CHECK_LT(row_idx, static_cast<int32_t>(embedding.embedding_ids.size()))
+          << "MTP bootstrap row index exceeds embedding ids";
+      CHECK_LT(row_idx, static_cast<int32_t>(embedding.request_ids.size()))
+          << "MTP bootstrap row index exceeds request ids";
+      CHECK_LT(static_cast<int64_t>(row_idx), input.token_ids_host.numel())
+          << "MTP bootstrap row index exceeds token ids";
+      embedding_cache_->write_mtp_bootstrap_context(
+          embedding.embedding_ids[row_idx],
+          embedding.request_ids[row_idx],
+          token_ids[row_idx],
+          bootstrap_embeddings[i]);
+    }
+  }
+
   // Get decode state of last step
   std::vector<EmbeddingCache::DecodeState> last_states =
       embedding_cache_->read_decode_states(
@@ -800,6 +890,9 @@ std::optional<ForwardOutput> MTPWorkerImpl::step_decode(
   CHECK_EQ(last_states.size(),
            input.input_params.embedding.embedding_ids.size())
       << "decode target state count mismatch";
+  check_mtp_decode_states(last_states,
+                          input.input_params.embedding.request_ids,
+                          input.token_ids_host);
   update_decode_step_input(input, last_states);
   prepare_draft_extend_inputs(input, last_states, current_draft_input);
   draft_outputs.reserve(num_speculative_tokens);
@@ -909,7 +1002,7 @@ std::optional<ForwardOutput> MTPWorkerImpl::run_validate(
   if (!enable_schedule_overlap() && !driver_ && !dp_driver_) {
     return std::nullopt;
   }
-  clear_output_embeddings(target_output);
+  clear_all_output_embeddings(target_output);
   val_output.embeddings = torch::Tensor();
   target_output.sample_output = val_output;
   return target_output;
