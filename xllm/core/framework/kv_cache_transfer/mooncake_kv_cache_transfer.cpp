@@ -40,6 +40,9 @@ limitations under the License.
 #include "framework/kv_cache_transfer/push_route.h"
 #include "framework/xtensor/global_xtensor.h"
 #include "framework/xtensor/xtensor_allocator.h"
+#if defined(USE_DCU)
+#include "platform/dcu/dcu_tensor_alloc.h"
+#endif
 #include "platform/mlu/mlu_tensor_alloc.h"
 #include "util/net.h"
 
@@ -129,7 +132,7 @@ void merge_kv_info(
 
 MooncakeKVCacheTransferBase::MooncakeKVCacheTransferBase(
     const int32_t device_id,
-    const int16_t listen_port,
+    const uint16_t listen_port,
     const torch::Device& device,
     std::unique_ptr<MooncakeTransferEngine> engine)
     : device_id_(device_id),
@@ -179,7 +182,7 @@ bool MooncakeKVCacheTransferBase::unlink_cluster(const uint64_t& cluster_id,
 
 MooncakeKVCacheTransferDefault::MooncakeKVCacheTransferDefault(
     const int32_t device_id,
-    const int16_t listen_port,
+    const uint16_t listen_port,
     const torch::Device& device,
     const std::string& model_type)
     : MooncakeKVCacheTransferBase(
@@ -289,6 +292,19 @@ void MooncakeKVCacheTransferDefault::allocate_kv_cache_impl(
     } else {
       kv_caches.emplace_back(KVCacheTensors{key_cache, value_cache});
     }
+  }
+#elif defined(USE_DCU)
+  CHECK(kv_cache_shape.has_value_cache_shape())
+      << "DCU Mooncake KV transfer requires a value cache shape.";
+  CHECK(!kv_cache_shape.has_index_cache_shape())
+      << "DCU Mooncake KV transfer does not support index cache yet.";
+
+  for (int64_t i = 0; i < num_layers; ++i) {
+    torch::Tensor key_cache =
+        dcu::alloc_zero_tensor(key_cache_shape, dtype, device_);
+    torch::Tensor value_cache =
+        dcu::alloc_zero_tensor(value_cache_shape, dtype, device_);
+    kv_caches.emplace_back(KVCacheTensors{key_cache, value_cache});
   }
 #else
   // Original mode: allocate device memory using aclrtMalloc
@@ -540,7 +556,7 @@ bool MooncakeKVCacheTransferDefault::push_kv_blocks(
 
 MooncakeKVCacheTransferXTensor::MooncakeKVCacheTransferXTensor(
     const int32_t device_id,
-    const int16_t listen_port,
+    const uint16_t listen_port,
     const torch::Device& device)
     : MooncakeKVCacheTransferBase(
           device_id,
