@@ -15,15 +15,19 @@ limitations under the License.
 
 #pragma once
 
-namespace xllm {
-namespace layer {
+#include <torch/torch.h>
 
-struct FusedMoEArgs {
-  bool is_gated = true;
-  bool enable_result_reduction = true;
-  bool skip_gate_load = false;
-  bool use_hash = false;
-};
+namespace xllm::util {
 
-}  // namespace layer
-}  // namespace xllm
+torch::Tensor create_hadamard_matrix(int64_t dim,
+                                     torch::Dtype dtype,
+                                     const torch::Device& device,
+                                     bool normalize);
+
+torch::Tensor hadamard_transform(const torch::Tensor& input,
+                                 const torch::Tensor& hadamard_matrix);
+
+torch::Tensor rotate_activation(const torch::Tensor& input,
+                                const torch::Tensor& hadamard_matrix);
+
+}  // namespace xllm::util

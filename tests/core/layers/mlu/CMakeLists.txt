@@ -30,6 +30,68 @@ cc_test(
 
 cc_test(
   NAME
+    deepseek_v4_attention_layer_test
+  SRCS
+    deepseek_v4_attention_test.cpp
+    deepseek_v4_compressor_test.cpp
+    deepseek_v4_indexer_test.cpp
+    deepseek_v4_ref_utils.cpp
+    tests_utils.cpp
+  DEPS
+    :mlu_layers
+    :common_layers
+    :block
+    :util
+    :parallel_state
+    :model
+    :model_context
+    :state_dict
+    glog::glog
+    torch
+    GTest::gtest_main
+)
+
+cc_test(
+  NAME
+    deepseek_v4_hyper_connection_test
+  SRCS
+    deepseek_v4_hyper_connection_test.cpp
+    tests_utils.cpp
+  DEPS
+    :mlu_layers
+    :common_layers
+    :block
+    :parallel_state
+    :model
+    :model_context
+    :state_dict
+    glog::glog
+    torch
+    GTest::gtest_main
+)
+
+cc_test(
+  NAME
+    deepseek_v4_decoder_layer_test
+  SRCS
+    deepseek_v4_decoder_layer_test.cpp
+    deepseek_v4_ref_utils.cpp
+    tests_utils.cpp
+  DEPS
+    :mlu_layers
+    :common_layers
+    :block
+    :parallel_state
+    :model
+    :model_context
+    :state_dict
+    glog::glog
+    torch
+    GTest::gtest_main
+)
+
+cc_test(
+  NAME
     deepseek_v4_dsa_metadata_builder_test
   SRCS
     dsa_metadata_builder_mlu_test.cpp
@@ -54,6 +116,7 @@ cc_test(
     :config
     :common_layers
     :mlu_layers
+    :block
     :parallel_state
     :model
     :model_context
