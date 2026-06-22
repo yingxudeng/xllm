@@ -46,6 +46,21 @@ constexpr uint64_t MBUF_SIZE = 128 * 1024 * 1024;
 
 namespace {
 
+ProcessGroup* spec_broadcast_group(const ParallelArgs& parallel_args) {
+  return parallel_args.tp_group_ != nullptr ? parallel_args.tp_group_
+                                            : parallel_args.process_group_;
+}
+
+void broadcast_spec_tokens(torch::Tensor& tokens,
+                           ProcessGroup* pg,
+                           int32_t root_rank = 0) {
+  if (pg == nullptr || pg->world_size() <= 1 || !tokens.defined()) {
+    return;
+  }
+  tokens = tokens.contiguous();
+  pg->broadcast(tokens, root_rank);
+}
+
 int64_t get_dp_local_tp_size(const ParallelArgs& parallel_args) {
   const int64_t dp_size = std::max<int64_t>(parallel_args.dp_size(), 1);
   const int64_t cp_size = std::max<int64_t>(parallel_args.cp_size(), 1);
@@ -1023,6 +1038,17 @@ std::optional<ForwardOutput> MTPWorkerImpl::step_decode(
     if (reuse_mtp_topk_indices) {
       mtp_topk_indices = draft_outputs.back().dsa_topk_indices;
     }
+    // Unify this step's draft next_tokens across the consensus group before
+    // process_draft_sample_output() compresses the still-full [batch, vocab]
+    // probs into the cache: gathering the cached prob with a unified token
+    // yields a unified prob, so we only broadcast the [batch] token tensor
+    if (get_optimization_config().enable_spec_token_broadcast &&
+        enable_schedule_overlap()) {
+      c10::StreamGuard stream_guard = compute_stream_->set_stream_guard();
+      SampleOutput& draft_sample = draft_outputs.back().sample_output;
+      broadcast_spec_tokens(draft_sample.next_tokens,
+                            spec_broadcast_group(parallel_args_));
+    }
     process_draft_sample_output(draft_outputs.back().sample_output);
     if (draft_idx == num_speculative_tokens - 1) {
       continue;
@@ -1106,6 +1132,16 @@ std::optional<ForwardOutput> MTPWorkerImpl::run_validate(
       validate(input.sampling_params, draft_outputs, target_output);
   COUNTER_ADD(speculative_execution_latency_seconds_validation,
               timer.elapsed_seconds());
+
+  // Catch-all for cross-rank RNG divergence: unify the accepted next_tokens to
+  // the consensus group's rank 0 so all_draft_accepted and the next
+  // draft-extend row layout agree across ranks.
+  if (get_optimization_config().enable_spec_token_broadcast &&
+      enable_schedule_overlap()) {
+    c10::StreamGuard stream_guard = compute_stream_->set_stream_guard();
+    broadcast_spec_tokens(val_output.next_tokens,
+                          spec_broadcast_group(parallel_args_));
+  }
 
   compute_stream_->synchronize();
   val_output.next_tokens = val_output.next_tokens.to(torch::kCPU);
@@ -1580,6 +1616,13 @@ void MTPWorkerImpl::prepare_draft_extend_inputs(
     }
   }
   input_params.attention.rebuild_device_buffer(device_);
+
+  // Establish cross-stream ordering before stacking the draft-extend
+  // embeddings. The stack runs on prepare_stream_, but the embedding rows it
+  // reads are produced/finalized by work enqueued on compute_stream_. Make
+  // prepare_stream_ wait on compute_stream_ via an event.
+  prepare_stream_->wait_stream(*compute_stream_);
+
   input_params.embedding.input_embedding = torch::stack(expanded_embeddings);
 
   if (!input_params.parallel.dp_global_token_nums.empty()) {
