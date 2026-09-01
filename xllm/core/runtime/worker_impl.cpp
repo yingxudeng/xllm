@@ -761,14 +761,24 @@ std::optional<ForwardOutput> WorkerImpl::step_for_schedule_overlap(
   // there). Every non-speculative worker that owns a recurrent cache must
   // therefore perform the restore here, on compute_stream_ in the worker
   // thread, so chunk N's checkpoint copy is stream-ordered after chunk N-1's
-  // forward. LLMWorkerImpl overrides this to also drop the default-stream
-  // sync via execute_no_sync_on_stream; other frontends (VLMWorkerImpl,
-  // future model-impl paths) inherit this base version. The StreamGuard here
-  // brackets BOTH the restore and step(input) so the forward is guaranteed to
-  // read the just-restored slots even if compute_stream_ becomes a distinct
-  // pooled stream in the future.
-  c10::StreamGuard compute_guard = compute_stream_->set_stream_guard();
-  try_restore_linear_state_slots(input.input_params);
+  // forward. LLMWorkerImpl overrides this to drop the default-stream sync
+  // via execute_no_sync_on_stream; other frontends (VLMWorkerImpl, future
+  // model-impl paths) inherit this base version. Only enter compute_stream_
+  // when the model actually needs the restore -- dense frontends must keep
+  // running step() on their historical stream.
+  if (has_linear_attention_layers(context_.get_model_args())) {
+    // The StreamGuard here brackets BOTH the restore and step(input) so the
+    // forward is guaranteed to read the just-restored slots even if
+    // compute_stream_ becomes a distinct pooled stream in the future.
+    c10::StreamGuard compute_guard = compute_stream_->set_stream_guard();
+    // step() will run on compute_stream_ inside this guard, so wait on the
+    // event that publishes prepare_stream_'s H2D copies before either the
+    // restore or the forward observes them.
+    CHECK(compute_stream_->wait_event(input.metadata_ready_event))
+        << "failed to wait input metadata ready event on compute stream";
+    try_restore_linear_state_slots(input.input_params);
+    return step(input);
+  }
 #endif
   return step(input);
 }
@@ -966,6 +976,9 @@ void WorkerImpl::prepare_work_before_execute_on_stream(
 #if defined(USE_NPU) || defined(USE_MLU) || defined(USE_CUDA)
     if (has_linear_attention_layers(context_.get_model_args())) {
       prepare_input_params_for_linear_attention(input_params);
+      // Non-overlap path: restore on the current prepare_stream_ (installed
+      // by the outer StreamGuard) so the restore copy is ordered with the
+      // subsequent metadata_ready_event that the forward will wait on.
       // Under schedule_overlap chunked prefill the previous chunk's forward
       // runs on compute_stream_ from a worker thread that may not have
       // enqueued its kernels yet when this prepare runs on the main thread.
