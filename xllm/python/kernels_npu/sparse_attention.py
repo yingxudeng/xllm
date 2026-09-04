@@ -330,7 +330,77 @@ def sparse_flash_attention_lse(
     )
 
 
+def dynamic_block_quant(
+    x: torch.Tensor,
+    dst_type: torch.dtype = torch.int8,
+    row_block_size: int = 1,
+    col_block_size: int = 128,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-tile dynamic quantization for SFA C8 (row=1, col=128 → 4 tiles).
+
+    Returns:
+        A tuple ``(int8_tensor, fp32_scale)`` where ``fp32_scale`` carries one
+        scalar per ``col_block_size`` slice along the last axis.
+    """
+    return torch.ops.npu.npu_dynamic_block_quant(
+        x,
+        dst_type=dst_type,
+        row_block_size=row_block_size,
+        col_block_size=col_block_size,
+    )
+
+
+def kv_quant_sparse_flash_attention(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    sparse_indices: torch.Tensor,
+    block_table: torch.Tensor | None,
+    actual_seq_lengths_query: torch.Tensor | None,
+    actual_seq_lengths_kv: torch.Tensor | None,
+    scale_value: float,
+    sparse_block_size: int,
+    layout_query: str,
+    layout_kv: str,
+    sparse_mode: int,
+    attention_mode: int,
+    quant_scale_repo_mode: int,
+    tile_size: int,
+    key_quant_mode: int,
+    value_quant_mode: int,
+    rope_head_dim: int,
+) -> torch.Tensor:
+    """Attend to selected KV blocks in a packed C8 (int8 + rope + scale) cache.
+
+    ``key`` and ``value`` are the same packed byte tensor; per-tile fp32
+    dequant scales are folded into the packed layout, so no separate scale
+    tensor is passed. The op returns a single Tensor (no softmax LSE).
+    """
+    return torch.ops.npu.npu_kv_quant_sparse_flash_attention(
+        query,
+        key,
+        value,
+        sparse_indices,
+        scale_value,
+        key_quant_mode,
+        value_quant_mode,
+        block_table=block_table,
+        actual_seq_lengths_query=actual_seq_lengths_query,
+        actual_seq_lengths_kv=actual_seq_lengths_kv,
+        sparse_block_size=sparse_block_size,
+        layout_query=layout_query,
+        layout_kv=layout_kv,
+        sparse_mode=sparse_mode,
+        attention_mode=attention_mode,
+        quant_scale_repo_mode=quant_scale_repo_mode,
+        tile_size=tile_size,
+        rope_head_dim=rope_head_dim,
+    )
+
+
 __all__ = [
+    "dynamic_block_quant",
+    "kv_quant_sparse_flash_attention",
     "lightning_indexer",
     "lightning_indexer_out",
     "quant_lightning_indexer",

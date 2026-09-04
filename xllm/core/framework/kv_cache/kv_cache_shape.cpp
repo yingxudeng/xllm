@@ -77,8 +77,16 @@ KVCacheShape::KVCacheShape(const KVCacheCapacity& kv_cache_cap,
       << "KVCacheShape does not support index_cache_shape with "
       << "conv_cache_shape/ssm_cache_shape simultaneously.";
 
-  init_key_cache_shape(kv_cache_cap, model_args, world_size);
-  init_value_cache_shape(kv_cache_cap, model_args, world_size);
+  // The build gate lives in util::enable_mla_packed_c8(); the packed C8 bit on
+  // KVCacheCapacity is force-false on non-NPU builds, so the shape here stays
+  // in lockstep with the estimator's slot sizing without a second #ifdef.
+  const bool mla_packed_c8 = kv_cache_cap.enable_mla_kv_cache_quant();
+  if (mla_packed_c8) {
+    init_mla_packed_c8_shape(kv_cache_cap, model_args);
+  } else {
+    init_key_cache_shape(kv_cache_cap, model_args, world_size);
+    init_value_cache_shape(kv_cache_cap, model_args, world_size);
+  }
 
   if (enable_lighting_indexer) {
     init_index_cache_shape(kv_cache_cap, model_args);
@@ -89,6 +97,12 @@ KVCacheShape::KVCacheShape(const KVCacheCapacity& kv_cache_cap,
     init_ssm_cache_shape(kv_cache_cap, model_args, world_size);
   }
 
+  // apply_device_layout() is an MLU/ILU/DCU dim1<->2 swap and is a no-op on
+  // every other backend. Packed C8 only fires on NPU (gated by
+  // util::enable_mla_packed_c8), so calling unconditionally is safe today. If
+  // SFA C8 ever extends to a backend whose apply_device_layout() actually
+  // rewrites the main-KV shape, revisit this and skip the packed rows so they
+  // do not disagree with the indexer cache layout below.
   apply_device_layout(model_args);
 
   if (enable_lighting_indexer && kv_cache_cap.enable_indexer_cache_quant()) {
@@ -339,6 +353,32 @@ void KVCacheShape::init_value_cache_shape(const KVCacheCapacity& kv_cache_cap,
                                             kv_cache_cap.block_size(),
                                             local_kv_head_count,
                                             model_args.head_dim()};
+}
+
+void KVCacheShape::init_mla_packed_c8_shape(const KVCacheCapacity& kv_cache_cap,
+                                            const ModelArgs& model_args) {
+  // SFA C8 packed layout, per token: [int8 nope (kv_lora_rank bytes)] ++
+  // [bf16 rope (2 * qk_rope_head_dim bytes)] ++
+  // [fp32 tile scales (kv_lora_rank / tile_size * 4 bytes)].
+  // GLM-5.2: 512 + 2*64 + 4*4 = 656. The whole cache is stored as a single
+  // int8 byte tensor; K==V, so value_cache_shape mirrors key_cache_shape and
+  // gets aliased at the Python layer.
+  const int64_t nope_bytes = model_args.kv_lora_rank();
+  const int64_t rope_bytes =
+      MlaPackedC8Layout::kRopeElementBytes * model_args.qk_rope_head_dim();
+  static_assert(MlaPackedC8Layout::kTileSize > 0);
+  CHECK_EQ(nope_bytes % MlaPackedC8Layout::kTileSize, 0)
+      << "kv_lora_rank must be a multiple of the SFA C8 tile size ("
+      << MlaPackedC8Layout::kTileSize << ").";
+  const int64_t scale_bytes = MlaPackedC8Layout::kScaleElementBytes *
+                              (nope_bytes / MlaPackedC8Layout::kTileSize);
+  const int64_t packed_head_dim = nope_bytes + rope_bytes + scale_bytes;
+  LOG(INFO) << "SFA C8 packed head_dim=" << packed_head_dim
+            << " (nope=" << nope_bytes << ", rope=" << rope_bytes
+            << ", scale=" << scale_bytes << ")";
+  key_cache_shape_ = std::vector<int64_t>{
+      kv_cache_cap.n_blocks(), kv_cache_cap.block_size(), 1, packed_head_dim};
+  value_cache_shape_ = *key_cache_shape_;
 }
 
 void KVCacheShape::init_index_cache_shape(const KVCacheCapacity& kv_cache_cap,

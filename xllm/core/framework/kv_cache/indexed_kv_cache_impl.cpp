@@ -191,8 +191,9 @@ void IndexedKVCacheImpl::swap_blocks(torch::Tensor& src_tensor,
   torch::Tensor selected_keys = torch::index_select(key_cache_, 0, src_tensor);
   key_cache_.index_copy_(0, dst_tensor, selected_keys);
 
-  // deepseek MLA has no value cache.
-  if (has_data(value_cache_)) {
+  // deepseek MLA has no value cache. For SFA C8 packed layout value_cache_
+  // aliases key_cache_ (K==V), so skip the redundant swap.
+  if (has_data(value_cache_) && !value_cache_.is_same(key_cache_)) {
     torch::Tensor selected_values =
         torch::index_select(value_cache_, 0, src_tensor);
     value_cache_.index_copy_(0, dst_tensor, selected_values);

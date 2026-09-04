@@ -53,9 +53,15 @@ std::unique_ptr<KVCacheImpl> create_kv_cache_impl(
     int64_t layer_id) {
   CHECK_GE(layer_id, 0) << "KV cache layer_id must be non-negative.";
 
+  const bool mla_packed_c8 = create_options.mla_packed_c8();
 #if !defined(USE_MLU)
-  CHECK(!create_options.enable_kv_cache_quant())
-      << "KV cache quantization is only supported on MLU backend.";
+  // NPU SFA C8 (packed int8 nope + bf16 rope + fp32 scale) is currently the
+  // only quant path wired on non-MLU. Every other non-MLU quant use is
+  // hard-rejected so callers do not silently fall through to unsupported
+  // shapes. On MLU the classic quant path stays legal; mla_packed_c8() is
+  // gated to NPU by util::enable_mla_packed_c8() so this branch is dead there.
+  CHECK(!create_options.enable_kv_cache_quant() || mla_packed_c8)
+      << util::kNonMluKvCacheQuantRejectMsg;
 #endif
 
   const bool is_linear_layer =
@@ -65,6 +71,23 @@ std::unique_ptr<KVCacheImpl> create_kv_cache_impl(
   if (is_linear_layer) {
     return std::make_unique<LinearAttentionKVCacheImpl>(kv_cache_shape,
                                                         create_options);
+  }
+
+  // SFA C8 packs int8 nope + bf16 rope + fp32 scale into a single byte tensor
+  // that must flow through IndexedKVCacheImpl (K==V alias, no separate scale
+  // slab). Route it before the generic quant fallbacks so an unusual gate
+  // combination (for example indexer cache eliminated by a future platform)
+  // cannot drop it into QuantizedKVCacheImpl by accident.
+  //
+  // IndexedKVCacheImpl requires an index cache shape. GLM-5.2 has an indexer
+  // by construction (index_n_heads > 0), so this CHECK just makes that
+  // invariant local rather than letting a future non-indexed model type slip
+  // through supports_mla_kv_cache_quant() into a FATAL deeper in
+  // create_indexed_kv_cache_tensors().
+  if (mla_packed_c8) {
+    CHECK(create_options.enable_lighting_indexer())
+        << "SFA C8 packed KV cache requires an indexer (index_n_heads > 0).";
+    return std::make_unique<IndexedKVCacheImpl>(kv_cache_shape, create_options);
   }
 
   if (create_options.enable_kv_cache_quant() &&
@@ -102,6 +125,15 @@ std::unique_ptr<KVCacheImpl> create_host_kv_cache_impl(
     const KVCacheCreateOptions& create_options,
     BlockType type,
     int64_t layer_count) {
+  // Host prefix-cache offload allocates key/value pairs with the model dtype
+  // and ignores the packed C8 byte layout. validate_host_cache_options()
+  // already rejects `--kv_cache_dtype != auto` for host offload; mirror that
+  // guarantee here so a stray host ctor invocation cannot silently allocate
+  // 1312 B/token host tensors that would then diverge from the device 656 B
+  // packed rows.
+  CHECK(!create_options.mla_packed_c8())
+      << "Host KV cache offload does not support the SFA C8 packed layout; "
+         "set --host_blocks_factor=0 or --kv_cache_dtype=auto.";
   if (util::is_deepseek_v4_model_type(create_options.model_type())) {
     return std::make_unique<DeepSeekV4KVCacheImpl>(
         kv_cache_shape, create_options, type, layer_count);

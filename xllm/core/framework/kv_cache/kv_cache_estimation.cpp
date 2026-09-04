@@ -24,6 +24,7 @@ limitations under the License.
 #include "core/platform/platform.h"
 #include "framework/block/block_utils.h"
 #include "framework/kv_cache/deepseek_v4_cache_policy.h"
+#include "framework/kv_cache/kv_cache_shape.h"
 #include "framework/model/model_args.h"
 #include "util/pretty_print.h"
 #include "util/tensor_helper.h"
@@ -53,6 +54,18 @@ int64_t kv_slot_size(const ModelArgs& model_args,
                      const KVCacheEstimateOptions& options,
                      int64_t cache_dtype_size) {
   if (model_args.enable_mla()) {
+    // SFA C8 packed layout: one byte tensor holding [int8 nope] + [bf16 rope]
+    // + [fp32 tile scale]; K == V so no separate value cache is counted. The
+    // predicate carries its own build gate, so no #ifdef is needed here.
+    if (util::enable_mla_packed_c8(options.kv_cache_dtype == "int8",
+                                   model_args.model_type())) {
+      const int64_t nope_bytes = model_args.kv_lora_rank();
+      const int64_t rope_bytes =
+          MlaPackedC8Layout::kRopeElementBytes * model_args.qk_rope_head_dim();
+      const int64_t scale_bytes = MlaPackedC8Layout::kScaleElementBytes *
+                                  (nope_bytes / MlaPackedC8Layout::kTileSize);
+      return nope_bytes + rope_bytes + scale_bytes;
+    }
 #if defined(USE_NPU)
     if ((model_args.model_type() == "deepseek_v3" ||
          model_args.model_type() == "deepseek_v3_mtp") &&
@@ -101,6 +114,16 @@ int64_t scale_slot_size(const ModelArgs& model_args,
     return 0;
   }
   if (model_args.enable_mla()) {
+    // SFA C8 folds per-tile fp32 scales into the packed KV byte tensor
+    // (kv_slot_size already counts them). Advertising an extra scale slot
+    // here would double-book the memory. The predicate carries its own build
+    // gate, so the estimator and shape stay symmetric on every backend: a
+    // hypothetical fp8 KV path on a supported model must not short-circuit
+    // here.
+    if (util::enable_mla_packed_c8(options.kv_cache_dtype == "int8",
+                                   model_args.model_type())) {
+      return 0;
+    }
     return sizeof(float);
   }
   return 2 * sizeof(float) * options.n_local_kv_heads;
@@ -672,11 +695,19 @@ KVCacheCapacity estimate_kv_cache_capacity(
       kv_cache_dtype_size(options.kv_cache_dtype, dtype_size);
   const bool enable_indexer_cache_quantization =
       options.indexer_cache_dtype == "int8";
+  // Estimation is the only site that also honors the runtime enable_mla
+  // config bit (every other caller has already committed to MLA via model
+  // wiring), so AND it in here rather than pushing it into the helper.
+  const bool enable_mla_kv_cache_quantization =
+      model_args.enable_mla() &&
+      util::enable_mla_packed_c8(options.kv_cache_dtype == "int8",
+                                 model_args.model_type());
 
   kv_cache_cap.slot_size(kv_slot_size(model_args, options, cache_dtype_size))
       .index_slot_size(index_slot_size(
           model_args, enable_indexer_cache_quantization, dtype_size))
       .enable_indexer_cache_quant(enable_indexer_cache_quantization)
+      .enable_mla_kv_cache_quant(enable_mla_kv_cache_quantization)
       .scale_slot_size(scale_slot_size(model_args, options))
       .linear_slot_size(linear_slot_size(model_args, options, dtype_size))
       .n_layers(model_args.n_layers())

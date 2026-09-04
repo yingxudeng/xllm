@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "common/macros.h"
@@ -34,11 +35,17 @@ class LLMWorkerImpl;
 int64_t get_dp_local_tp_size(const ParallelArgs& parallel_args);
 
 // Builds draft cache geometry while preserving grouped target pool capacities.
+// `kv_cache_dtype` (e.g. "int8", "auto") is required so the draft KVCacheShape
+// picks up the target-side packed-C8 layout when the target uses it
+// (glm_moe_dsa[_mtp] + int8 -> 656B/token packed rows). Without it the draft
+// pool would be sized for the legacy BF16 [nope][rope] slot and diverge from
+// the target allocator.
 KVCacheShape build_speculative_draft_kv_cache_shape(
     const KVCacheShape& target_kv_cache_shape,
     const ModelArgs& draft_model_args,
     int64_t block_size,
-    int64_t draft_world_size);
+    int64_t draft_world_size,
+    const std::string& kv_cache_dtype);
 
 // Returns whether this rank may execute the multi-step speculative decode
 // plan for the current global DP batch.
