@@ -63,7 +63,9 @@ limitations under the License.
 #include "core/platform/sleepable_allocator.h"
 #if defined(USE_NPU)
 #include "platform/npu/device_capture_lock.h"
-#elif defined(USE_CUDA) || defined(USE_DCU) || defined(USE_MUSA)
+#include "platform/npu/npu_profiler.h"
+#endif
+#if defined(USE_CUDA) || defined(USE_DCU) || defined(USE_MUSA)
 #include "platform/torch_profiler.h"
 #endif
 #if defined(USE_MUSA)
@@ -1739,6 +1741,28 @@ bool WorkerImpl::start_profile() {
   }
   LOG(ERROR) << "Unsupported CUDA profiling backend: " << cfg.profile_backend();
   return false;
+#elif defined(USE_NPU)
+  // On NPU the 'torch' backend is routed through torch_npu.profiler.profile
+  // (pybind), so the trace lands under <profile_dir>/*_ascend_pt/ with
+  // ASCEND_PROFILER_OUTPUT/*.csv that torch_npu.profiler.profiler.analyse()
+  // consumes. CPU-op capture uses thread-local RecordFunction callbacks, so
+  // enable it on the compute thread that owns forward pass rather than on
+  // the RPC handler thread.
+  if (cfg.profile_backend() != "torch") {
+    LOG(ERROR) << "Unsupported NPU profiling backend: " << cfg.profile_backend()
+               << " (only 'torch' is supported on NPU).";
+    return false;
+  }
+  const std::string profile_dir_start = cfg.profile_dir();
+  const int32_t rank_start = parallel_args_.rank();
+  folly::Promise<bool> promise;
+  auto future = promise.getSemiFuture();
+  threadpool_.schedule(
+      [profile_dir_start, rank_start, promise = std::move(promise)]() mutable {
+        promise.setValue(
+            NpuProfiler::get_instance().start(profile_dir_start, rank_start));
+      });
+  return std::move(future).get();
 #elif defined(USE_DCU) || defined(USE_MUSA)
   // Default "torch" backend records in-process via Kineto. CPU-op capture uses
   // thread-local callbacks, so enable it on the compute thread that runs the
@@ -1764,6 +1788,18 @@ bool WorkerImpl::stop_profile() {
   }
   LOG(ERROR) << "Unsupported CUDA profiling backend: " << cfg.profile_backend();
   return false;
+#elif defined(USE_NPU)
+  if (cfg.profile_backend() != "torch") {
+    LOG(ERROR) << "Unsupported NPU profiling backend: " << cfg.profile_backend()
+               << " (only 'torch' is supported on NPU).";
+    return false;
+  }
+  folly::Promise<bool> promise;
+  auto future = promise.getSemiFuture();
+  threadpool_.schedule([promise = std::move(promise)]() mutable {
+    promise.setValue(NpuProfiler::get_instance().stop());
+  });
+  return std::move(future).get();
 #elif defined(USE_DCU) || defined(USE_MUSA)
   const std::string profile_dir = cfg.profile_dir();
   const int32_t rank = parallel_args_.rank();

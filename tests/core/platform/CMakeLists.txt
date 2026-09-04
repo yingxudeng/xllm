@@ -17,6 +17,20 @@ if(USE_NPU OR USE_CUDA OR USE_ILU OR USE_DCU)
   endif()
 endif()
 
+if(USE_NPU)
+  cc_test(
+    NAME
+      npu_profiler_test
+    SRCS
+      npu_profiler_test.cpp
+    DEPS
+      :platform
+      :config
+      GTest::gtest_main
+      glog::glog
+  )
+endif()
+
 if(USE_DCU)
   add_subdirectory(dcu)
 endif()

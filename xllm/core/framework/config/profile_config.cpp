@@ -59,9 +59,9 @@ DEFINE_bool(enable_forward_interruption,
 DEFINE_bool(enable_online_profile,
             false,
             "Whether to enable the online timeline profiling endpoints "
-            "(/start_profile and /stop_profile). CUDA only for now; pair with "
+            "(/start_profile and /stop_profile). For CUDA, pair with "
             "launching the server under nsys "
-            "--capture-range=cudaProfilerApi.");
+            "--capture-range=cudaProfilerApi. Also supported on NPU.");
 
 DEFINE_string(
     profile_backend,
@@ -70,7 +70,11 @@ DEFINE_string(
     "activities in-process and writes a Chrome trace on "
     "/stop_profile, no external profiler needed; 2: 'cuda' only toggles "
     "the CUDA profiler capture range and requires launching under "
-    "nsys --capture-range=cudaProfilerApi.");
+    "nsys --capture-range=cudaProfilerApi. "
+    "On NPU, 'torch' instead drives torch_npu.profiler.profile so "
+    "/stop_profile lands a *_ascend_pt/ directory with "
+    "ASCEND_PROFILER_OUTPUT/*.csv that "
+    "torch_npu.profiler.profiler.analyse() consumes.");
 
 DEFINE_string(profile_dir,
               "",

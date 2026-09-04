@@ -76,7 +76,7 @@ class ProfileConfig final {
   PROPERTY(bool, enable_forward_interruption) = false;
 
   // Whether to enable the online timeline profiling endpoints
-  // (/start_profile and /stop_profile). CUDA only for now.
+  // (/start_profile and /stop_profile). Supported on CUDA and NPU.
   PROPERTY(bool, enable_online_profile) = false;
 
   // Online profiling backend. "torch" (default) records CPU+CUDA activities
@@ -85,6 +85,10 @@ class ProfileConfig final {
   // "cuda" only toggles the CUDA profiler capture range
   // (cudaProfilerStart/Stop) and requires launching the server under nsys with
   // --capture-range=cudaProfilerApi to record a trace.
+  // On NPU, "torch" instead drives torch_npu.profiler.profile so /stop_profile
+  // lands a *_ascend_pt/ directory under profile_dir containing
+  // ASCEND_PROFILER_OUTPUT/*.csv that torch_npu.profiler.profiler.analyse()
+  // consumes.
   PROPERTY(std::string, profile_backend) = "torch";
 
   // Directory the "torch" backend writes timeline traces to. Empty means the
