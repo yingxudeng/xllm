@@ -51,26 +51,29 @@ from xllm.python.layers import (
     HiddenParallelEmbedding,
     RMSNorm,
 )
-from xllm.python.model_executor.forward_context import get_forward_context
+from xllm.python.model_executor.cp_utils import (
+    cp_gather_kv,
+    cp_merge_rows,
+    cp_shard_positions,
+    cp_shard_rows,
+)
+from xllm.python.model_executor.forward_context import get_forward_context, record_layer_event
 from xllm.python.models.aux_hidden_capture import AuxHiddenCapture
 from xllm.python.models.base import PyModelBase
 from xllm.python.models.deepseek_v32 import (
-    DeepseekV3MLP as Glm52MLP,
-)
-from xllm.python.models.deepseek_v32 import (
-    DeepseekV3MoE as Glm52MoE,
-)
-from xllm.python.models.deepseek_v32 import (
-    DeepseekYarnRotaryEmbedding as Glm52YarnRotaryEmbedding,
-)
-from xllm.python.models.deepseek_v32 import (
+    DeepseekV3MLP,
+    DeepseekV3MoE,
     W8A8StaticLinear,
     _apply_half_rope,
     _create_hadamard_matrix,
     _gather_interleave_cos_sin,
     _interleave_rope_with,
+    _swiglu_with_clamp,
     _tp_rank_from_device,
     _yarn_get_mscale,
+)
+from xllm.python.models.deepseek_v32 import (
+    DeepseekYarnRotaryEmbedding as Glm52YarnRotaryEmbedding,
 )
 from xllm.python.models.weight_utils import W8A8WeightLoader, effective_moe_tp, mla_head_split
 
@@ -304,6 +307,48 @@ class Glm52Config:
         return mla_head_split(self.n_heads, self.tp_size)
 
 
+class Glm52MLP(DeepseekV3MLP):
+    """GLM dense MLP with numerically stable FP32 TP reduction."""
+
+    def _reduce_output(
+        self,
+        out: torch.Tensor,
+        tp_reduce_add: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if tp_reduce_add is not None:
+            out = out + tp_reduce_add
+        if self.tp > 1 and (not self.skip_tp_reduce or tp_reduce_add is not None):
+            output_dtype = out.dtype
+            out = out.to(torch.float32)
+            distributed.tp_all_reduce(out)
+            out = out.to(output_dtype)
+        return out
+
+    def _forward_gate_up(
+        self,
+        gate_up: torch.Tensor,
+        tp_reduce_add: torch.Tensor | None,
+    ) -> torch.Tensor:
+        act = _swiglu_with_clamp(gate_up, self.swiglu_limit)
+        out = self.down_proj(act)
+        return self._reduce_output(out, tp_reduce_add)
+
+    def forward_dequant_swiglu_quant(
+        self,
+        x: torch.Tensor,
+        tp_reduce_add: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        x_int8, pertoken = kernels.dynamic_quant(x)
+        gate_up = self.gate_up_proj.forward_accumulated(x_int8)
+        act_int8, act_scale = kernels.dequant_swiglu_quant(
+            gate_up,
+            self.gate_up_proj.weight_scale,
+            pertoken,
+        )
+        out = self.down_proj.forward_quantized(act_int8, act_scale)
+        return self._reduce_output(out, tp_reduce_add)
+
+
 class Glm52MLAAttention(Attention):
     """Absorbed-MLA attention with per-layer full/shared DSA indexer."""
 
@@ -426,11 +471,17 @@ class Glm52MLAAttention(Attention):
         k_pe_3d = k_pe.view(num_tokens, 1, self.qk_rope_head_dim)
 
         attn_out = backend.execute_mla(q_latent, q_pe, k_latent_3d, k_pe_3d, self, topk=topk)
-        v_full = torch.bmm(attn_out.transpose(0, 1), self.W_UV).transpose(0, 1)
+        v_full = kernels.batch_matmul_transpose(
+            attn_out.transpose(0, 1),
+            self.W_UV,
+        )
         v_full = v_full.reshape(num_tokens, self.num_heads_local * self.v_head_dim)
         o = self.o_proj(v_full)
         if self.cfg.tp_size > 1:
+            output_dtype = o.dtype
+            o = o.to(torch.float32)
             distributed.all_reduce_(o)
+            o = o.to(output_dtype)
         return o, topk
 
 
@@ -498,11 +549,8 @@ class Glm52Indexer(nn.Module):
         ctx: MlaIndexContext,
         cos_sin_cache: torch.Tensor,
     ) -> torch.Tensor:
-        index_cache = ctx.index_cache
-        slot_mapping = ctx.slot_mapping
         actual_seq_q = ctx.actual_seq_q
         actual_seq_kv = ctx.actual_seq_kv
-        block_table = ctx.block_table
         q = self.wq_b(qr).view(-1, self.n_head, self.head_dim)
         q_pe, q_nope = torch.split(q, [self.rope_dim, self.head_dim - self.rope_dim], dim=-1)
         k = self.wk(hidden)
@@ -518,10 +566,14 @@ class Glm52Indexer(nn.Module):
         q = torch.cat([q_pe, q_nope], dim=-1)
         k = torch.cat([k_pe, k_nope], dim=-1)
         weights = self.weights_proj(hidden)
+        if ctx.cp_context is not None:
+            q = cp_gather_kv(q, ctx.cp_context).contiguous()
+            k = cp_gather_kv(k, ctx.cp_context).contiguous()
+            weights = cp_gather_kv(weights, ctx.cp_context).contiguous()
 
-        use_quant_indexer = (
-            index_cache is not None and index_cache.dtype == torch.int8 and ctx.index_cache_scale is not None
-        )
+        index_cache = ctx.index_cache
+        index_cache_scale = ctx.index_cache_scale
+        use_quant_indexer = index_cache.dtype == torch.int8 and index_cache_scale is not None
         if use_quant_indexer:
             rotation_scale = self.head_dim**-0.5
             q = torch.matmul(q, self.hadamard) * rotation_scale
@@ -533,6 +585,8 @@ class Glm52Indexer(nn.Module):
             q_scale = q_scale.to(torch.float16)
             k_scale = k_scale.unsqueeze(-1).to(torch.float16)
             ctx.update_index_cache(k, k_scale)
+            index_cache, index_cache_scale, block_table = ctx.materialize_index_cache()
+            assert index_cache_scale is not None
             weight_scale = self.head_dim**-0.5 * self.n_head**-0.5
             # xLLM stores one index key per source token.
             cmp_ratio = 1
@@ -541,12 +595,12 @@ class Glm52Indexer(nn.Module):
             q, q_scale, weights_padded = self._pad_q_heads_to_kernel_gsize(q, q_scale, weights, required_q_heads)
 
             qli_metadata = ctx.get_quant_indexer_metadata(required_q_heads, self.head_dim, self.topk, cmp_ratio)
-            return kernels.quant_lightning_indexer(
+            topk = kernels.quant_lightning_indexer(
                 q,
                 index_cache,
                 (weights_padded * weight_scale).to(torch.float16),
                 q_scale,
-                ctx.index_cache_scale,
+                index_cache_scale,
                 qli_metadata,
                 actual_seq_q,
                 actual_seq_kv,
@@ -554,25 +608,53 @@ class Glm52Indexer(nn.Module):
                 self.topk,
                 cmp_ratio,
             )
-
-        if index_cache is not None and slot_mapping is not None:
+        else:
             ctx.update_index_cache(k, None)
-        topk = kernels.lightning_indexer(
-            q,
-            index_cache,
-            weights,
-            actual_seq_q,
-            actual_seq_kv,
-            block_table,
-            "TND",
-            "PA_BSND",
-            self.topk,
-            3,
-            9223372036854775807,
-            9223372036854775807,
-            False,
-        )
+            index_cache, _, block_table = ctx.materialize_index_cache()
+            topk = kernels.lightning_indexer(
+                q,
+                index_cache,
+                weights,
+                actual_seq_q,
+                actual_seq_kv,
+                block_table,
+                "TND",
+                "PA_BSND",
+                self.topk,
+                3,
+                9223372036854775807,
+                9223372036854775807,
+                False,
+            )
+        if ctx.cp_context is not None:
+            topk = cp_shard_rows(topk, ctx.cp_context)
         return topk
+
+
+class Glm52MoE(DeepseekV3MoE):
+    """EP MoE with CP rows materialized before expert reduction."""
+
+    def _combine_expert_outputs(
+        self,
+        routed: torch.Tensor,
+        shared: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.ep_size > 1:
+            return super()._combine_expert_outputs(routed, shared)
+
+        final = routed + shared
+        if self.cfg.tp_size > 1:
+            distributed.all_reduce_(final, "tp")
+        return final
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        cp_context = get_forward_context().cp_context
+        if cp_context is None or self.ep_size == 1:
+            return super().forward(hidden)
+
+        global_hidden = cp_gather_kv(hidden, cp_context)
+        global_output = super().forward(global_hidden)
+        return cp_shard_rows(global_output, cp_context)
 
 
 class Glm52DecoderLayer(nn.Module):
@@ -651,14 +733,21 @@ class Glm52Model(nn.Module):
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         hidden = self.embed_tokens(input_ids)
         positions = positions.to(torch.int64).contiguous()
+        cp_context = get_forward_context().cp_context
+        if cp_context is not None:
+            hidden = cp_shard_rows(hidden, cp_context)
+            positions = cp_shard_positions(positions, cp_context).contiguous()
         cos_sin_cache = self.rotary.cos_sin_cache
         residual: torch.Tensor | None = None
         prev_topk: torch.Tensor | None = None
         aux_hidden_buffer = self.aux_hidden_capture.create_buffer(hidden)
-        for i, layer in enumerate(self.layers):
+        for layer_id, layer in enumerate(self.layers):
             hidden, residual, prev_topk = layer(hidden, residual, positions, cos_sin_cache, prev_topk)
-            self.aux_hidden_capture.capture_layer(i, hidden, residual, aux_hidden_buffer)
+            self.aux_hidden_capture.capture_layer(layer_id, hidden, residual, aux_hidden_buffer)
+            record_layer_event(layer_id)
         hidden, _ = self.norm(hidden, residual)
+        if cp_context is not None:
+            hidden = cp_merge_rows(hidden, cp_context)
         return self.aux_hidden_capture.finalize(hidden, aux_hidden_buffer)
 
 
